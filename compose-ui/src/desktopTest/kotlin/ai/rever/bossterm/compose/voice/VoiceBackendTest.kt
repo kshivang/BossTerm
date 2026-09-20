@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.voice
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertIs
@@ -17,7 +18,13 @@ class VoiceBackendTest {
         backend: String = "OPENAI",
         localModel: String = "",
         model: String = "gpt-realtime-2.1",
-    ) = TerminalSettings(voiceBackend = backend, voiceLocalModel = localModel, voiceCallModel = model)
+        externalUrl: String = "",
+    ) = TerminalSettings(
+        voiceBackend = backend,
+        voiceLocalModel = localModel,
+        voiceCallModel = model,
+        voiceLocalExternalUrl = externalUrl,
+    )
 
     @Test
     fun `openai backend resolves to the openai socket with the key`() {
@@ -129,5 +136,96 @@ class VoiceBackendTest {
     @Test
     fun `the default backend is openai`() {
         assertEquals(VoiceBackend.OPENAI, VoiceBackend.parse(TerminalSettings().voiceBackend))
+    }
+
+    // ---- the user-supplied server address ----
+
+    /**
+     * `voiceLocalExternalUrl` is the escape hatch for running the server on a bigger machine, and it
+     * is the one setting that can send call audio somewhere other than this one. It wins over the
+     * managed runtime, because a user who configured a server meant to use it.
+     */
+    @Test
+    fun `a configured server address wins over the managed runtime`() {
+        val result = VoiceEndpointResolver.resolve(
+            settings(backend = "LOCAL", externalUrl = "http://192.168.1.9:8765/v1/realtime"),
+            loadKey = { null },
+            localEndpointUrl = "ws://127.0.0.1:8765/v1/realtime",
+        )
+        val endpoint = assertIs<VoiceEndpointResult.Ready>(result).endpoint
+        // Normalized on the way through: the transport speaks ws://, and the http spelling is how a
+        // person would describe the server they already run.
+        assertEquals("ws://192.168.1.9:8765/v1/realtime", endpoint.url)
+    }
+
+    /**
+     * A REMOTE server must still not receive the user's OpenAI key. The key check here is the point:
+     * `voiceLocalExternalUrl` is free-form settings.json, so this is the one path where "the local
+     * backend never sends the credential" could quietly stop being true.
+     */
+    @Test
+    fun `a remote configured server never receives the openai key`() {
+        val result = VoiceEndpointResolver.resolve(
+            settings(backend = "LOCAL", externalUrl = "wss://voice.example.com/v1/realtime"),
+            loadKey = { "sk-live-secret" },
+        )
+        val endpoint = assertIs<VoiceEndpointResult.Ready>(result).endpoint
+        assertNull(endpoint.apiKey, "a remote local-backend endpoint must not carry the OpenAI key")
+    }
+
+    /**
+     * A malformed value fails the call naming the setting, rather than falling back to the managed
+     * runtime: ignoring what the user wrote and placing the call somewhere else is exactly the
+     * silent substitution this backend is not allowed to do.
+     */
+    @Test
+    fun `a malformed configured address fails rather than falling back`() {
+        val result = VoiceEndpointResolver.resolve(
+            settings(backend = "LOCAL", externalUrl = "192.168.1.9:8765"),
+            loadKey = { "sk-test" },
+            localEndpointUrl = "ws://127.0.0.1:8765/v1/realtime",
+        )
+        val unavailable = assertIs<VoiceEndpointResult.Unavailable>(result)
+        assertTrue(
+            unavailable.message.contains("voiceLocalExternalUrl"),
+            "the message must name the setting to fix: ${unavailable.message}",
+        )
+        assertTrue(unavailable.needsLocalSetup, "Settings is where this is fixed")
+    }
+
+    /** Blank means "use the managed runtime", which is the documented default. */
+    @Test
+    fun `a blank configured address uses the managed runtime`() {
+        val result = VoiceEndpointResolver.resolve(
+            settings(backend = "LOCAL", externalUrl = "   "),
+            loadKey = { null },
+            localEndpointUrl = "ws://127.0.0.1:8765/v1/realtime",
+        )
+        assertEquals(
+            "ws://127.0.0.1:8765/v1/realtime",
+            assertIs<VoiceEndpointResult.Ready>(result).endpoint.url,
+        )
+    }
+
+    /**
+     * The flag the call bar renders its "Open Settings" button from, pinned at the resolver as well
+     * as in `LocalVoiceRuntimeTest` — it was computed, tested and then dropped on the floor before,
+     * so both ends of it are asserted now.
+     */
+    @Test
+    fun `an unready local runtime asks the ui for setup`() {
+        val result = VoiceEndpointResolver.resolve(
+            settings(backend = "LOCAL"),
+            loadKey = { null },
+            localEndpointUrl = null,
+        )
+        assertTrue(assertIs<VoiceEndpointResult.Unavailable>(result).needsLocalSetup)
+    }
+
+    /** Every OPENAI failure is answered by another setting, not by the local runtime panel. */
+    @Test
+    fun `an openai failure does not ask for local setup`() {
+        val result = VoiceEndpointResolver.resolve(settings(), loadKey = { null })
+        assertFalse(assertIs<VoiceEndpointResult.Unavailable>(result).needsLocalSetup)
     }
 }

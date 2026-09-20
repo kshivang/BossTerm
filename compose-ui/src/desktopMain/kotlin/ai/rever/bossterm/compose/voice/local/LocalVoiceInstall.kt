@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.voice.local
 
 import java.io.File
+import java.net.URI
 
 /**
  * Where the managed runtime lives on disk and how it is invoked.
@@ -33,6 +34,14 @@ internal object LocalVoiceInstall {
 
     /** Lowest interpreter the distribution accepts, from its own `requires-python`. */
     const val MIN_PYTHON_MINOR = 10
+
+    /**
+     * The major half of that same floor.
+     *
+     * Named rather than written as a literal at the one place the message is built, so the version
+     * a user is told to install cannot drift from the version the check actually enforces.
+     */
+    const val MIN_PYTHON_MAJOR = 3
 
     /** Root of the managed environment. Sibling of the rest of BossTerm's state, not a temp dir. */
     fun home(base: File = File(System.getProperty("user.home"), ".bossterm")): File =
@@ -115,8 +124,56 @@ internal object LocalVoiceInstall {
         val match = Regex("""Python\s+(\d+)\.(\d+)""").find(versionOutput) ?: return false
         val major = match.groupValues[1].toIntOrNull() ?: return false
         val minor = match.groupValues[2].toIntOrNull() ?: return false
-        return major > 3 || (major == 3 && minor >= MIN_PYTHON_MINOR)
+        return major > MIN_PYTHON_MAJOR || (major == MIN_PYTHON_MAJOR && minor >= MIN_PYTHON_MINOR)
     }
+
+    /**
+     * Normalize the user's [TerminalSettings.voiceLocalExternalUrl] into a URL a call can use, or
+     * null when it is unusable.
+     *
+     * Two jobs, both about a setting that is hand-edited JSON rather than a UI control:
+     *
+     * 1. **Scheme.** `JdkRealtimeTransport` builds its socket with
+     *    `sharedClient.newWebSocketBuilder().buildAsync(URI.create(url))`, which accepts only
+     *    `ws:`/`wss:`. The documented way to point this at another host is to copy the address you
+     *    would open in a browser (`http://host:port/v1/realtime`), and that value used to reach the
+     *    transport and throw an opaque `IllegalArgumentException` out of `connect`. The sibling
+     *    `http(s)` spelling is translated instead, because it is the same origin and the same path.
+     * 2. **Rejection.** A value that is not a URL at all — or is a scheme we cannot speak — is
+     *    reported as null so the resolver fails the call with a message naming the setting, rather
+     *    than handing the transport something that fails one layer down.
+     */
+    fun parseExternalUrl(raw: String?): String? {
+        val trimmed = raw?.trim().orEmpty()
+        if (trimmed.isEmpty()) return null
+        // Everything after "://", which is what both the ws and the http spellings have in common.
+        val rest = trimmed.substringAfter("://", missingDelimiterValue = "")
+        if (rest.isEmpty()) return null
+        val wsScheme = when (trimmed.substringBefore("://").lowercase()) {
+            "ws", "wss" -> trimmed.substringBefore("://").lowercase()
+            "http" -> "ws"
+            "https" -> "wss"
+            else -> return null
+        }
+        // An authority with no host is not a server; reject rather than let the transport decide.
+        val host = runCatching { URI("$wsScheme://$rest").host }.getOrNull()
+        if (host.isNullOrBlank()) return null
+        return "$wsScheme://$rest"
+    }
+
+    /**
+     * Whether a URL's host is this machine.
+     *
+     * Used only to describe a configuration, never to permit one: pointing the local backend at
+     * another host is a deliberate escape hatch, and the UI warns rather than refuses.
+     */
+    fun isLoopbackUrl(url: String): Boolean {
+        val host = runCatching { URI(url).host }.getOrNull()?.removeSurrounding("[", "]")?.lowercase()
+        return host in LOOPBACK_HOSTS
+    }
+
+    /** Hosts that mean "this machine". Covers IPv6 loopback with and without its URI brackets. */
+    val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
     const val LOOPBACK = "127.0.0.1"
 }

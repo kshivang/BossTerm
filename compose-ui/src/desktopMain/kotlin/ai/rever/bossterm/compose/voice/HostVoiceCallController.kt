@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.voice
 
+import ai.rever.bossterm.compose.voice.local.LocalVoiceInstall
 import ai.rever.bossterm.compose.voice.local.LocalVoiceRuntime
 
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -46,6 +47,18 @@ internal data class HostCallState(
     val activity: String? = null,
     /** Set with [HostCallPhase.Error]. */
     val error: String? = null,
+    /**
+     * The error has a button behind it: the local voice runtime is not set up, and Settings is
+     * where that is fixed.
+     *
+     * Carried on the STATE rather than folded into [error]'s prose because the call bar renders an
+     * affordance from it, and prose cannot be a control. It is the visible half of
+     * [VoiceEndpointResult.Unavailable.needsLocalSetup], which until now was computed, tested, and
+     * then dropped on the floor by the controller — so a user who pressed Call with the local
+     * backend selected and nothing installed was told to go to Settings and given no way to get
+     * there. Every other failure ([HostCallPhase.Error] with this false) keeps its single Dismiss.
+     */
+    val needsLocalSetup: Boolean = false,
 ) {
     val active: Boolean get() = phase == HostCallPhase.Connecting || phase == HostCallPhase.Live
 }
@@ -229,11 +242,18 @@ internal class HostVoiceCallController(
         if (VoiceBackend.parse(s.voiceBackend) != VoiceBackend.LOCAL) {
             return VoiceEndpointResolver.resolve(s, loadKey)
         }
-        // An explicitly configured server wins over the managed one and is never started or
-        // stopped by us: the user is pointing at something they run, possibly on another machine.
-        val external = s.voiceLocalExternalUrl.trim().takeIf { it.isNotBlank() }
-        val url = external ?: startLocal(s.voiceLocalPort, s.voiceLocalAutoStart)
-        return VoiceEndpointResolver.resolve(s, loadKey, url)
+        // A usable configured server wins over the managed one and is never started or stopped by
+        // us: the user is pointing at something they run, possibly on another machine. Asked only
+        // when there is nothing usable configured, so a typo in that setting cannot quietly start a
+        // local server the user is not going to be called through. Whether the value is usable is
+        // the resolver's call, not this one's — it owns the normalization, and re-deciding it here
+        // is how the two drift apart.
+        val managedUrl = if (LocalVoiceInstall.parseExternalUrl(s.voiceLocalExternalUrl) == null) {
+            startLocal(s.voiceLocalPort, s.voiceLocalAutoStart)
+        } else {
+            null
+        }
+        return VoiceEndpointResolver.resolve(s, loadKey, managedUrl)
     }
 
     /** Start a call. No-op when one is already up. */
@@ -269,7 +289,7 @@ internal class HostVoiceCallController(
             // put their microphone audio on the network, neither of which they asked for.
             val endpoint = when (val resolved = resolveEndpoint(s)) {
                 is VoiceEndpointResult.Unavailable -> {
-                    fail(resolved.message)
+                    fail(resolved.message, needsLocalSetup = resolved.needsLocalSetup)
                     return@launch
                 }
                 is VoiceEndpointResult.Ready -> resolved.endpoint
@@ -504,7 +524,12 @@ internal class HostVoiceCallController(
         reportTerminal()
     }
 
-    private fun fail(message: String) {
+    /**
+     * [needsLocalSetup] is passed in rather than derived from [message], so the call bar renders its
+     * "open Settings" button from a fact instead of from a substring match on prose. Defaulted,
+     * because the overwhelming majority of failures have no remedy behind a button.
+     */
+    private fun fail(message: String, needsLocalSetup: Boolean = false) {
         // Cancel the ceiling watcher, exactly as end() does. Relying on its `while (active)` check
         // was not enough: that runs AFTER delay(LIMIT_TICK_MS), so one more tick fires against a call
         // that already failed — and since startLimits() is only reached again when a redial goes
@@ -524,7 +549,11 @@ internal class HostVoiceCallController(
         // startLimits ticker on Dispatchers.Default, and transport.close() joins the writer for up to
         // WRITER_SHUTDOWN_MS while audio.stop() closes two lines. HostVoiceCall.end() already routes
         // to IO for exactly this reason; the self-terminating paths were the inconsistent ones.
-        _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
+        _state.value = HostCallState(
+            phase = HostCallPhase.Error,
+            error = message,
+            needsLocalSetup = needsLocalSetup,
+        )
         _level.value = 0f
         reportTerminal()
         // Captured NOW, not read when the coroutine gets a slot. start() is written to be

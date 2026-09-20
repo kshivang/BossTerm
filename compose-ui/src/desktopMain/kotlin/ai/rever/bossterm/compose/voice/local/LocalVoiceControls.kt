@@ -26,6 +26,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.launch
 
 /**
@@ -39,10 +40,13 @@ import kotlinx.coroutines.launch
 @Composable
 internal fun LocalVoiceControls(
     port: Int,
+    externalUrl: String = "",
     runtime: LocalVoiceRuntime = LocalVoiceRuntime.shared,
 ) {
     val state by runtime.state.collectAsState()
     val scope = rememberCoroutineScope()
+    val external = LocalVoiceInstall.parseExternalUrl(externalUrl)
+    val externalIsRemote = external != null && !LocalVoiceInstall.isLoopbackUrl(external)
 
     Column(
         modifier = Modifier
@@ -58,6 +62,32 @@ internal fun LocalVoiceControls(
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp),
         )
+        // A configured server wins over the managed one, so saying so is the difference between
+        // "Install did nothing" and "Install is not what this call uses". Shown only when the value
+        // parses: a malformed one is reported through the call path, and repeating it here as a
+        // status would read as a runtime failure rather than a settings typo.
+        if (external != null) {
+            Text(
+                text = "Using the server set in settings.json ($external). The managed runtime below " +
+                    "is not started or stopped, and is not what a call connects to.",
+                color = TextMuted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        if (externalIsRemote) {
+            // The one claim this feature makes that a remote URL contradicts. Not a refusal —
+            // pointing at a bigger machine on the LAN is the documented reason the setting exists —
+            // but it must not be silently false either.
+            Text(
+                text = "That address is not this machine, so call audio is sent over the network to " +
+                    "it. Use wss:// unless the link is trusted, and note the server performs no " +
+                    "authentication: anyone who can reach it can use it.",
+                color = Danger,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         Text(
             text = "Runs a speech server on this machine so calls need no OpenAI key and no audio " +
                 "leaves the device. Setup downloads several gigabytes of models, and the server " +
@@ -103,8 +133,7 @@ internal fun LocalVoiceControls(
                             }
                         }
                     }
-                }
-            }
+                }            }
         }
     }
 }
@@ -141,5 +170,6 @@ private fun statusColor(state: LocalVoiceRuntimeState): Color = when (state) {
     else -> TextMuted
 }
 
-private fun isWindows(): Boolean =
-    System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+// Delegates rather than re-deriving from `os.name`: BossTerm's platform test lives in
+// ShellCustomizationUtils, and a second spelling of it here is how the two eventually disagree.
+private fun isWindows(): Boolean = ShellCustomizationUtils.isWindows()

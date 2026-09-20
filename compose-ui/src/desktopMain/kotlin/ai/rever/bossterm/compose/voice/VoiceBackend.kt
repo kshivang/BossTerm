@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.voice.local.LocalVoiceInstall
 
 /**
  * Which service carries a Boss Calling session.
@@ -127,7 +128,26 @@ internal object VoiceEndpointResolver {
         }
 
         VoiceBackend.LOCAL -> {
-            if (localEndpointUrl.isNullOrBlank()) {
+            // The configured external URL is read from settings rather than taken as a parameter,
+            // unlike liveness: which machine to talk to IS a property of settings, and keeping the
+            // raw and normalized forms of a hand-edited value in one place is what stops
+            // `http://host:port` — the address a person would copy out of a browser — reaching the
+            // transport and throwing `Invalid scheme` there.
+            val configured = settings.voiceLocalExternalUrl.trim().takeIf { it.isNotEmpty() }
+            val external = configured?.let { LocalVoiceInstall.parseExternalUrl(it) }
+            // A malformed value is reported BEFORE the managed runtime is considered. Falling
+            // through to the managed server would silently ignore the setting and place the call
+            // somewhere the user did not ask for — on this backend, the one thing not to do quietly.
+            if (configured != null && external == null) {
+                return VoiceEndpointResult.Unavailable(
+                    "voiceLocalExternalUrl in settings.json isn't a usable server address " +
+                        "(expected ws://, wss://, http:// or https://). Fix it, or clear it to use " +
+                        "the managed local runtime.",
+                    needsLocalSetup = true,
+                )
+            }
+            val url = external ?: localEndpointUrl
+            if (url.isNullOrBlank()) {
                 VoiceEndpointResult.Unavailable(
                     "The local voice runtime isn't running. Set it up in " +
                         "Settings → Session Sharing → Boss Calling.",
@@ -136,12 +156,16 @@ internal object VoiceEndpointResolver {
             } else {
                 VoiceEndpointResult.Ready(
                     VoiceEndpoint(
-                        url = localEndpointUrl,
+                        url = url,
                         // The local server's model is whatever it was started with; naming an
                         // OpenAI Realtime model here would be a lie the server has to ignore.
                         // It is still sent (the protocol carries it) so a server that does route
                         // on it keeps working.
                         model = settings.voiceLocalModel.ifBlank { LOCAL_DEFAULT_MODEL },
+                        // Never the user's key — even when one is on disk, and even when this URL
+                        // points at a REMOTE host. `VoiceBackendTest` pins that: handing a live
+                        // OpenAI credential to an arbitrary server is the leak this separation
+                        // exists to prevent, and `voiceLocalExternalUrl` is free-form.
                         apiKey = null,
                         backend = VoiceBackend.LOCAL,
                     )

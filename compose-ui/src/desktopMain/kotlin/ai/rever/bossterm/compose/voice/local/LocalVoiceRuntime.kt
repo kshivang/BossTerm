@@ -1,15 +1,19 @@
 package ai.rever.bossterm.compose.voice.local
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -22,11 +26,11 @@ import java.util.concurrent.TimeUnit
  *
  * One instance per process. The server is a child process that owns a microphone-adjacent,
  * unauthenticated loopback endpoint, so its lifetime is managed deliberately rather than left to
- * chance: every exit path destroys it, and a JVM shutdown hook catches the paths that are not
- * exits at all (a kill, an IDE stop). BossTerm has leaked child processes before — a prior
- * incident orphaned hundreds of JVMs because "the parent always disposes" held right up until it
- * did not — and a speech server holding an audio pipeline open is a worse thing to leak than a
- * plugin host.
+ * chance: the JVM shutdown hook catches the paths that are not orderly exits at all (a kill, an
+ * IDE stop), on top of the orderly ones ([stop], [dispose]). BossTerm has leaked child processes
+ * before — a prior incident orphaned hundreds of JVMs because "the parent always disposes" held
+ * right up until it did not — and a speech server holding an audio pipeline open is a worse thing
+ * to leak than a plugin host.
  *
  * [exec] and [probe] are injected so the state machine is testable without installing Python or
  * binding a port. They are dependencies rather than test hooks: both take exactly what the real
@@ -34,7 +38,7 @@ import java.util.concurrent.TimeUnit
  */
 internal class LocalVoiceRuntime(
     private val home: File = LocalVoiceInstall.home(),
-    private val windows: Boolean = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true),
+    private val windows: Boolean = ShellCustomizationUtils.isWindows(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val exec: ProcessRunner = SystemProcessRunner,
     private val probe: suspend (String) -> Boolean = ::httpProbe,
@@ -51,6 +55,27 @@ internal class LocalVoiceRuntime(
     private var process: Process? = null
     private var job: Job? = null
     private val lock = Any()
+
+    /**
+     * Serializes the whole start sequence, and this is load-bearing rather than tidy.
+     *
+     * [lock] only guards the process FIELD. The check that decides whether to spawn ("is a process
+     * already alive?") and the spawn itself used to sit on opposite sides of it, so concurrent
+     * callers — a call placed while someone presses Start in Settings, or two calls close together —
+     * could both clear the check and both spawn. The loser's handle was then overwritten; that
+     * orphan is unreachable, because [stop] and the shutdown hook only ever see the field and the
+     * losing monitor's `process !== started` check returns without destroying anything. What is left
+     * is an unauthenticated speech server holding the port and an audio pipeline with no handle to
+     * reap it — exactly the leak the class-level note exists to prevent.
+     *
+     * A state check (`_state.value !is Starting`) alone does NOT close this, which is worth knowing
+     * before simplifying it away: with the guard present but this Mutex removed, the race test still
+     * reports two spawns. The check and the spawn have to be one atomic step, which is what this is.
+     *
+     * A Mutex rather than a wider `synchronized`: the sequence suspends, and holding a monitor across
+     * a suspension point is how you deadlock an IO dispatcher.
+     */
+    private val startMutex = Mutex()
 
     /**
      * Registered once, never removed.
@@ -88,8 +113,8 @@ internal class LocalVoiceRuntime(
             val python = findPython()
             if (python == null) {
                 _state.value = LocalVoiceRuntimeState.Failed(
-                    "Python ${'3'}.${LocalVoiceInstall.MIN_PYTHON_MINOR} or newer is required for the " +
-                        "local voice runtime, and none was found on PATH.",
+                    "Python ${LocalVoiceInstall.MIN_PYTHON_MAJOR}.${LocalVoiceInstall.MIN_PYTHON_MINOR} " +
+                        "or newer is required for the local voice runtime, and none was found on PATH.",
                     canRetry = false,
                 )
                 return@launch
@@ -126,6 +151,12 @@ internal class LocalVoiceRuntime(
      *
      * Returns the URL to call, or null. Callers treat null as "do not place the call" — there is no
      * fallback to a cloud backend from here, by design.
+     *
+     * The spawn decision and the spawn itself share [startMutex], so concurrent callers that arrive
+     * before the server is ready agree on ONE server instead of racing to bind the same port (see
+     * that field's note). Everything after it — the readiness poll — runs unlocked and concurrently,
+     * which is the point: the second caller waits on the first caller's server rather than being
+     * turned away.
      */
     suspend fun ensureRunning(port: Int): String? {
         (_state.value as? LocalVoiceRuntimeState.Running)?.let { return it.url }
@@ -133,21 +164,35 @@ internal class LocalVoiceRuntime(
             _state.value = LocalVoiceRuntimeState.NotInstalled
             return null
         }
-        synchronized(lock) {
-            if (process?.isAlive != true) startProcess(port) else Unit
+        startMutex.withLock {
+            // Re-checked under the lock: another caller may have started the server, or lost the
+            // race and be waiting on it, while we were queued here.
+            if (synchronized(lock) { process }?.isAlive != true &&
+                _state.value !is LocalVoiceRuntimeState.Starting
+            ) {
+                if (!spawnProcess(port)) return null
+            }
         }
         return awaitReady(port)
     }
 
-    /** Spawn the server. Caller holds [lock]. */
-    private fun startProcess(port: Int) {
-        _state.value = LocalVoiceRuntimeState.Starting
+    /**
+     * Spawn the server. Caller holds [startMutex]; the process field is written under [lock].
+     *
+     * Returns false when the process could not be started at all, having set [LocalVoiceRuntimeState.Failed]
+     * with the reason. The process is published under [lock] BEFORE its monitor is launched, so a
+     * monitor can never observe a field that does not hold its own process.
+     */
+    private fun spawnProcess(port: Int): Boolean {
         val command = LocalVoiceInstall.serveCommand(home, port, windows)
         val started = runCatching { exec.spawn(command, home) }.getOrElse { e ->
-            _state.value = LocalVoiceRuntimeState.Failed("Couldn't start the local voice server: ${e.javaClass.simpleName}")
-            return
+            _state.value = LocalVoiceRuntimeState.Failed(
+                "Couldn't start the local voice server: ${e.javaClass.simpleName}"
+            )
+            return false
         }
-        process = started
+        synchronized(lock) { process = started }
+        _state.value = LocalVoiceRuntimeState.Starting
         job = scope.launch {
             // Surfacing an exit is the whole point of holding this handle: without it a server that
             // dies on startup (port in use, missing model) leaves the UI on "Starting…" forever.
@@ -162,16 +207,23 @@ internal class LocalVoiceRuntime(
                 )
             }
         }
+        return true
     }
 
     /** Poll until the server answers, the process dies, or we give up. */
     private suspend fun awaitReady(port: Int): String? {
         val probeUrl = LocalVoiceInstall.probeUrl(port)
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(START_TIMEOUT_SECONDS)
-        while (scope.isActive && System.nanoTime() < deadline) {
+        // The CALLER's liveness, not [scope]'s. `scope` is a process-lifetime SupervisorJob, so
+        // `scope.isActive` is always true and could never end this loop early; a call that was
+        // cancelled or hung up mid-start would poll here for the full timeout instead.
+        while (currentCoroutineContext().isActive && System.nanoTime() < deadline) {
             if (_state.value is LocalVoiceRuntimeState.Failed) return null
             if (synchronized(lock) { process }?.isAlive != true) {
-                // waitFor's handler sets the message; do not overwrite it with a generic one.
+                // The monitor's exit reason (port in use, missing model) is NOT surfaced from here:
+                // the caller only sees a null endpoint, and the resolver turns that into one
+                // "isn't running, set it up in Settings" message. The reason is still visible in the
+                // runtime's own state, which is what the settings panel renders.
                 return null
             }
             if (probe(probeUrl)) {

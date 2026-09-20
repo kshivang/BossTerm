@@ -2631,7 +2631,10 @@ fun TabbedTerminal(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (!statusControlsInHeader) statusStripContent()
-                HostCallBar()
+                // Opens Settings for a local-runtime failure, which is the one call error with a fix
+                // the user can be taken to. `onShowSettings` is the host window's own opener; an
+                // embedded host passes a no-op, so the bar draws no button for it.
+                HostCallBar(onOpenSettings = onShowSettings)
                 if (voiceKeyPrompt) {
                     VoiceKeyDialog(
                         onDismiss = { voiceKeyPrompt = false },

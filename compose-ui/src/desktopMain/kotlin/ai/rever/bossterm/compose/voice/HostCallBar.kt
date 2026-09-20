@@ -51,7 +51,18 @@ private val Danger: Color get() = BossUiTheme.current.alert
  * no browser tab to look at, it is the only way to tell "it can't hear me" from "it's thinking".
  */
 @Composable
-internal fun HostCallBar(modifier: Modifier = Modifier) {
+internal fun HostCallBar(
+    modifier: Modifier = Modifier,
+    /**
+     * Opens Settings, for the one failure that has a fix behind it.
+     *
+     * A parameter rather than a call into [HostVoiceCall]'s own surface because opening Settings
+     * belongs to the window that hosts the bar (`TabbedTerminal` owns `onShowSettings`), and this
+     * bar is reachable from embedded hosts that may have no Settings window — where the button is
+     * then simply not drawn rather than drawn and inert.
+     */
+    onOpenSettings: (() -> Unit)? = null,
+) {
     val state by HostVoiceCall.state.collectAsState()
     if (!state.active && state.phase != HostCallPhase.Error) return
 
@@ -68,6 +79,12 @@ internal fun HostCallBar(modifier: Modifier = Modifier) {
         ) {
             if (state.phase == HostCallPhase.Error) {
                 Text(state.error ?: "Call failed", color = Danger, fontSize = 11.sp)
+                // The remedy first, the dismissal second: "set it up in Settings" with no way to
+                // reach Settings is the dead end this closes. Labelled by what it opens, since the
+                // error text already names the destination.
+                if (state.needsLocalSetup && onOpenSettings != null) {
+                    BarButton("Open Settings", onClick = onOpenSettings)
+                }
                 BarButton("Dismiss", onClick = HostVoiceCall::dismissError)
                 return@Row
             }

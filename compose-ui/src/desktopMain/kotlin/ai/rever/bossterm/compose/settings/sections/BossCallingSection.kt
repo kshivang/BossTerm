@@ -181,7 +181,12 @@ internal fun BossCallingSection(
                 enabled = settings.voiceCallEnabled,
             )
             if (backend == VoiceBackend.LOCAL) {
-                LocalVoiceControls(port = settings.voiceLocalPort)
+                // The external URL goes in so the panel can say when a call is going somewhere other
+                // than the managed runtime, and warn when that somewhere is not this machine.
+                LocalVoiceControls(
+                    port = settings.voiceLocalPort,
+                    externalUrl = settings.voiceLocalExternalUrl,
+                )
             }
             SettingsToggle(
                 label = bossCallingIndicatorLabel(callLabel),

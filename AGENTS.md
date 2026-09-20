@@ -280,6 +280,22 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
   **Remote share viewers cannot use the local backend** - the viewer negotiates WebRTC with OpenAI
   directly and has no route to host loopback - so `VoiceCallService` reports `local_backend` and
   refuses, rather than falling back to the paid path.
+  `voiceLocalExternalUrl` (settings.json only, deliberately not in the UI) points a LOCAL call at a
+  server the user runs. `LocalVoiceInstall.parseExternalUrl` normalizes it - the `http(s)://` spelling
+  a person copies out of a browser becomes `ws(s)://`, which is what the JDK transport accepts - and
+  returns null for anything unusable, which the resolver reports **against the setting by name**
+  rather than falling back to the managed runtime. A configured server is never started or stopped by
+  BossTerm, and never receives the OpenAI key, however remote it is. A non-loopback address draws a
+  warning in Settings (`isLoopbackUrl`), because it is the one configuration that contradicts the
+  feature's "no audio leaves the device" claim - a warning, not a refusal, since a bigger machine on
+  the LAN is the documented reason the setting exists.
+  `LocalVoiceRuntime` serializes its whole start sequence on a `Mutex`, not just the process field:
+  the spawn decision and the spawn itself used to sit on opposite sides of a lock, so two concurrent
+  callers (a call placed while someone presses Start) both spawned, and the loser's handle was
+  overwritten and un-reapable - leaving an unauthenticated speech server holding the port.
+  `VoiceEndpointResult.Unavailable.needsLocalSetup` reaches the UI as `HostCallState.needsLocalSetup`,
+  which draws the call bar's **Open Settings** button: the failure it marks is the only one with a
+  remedy behind a button. Every other error gets Dismiss alone.
 - `VoiceAgentCustomization.kt` - the embedder seam for the agent's instructions (the button's label
   is a `TabbedTerminal` parameter instead, alongside `contextMenuItems`)
 - `VoiceToolSource.kt` - the EMBEDDER's tool surface (`TabbedTerminal(voiceToolSource = …)`), merged

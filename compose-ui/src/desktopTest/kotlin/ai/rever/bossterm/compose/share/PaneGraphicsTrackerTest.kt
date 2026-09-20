@@ -50,6 +50,43 @@ class PaneGraphicsTrackerTest {
     }
 
     @Test
+    fun `a viewer resync does not spend the poll loop's stable-frame retry budget`() {
+        val buffer = TerminalTextBuffer(8, 4, StyleState())
+        buffer.getLine(3)
+        val cache = ImageDataCache()
+        val image = TerminalImage(id = 42, data = byteArrayOf(1), format = ImageFormat.PNG,
+            intrinsicWidth = 1, intrinsicHeight = 1)
+        cache.storeImage(image)
+        buffer.writeImageCellRow(0, 1, image.id, 0, 2, 1)
+        val display = ComposeTerminalDisplay()
+        try {
+            val tracker = PaneGraphicsTracker("pane", buffer, cache, display = display)
+            assertNotNull(tracker.fullMessage())
+            display.setSynchronizedUpdate(true)
+            buffer.clearImageCells(image.id)
+            // Viewers resyncing against a shared tracker must not consume the debounce loop's
+            // budget: before the fix, MAX_STABLE_FRAME_RETRIES joins/resyncs alone stopped the
+            // host from ever re-arming, and the pane stayed on the pre-sync frame.
+            repeat(MAX_STABLE_FRAME_RETRIES * 2) {
+                assertTrue(tracker.fullMessage(commit = false).resyncRequired)
+                assertTrue(tracker.needsStableFrameRetry, "resyncs must not exhaust the budget")
+            }
+            repeat(MAX_STABLE_FRAME_RETRIES) {
+                assertNull(tracker.pollUpdate())
+                assertTrue(tracker.needsStableFrameRetry, "the poll budget is still intact")
+            }
+            assertNull(tracker.pollUpdate())
+            assertFalse(tracker.needsStableFrameRetry, "the loop still gives up on its own budget")
+            // An exhausted budget must stay exhausted: a resync cannot revive the unbounded loop.
+            assertTrue(tracker.fullMessage(commit = false).resyncRequired)
+            assertFalse(tracker.needsStableFrameRetry)
+        } finally {
+            display.setSynchronizedUpdate(false)
+            display.dispose()
+        }
+    }
+
+    @Test
     fun `stable-frame retry loop is bounded while sync mode stays open`() {
         val buffer = TerminalTextBuffer(8, 4, StyleState())
         buffer.getLine(3)

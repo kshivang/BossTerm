@@ -59,11 +59,20 @@ internal class PaneGraphicsTracker(
         private set
     private var stableFrameRetryAttempts = 0
 
-    private fun <T> stableFrame(capture: () -> T): T? {
+    /**
+     * [consumesRetryBudget] is false for a viewer-driven resync capture. Both callers race on the
+     * same open sync window, but the budget bounds the DEBOUNCE LOOP's re-arming, so a resync must
+     * not spend it — otherwise one viewer's resync silently stops the host from retrying. Such a
+     * capture may still ASK for a retry (the poll loop is what satisfies it), but only while the
+     * loop's own budget is unspent, or it would revive the unbounded loop this budget exists to cap.
+     */
+    private fun <T> stableFrame(consumesRetryBudget: Boolean = true, capture: () -> T): T? {
         val frame = if (display == null) capture() else display.captureStableRenderFrame(capture)
         if (frame != null) {
             stableFrameRetryAttempts = 0
             needsStableFrameRetry = false
+        } else if (!consumesRetryBudget) {
+            if (stableFrameRetryAttempts <= MAX_STABLE_FRAME_RETRIES) needsStableFrameRetry = true
         } else if (++stableFrameRetryAttempts > MAX_STABLE_FRAME_RETRIES) {
             // Stop the debounce loop while a pane holds sync mode open indefinitely. The next
             // model change still gets one poll attempt; the budget resets on the next successful
@@ -143,7 +152,7 @@ internal class PaneGraphicsTracker(
         val cellRevision = textBuffer.imageCellRevision
         val cacheRevision = imageDataCache.contentRevision
         val trimCount = viewerTrimCount()
-        val captured = stableFrame { capture() } ?: return ServerMessage.PaneGraphics(
+        val captured = stableFrame(consumesRetryBudget = commit) { capture() } ?: return ServerMessage.PaneGraphics(
             paneId = paneId, revision = revision, full = true, resyncRequired = true,
         )
         if (commit) {

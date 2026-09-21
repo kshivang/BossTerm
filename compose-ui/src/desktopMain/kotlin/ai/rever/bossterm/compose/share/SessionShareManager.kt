@@ -232,7 +232,12 @@ object SessionShareManager {
     private const val MAX_REFRESHES = 2
 
     /** A token resolves to a share and whether that token grants control. */
-    private data class TokenRef(val share: MirrorShare, val canControl: Boolean)
+    private data class TokenRef(
+        val share: MirrorShare,
+        val canControl: Boolean,
+        /** Skip the device-approval prompt (the account link; see [MirrorShare.accountToken]). */
+        val autoAdmit: Boolean = false,
+    )
 
     private val sharesByToken = ConcurrentHashMap<String, TokenRef>()
     private val sharesByTab = ConcurrentHashMap<String, MirrorShare>()
@@ -392,6 +397,12 @@ object SessionShareManager {
          * viewer shows to confirm the same untampered key end-to-end.
          */
         val e2eCode: String? = null,
+        /**
+         * Account link: control + auto-admit, for the owner's own devices via the BOSS live-sessions
+         * page. Not for sharing with others; the Share sheet never displays it. Null when no URL can
+         * be built (same conditions as [url]).
+         */
+        val accountUrl: String? = null,
     )
 
     /**
@@ -495,7 +506,7 @@ object SessionShareManager {
         val share = sharesByTab[tabId] ?: return null
         val url = buildUrl(share.viewToken) ?: return null
         val controlUrl = buildUrl(share.controlToken) ?: url
-        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope, e2eCodeOf(url))
+        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope, e2eCodeOf(url), buildUrl(share.accountToken))
     }
 
     /**
@@ -545,6 +556,7 @@ object SessionShareManager {
                 it.start()
                 sharesByToken[it.viewToken] = TokenRef(it, canControl = false)
                 sharesByToken[it.controlToken] = TokenRef(it, canControl = true)
+                sharesByToken[it.accountToken] = TokenRef(it, canControl = true, autoAdmit = true)
                 sharesByTab[tabId] = it
                 _sharedTabIds.value = sharesByTab.keys.toSet()
             }
@@ -568,7 +580,7 @@ object SessionShareManager {
                     url
                 )
             }
-            ShareInfo(tabId, url, share.viewToken, controlUrl, secure, share.scope, e2eCodeOf(url))
+            ShareInfo(tabId, url, share.viewToken, controlUrl, secure, share.scope, e2eCodeOf(url), buildUrl(share.accountToken))
         }
     }
 
@@ -800,6 +812,7 @@ object SessionShareManager {
         sharesByTab.remove(tabId)
         sharesByToken.remove(share.viewToken)
         sharesByToken.remove(share.controlToken)
+        sharesByToken.remove(share.accountToken)
         grants.values.removeIf { it.shareId == share.viewToken }
         failPendingFor(tabId)
         releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
@@ -1194,7 +1207,12 @@ object SessionShareManager {
         var canControl = ref.canControl
 
         var accessKey: String? = null // this connection's grant key (for mid-session role upgrades)
-        if (requiresApproval()) {
+        // The account link skips approval, but ONLY over a negotiated E2E cipher: possession of the
+        // `#k` secret is what proves the viewer got the link from the owner's registry rather than
+        // from a relay log. A plaintext hello on that token gets the ordinary approval path.
+        val autoAdmit = ref.autoAdmit && serverCipher != null
+        if (autoAdmit) log.info("Account link viewer admitted without approval for share {}", share.tabId)
+        if (requiresApproval() && !autoAdmit) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
             if (existing != null && existing.shareId == shareId && existing.expiresAtMs > now) {

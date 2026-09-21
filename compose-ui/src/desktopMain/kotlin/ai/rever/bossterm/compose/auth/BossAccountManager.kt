@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.net.URLEncoder
@@ -172,12 +173,59 @@ object BossAccountManager {
         }
     }
 
+    // Features that hold server-side state keyed to the account (the live-session registry) need
+    // one last authenticated call BEFORE the token is revoked, or their rows outlive the sign-out.
+    private val signOutListeners = java.util.concurrent.CopyOnWriteArrayList<suspend (StoredAuth) -> Unit>()
+
+    /** Run [listener] with the still-valid session just before a sign-out revokes it. Best effort:
+     *  a throwing or slow (>5s) listener never blocks the sign-out. */
+    fun addSignOutListener(listener: suspend (StoredAuth) -> Unit) { signOutListeners += listener }
+
+    private val refreshMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * The access token for an authenticated call, refreshed via the refresh token when it is within
+     * 60s of expiry (or when [forceRefresh], after a 401). Null when signed out or when the refresh
+     * fails - in which case the account is signed out, since a session that cannot be refreshed is
+     * over. This is the refresh-on-401 path the restore note below asks the first authenticated
+     * feature to provide.
+     */
+    suspend fun accessToken(forceRefresh: Boolean = false): String? = refreshMutex.withLock {
+        val stored = AuthStorage.load() ?: return@withLock null
+        if (!forceRefresh && stored.expiresAtEpochSec > Instant.now().epochSecond + 60) return@withLock stored.accessToken
+        try {
+            val resp = gotrue(
+                "token?grant_type=refresh_token",
+                json.encodeToString(RefreshRequest.serializer(), RefreshRequest(stored.refreshToken))
+            )
+            if (resp.status.value in 200..299) {
+                val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
+                adoptSession(session, fallbackEmail = stored.email, fallbackUserId = stored.userId)
+                session.accessToken
+            } else {
+                log.info("Session refresh rejected ({}); signing out", resp.status.value)
+                AuthStorage.clear()
+                _state.value = AccountState.SignedOut
+                null
+            }
+        } catch (e: Exception) {
+            // Offline: hand back what we have (an expired token fails the call, which is the honest
+            // outcome) rather than signing the user out over a network blip.
+            log.warn("Session refresh unavailable ({}); using cached token", e.message)
+            stored.accessToken
+        }
+    }
+
     /** Sign out: flip state immediately (called from a Compose onClick), then do the disk IO and
      *  best-effort server revoke off the UI thread. */
     fun signOut() {
         _state.value = AccountState.SignedOut
         scope.launch {
             val stored = AuthStorage.load()
+            if (stored != null) signOutListeners.forEach { l ->
+                runCatching { kotlinx.coroutines.withTimeout(5_000) { l(stored) } }
+                    .onFailure { log.warn("Sign-out listener failed: {}", it.message) }
+            }
             AuthStorage.clear()
             if (stored != null) runCatching {
                 http.post("${SupabaseAuthConfig.url}/auth/v1/logout") {

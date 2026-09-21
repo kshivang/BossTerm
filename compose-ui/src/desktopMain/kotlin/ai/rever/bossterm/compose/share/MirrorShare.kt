@@ -70,6 +70,13 @@ class MirrorShare(
 ) {
     val viewToken: String = secureToken()
     val controlToken: String = secureToken()
+    /**
+     * Account link token: control-capable and auto-admitted (no host approval prompt). Never shown in
+     * the Share sheet; it exists so the owner can open their own session from the BOSS account's
+     * live-sessions page on another device without being at this desk to approve it. Published to
+     * the account registry by [AccountSessionPublisher]; still E2E + bearer gated like the others.
+     */
+    val accountToken: String = secureToken()
 
     // E2E session secret (issue: end-to-end encryption). One per share, shared by the view +
     // control links — it travels ONLY in the link's URL fragment (`#k=`), which the relay never

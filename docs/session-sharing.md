@@ -21,6 +21,7 @@ so even a public tunnel relay can't read your session.
 - [The native "Add remote" client](#the-native-add-remote-client)
 - [Remote MCP](#remote-mcp)
 - [Security & end-to-end encryption](#security--end-to-end-encryption)
+- [Live sessions on your BOSS account](#live-sessions-on-your-boss-account)
 - [Settings reference](#settings-reference)
 - [Troubleshooting](#troubleshooting)
 
@@ -153,6 +154,40 @@ shared session.
   allowed only there; any `https`/tunnel link is end-to-end encrypted. An old plaintext-only client
   connecting to a public tunnel is rejected with an "update BossTerm" message.
 
+## Live sessions on your BOSS account
+
+Sign in (menu > **Sign In...**) and every share you start is also registered against your BOSS
+account, so you can open it from any browser without pasting a link:
+
+1. Open <https://api.risaboss.com/functions/v1/live-sessions> on the other device.
+2. Enter the email you signed into BossTerm with and click the button in the email.
+3. You land back on the page, signed in. With exactly one live session it opens straight away;
+   with several you get a list (device, session name, scope, E2E badge) and pick one.
+
+What is published, and to whom:
+
+- One row per share in a Supabase table (`terminal_sessions`) that only your account can read
+  (row-level security on `auth.uid()`). BossTerm writes it as **you**, with your own session
+  token; there is no service key in the app.
+- The row holds the **links** (read-only and an account link), your `username_machine` device
+  name, the session name, scope, app version and server-side timestamps. Never terminal output,
+  input or history.
+- The links include the `#k=` end-to-end secret, so Supabase (not the Cloudflare relay) could read
+  it. That is the trade for opening a session from a phone with nothing to paste; turn
+  `publishSessionsToAccount` off if you would rather not.
+- BossTerm heartbeats each row every 30 s (an upsert; the server stamps the time). The page shows a
+  session for 90 s after the last heartbeat, and stale rows are swept server-side after 15 min.
+  Quitting, unsharing or signing out deletes your rows immediately.
+
+The **account link** is a third token on every share, next to the view and control tokens. It
+grants control and is **auto-admitted**: a device arriving on it over an end-to-end encrypted
+connection skips the approval prompt, since holding the secret from your own registry is the
+proof. It is never shown in the Share sheet; the ordinary view/control links still prompt as
+`sessionSharingApprovalScope` says.
+
+Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
+plugin), where the account menu is hidden.
+
 ## Settings reference
 
 All under **Settings → Session Sharing**, persisted in `~/.bossterm/settings.json`:
@@ -167,6 +202,7 @@ All under **Settings → Session Sharing**, persisted in `~/.bossterm/settings.j
 | `sessionSharingPublicUrl` | `""` | Advertise this URL instead of the bound/tunnel URL (for a custom proxy). |
 | `sessionSharingApprovalScope` | `"funnel"` | Require join approval: `"all"`, `"off"`, or `"funnel"` (only for public links). |
 | `sessionSharingShowIndicator` | `true` | Show the sharing indicator in the tab bar. |
+| `publishSessionsToAccount` | `true` | While signed in, list every active share under your BOSS account (see below). |
 
 > Note `shareTailscaleMode` defaults to `cloudflare`, but sharing is still gated by
 > `sessionSharingEnabled` (off by default) - so no tunnel opens until you turn sharing on.

@@ -1199,7 +1199,12 @@ fun TabBar(
                     // Collapsible header for everything below: every tab mirrored in from another
                     // device signed into this account, one box per device (see remoteByTabIndex
                     // for the count — tabs, not devices, matching what "available" means here).
-                    if (remoteGroups.isNotEmpty()) {
+                    // Also the ONLY way to reach remoteDisconnectNotice, so it must render even
+                    // when remoteGroups is empty — a Failed session whose frozen tabs were all
+                    // closed by hand (self-heal drops its RemoteTabGroup, see
+                    // RemoteSessionManager.reconcile) would otherwise have no header to expand
+                    // and no way to Reconnect/Disconnect from this bar at all.
+                    if (remoteGroups.isNotEmpty() || remoteDisconnectNotice != null) {
                         val chevronRotation by animateFloatAsState(if (remoteConnectionsExpanded) 90f else 0f)
                         Row(
                             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))

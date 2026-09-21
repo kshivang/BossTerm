@@ -1753,8 +1753,9 @@ fun TabbedTerminal(
             val focusedPaneId = if (summaryMode) tabController.activeTabId
                                 else tabController.activeTab?.let { splitStates[it.id]?.focusedPaneId }
             // A remote session that lost its connection: the vertical sidebar shows this
-            // inline (below); the top bar (no sidebar to house it) keeps the modal further down.
-            val remoteDisconnectNotice = rm?.sessions?.firstOrNull {
+            // inline (below); the top bar (no sidebar to house it) keeps the modal further down
+            // (which does its own lookup) — skip building this when nothing will read it.
+            val remoteDisconnectNotice = if (!tabBarOnLeft) null else rm?.sessions?.firstOrNull {
                 it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
             }?.let { failed ->
                 ai.rever.bossterm.compose.tabs.RemoteDisconnectNotice(
@@ -1769,7 +1770,7 @@ fun TabbedTerminal(
             TabBar(
                 groups = tabGroups,
                 remoteGroups = remoteGroups,
-                remoteDisconnectNotice = if (tabBarOnLeft) remoteDisconnectNotice else null,
+                remoteDisconnectNotice = remoteDisconnectNotice, // already null when !tabBarOnLeft
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->

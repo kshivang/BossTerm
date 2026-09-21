@@ -202,6 +202,8 @@ fun main(args: Array<String>) {
     // Registers active shares against the signed-in BOSS account (live-sessions page). Inert while
     // signed out or when the setting is off.
     ai.rever.bossterm.compose.share.AccountSessionPublisher.Default.start()
+    // Keeps an all-windows share running while signed in + publishing (setting autoShareToAccount).
+    ai.rever.bossterm.compose.share.AccountAutoShare.Default.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
         // When daemonEnabled, MCP is normally owned by the daemon (mcpManager stays null) and
@@ -212,6 +214,7 @@ fun main(args: Array<String>) {
         synchronized(mcpLock) { mcpManager }?.stop()
         // Before the share manager: deletes this process's registry rows (bounded) while the shares
         // are still ours to describe.
+        ai.rever.bossterm.compose.share.AccountAutoShare.Default.stop()
         ai.rever.bossterm.compose.share.AccountSessionPublisher.Default.stop()
         ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()

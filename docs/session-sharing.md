@@ -188,6 +188,12 @@ prompt; the E2E badge for an account-link viewer therefore differs from the Shar
 and the live-sessions page shows the right one. The account link is never shown in the Share
 sheet; the ordinary view/control links still prompt as `sessionSharingApprovalScope` says.
 
+**Automatic sharing.** While you are signed in and publishing, BossTerm keeps one all-windows
+share running by itself (`autoShareToAccount`, on by default), so the page always lists this
+machine with no Share Tab step. Starting it turns session sharing on and a remote mode of "off"
+into Cloudflare, the same way the Share Tab menu enables sharing on first use. It never touches a
+share you started by hand, and it stops its own share when you sign out or turn either toggle off.
+
 Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
 plugin), where the account menu is hidden.
 
@@ -206,6 +212,7 @@ All under **Settings → Session Sharing**, persisted in `~/.bossterm/settings.j
 | `sessionSharingApprovalScope` | `"funnel"` | Require join approval: `"all"`, `"off"`, or `"funnel"` (only for public links). |
 | `sessionSharingShowIndicator` | `true` | Show the sharing indicator in the tab bar. |
 | `publishSessionsToAccount` | `true` | While signed in, list every active share under your BOSS account (see below). |
+| `autoShareToAccount` | `true` | With the above, keep an all-windows share running automatically while signed in. |
 
 > Note `shareTailscaleMode` defaults to `cloudflare`, but sharing is still gated by
 > `sessionSharingEnabled` (off by default) - so no tunnel opens until you turn sharing on.

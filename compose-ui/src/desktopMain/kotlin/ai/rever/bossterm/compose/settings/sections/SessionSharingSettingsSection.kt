@@ -101,6 +101,14 @@ fun SessionSharingSettingsSection(
                         "session from that page are admitted without the approval prompt. Not yet applied to " +
                         "shares hosted by the background daemon."
             )
+            SettingsToggle(
+                label = "Share all windows automatically while signed in",
+                checked = settings.autoShareToAccount,
+                onCheckedChange = { onSettingsChange(settings.copy(autoShareToAccount = it)) },
+                description = "Keeps one whole-app share running (over the Cloudflare tunnel) whenever you are " +
+                        "signed in and publishing, so the live-sessions page always shows this machine. Turns " +
+                        "session sharing on if it is off. Off = share tabs by hand as before."
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

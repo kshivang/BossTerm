@@ -1144,6 +1144,14 @@ data class TerminalSettings(
     val publishSessionsToAccount: Boolean = true,
 
     /**
+     * With [publishSessionsToAccount], keep an all-windows share running automatically while
+     * signed in, so the live-sessions page always lists this machine with no manual Share Tab.
+     * Starting it turns [sessionSharingEnabled] on and a remote mode of "off" into "cloudflare",
+     * the same way the Share Tab menu enables sharing on first use. See AccountAutoShare.
+     */
+    val autoShareToAccount: Boolean = true,
+
+    /**
      * Show the small status indicator while a tab is being shared. Mirrors
      * [mcpShowStatusIndicator] for the share server.
      */

@@ -867,12 +867,14 @@
   stageEl.addEventListener("pointerdown", function () { sidebarEl.classList.remove("open"); }, true);
   stageEl.addEventListener("touchstart", function () { sidebarEl.classList.remove("open"); }, { passive: true, capture: true });
 
-  // Install banner: shown until dismissed (persists across visits).
+  // Install banner: shown until dismissed (persists across visits). Never shown to a viewer who
+  // came from the BOSS live-sessions page: that person is signed into the account that owns the
+  // session and already has BossTerm, so "Get BossTerm" is noise there.
   (function () {
     var banner = document.getElementById("installbanner");
     var dismissed = null;
     try { dismissed = localStorage.getItem("bossterm-install-banner"); } catch (e) {}
-    if (dismissed !== "dismissed") banner.style.display = "flex";
+    if (dismissed !== "dismissed" && !returnToLiveSessions) banner.style.display = "flex";
     document.getElementById("installbanner-close").onclick = function () {
       banner.style.display = "none";
       try { localStorage.setItem("bossterm-install-banner", "dismissed"); } catch (e) {}

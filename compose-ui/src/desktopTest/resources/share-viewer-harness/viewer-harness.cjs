@@ -844,6 +844,13 @@ const scenarios = {
     ]);
   },
 
+  "the Get BossTerm banner is hidden for viewers from the live-sessions page, shown for a plain link"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions" });
+    assert.strictEqual(el("installbanner").style.display, "none", "account viewers already have BossTerm");
+    loadViewer();
+    assert.strictEqual(el("installbanner").style.display, "flex", "a plain share link still offers the install");
+  },
+
   "a plain share link never redirects anywhere on close"() {
     loadViewer({ search: "?t=view-token&from=https://evil.example/" });
     connectPanes(["pane-1"]);

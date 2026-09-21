@@ -1153,6 +1153,13 @@ data class TerminalSettings(
     val autoShareToAccount: Boolean = true,
 
     /**
+     * Attach the account's OTHER live sessions (from other devices signed into the same BOSS
+     * account) to this window automatically, as remote tabs, over their account links. Only the
+     * primary window connects, so each session appears once. See AccountAutoRemote.
+     */
+    val autoConnectAccountSessions: Boolean = true,
+
+    /**
      * Show the small status indicator while a tab is being shared. Mirrors
      * [mcpShowStatusIndicator] for the share server.
      */

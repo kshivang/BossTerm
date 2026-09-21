@@ -63,11 +63,25 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
                 return existing
             }
         }
-        val session = RemoteSession(link, deviceName, state, clientId, shareBack, onHostEnded = ::disconnect)
+        val session = RemoteSession(
+            link, deviceName, state, clientId, shareBack, onHostEnded = ::disconnect,
+            peerOriginHashes = { self -> peerOriginHashes(self) },
+        )
         sessions.add(session)
         session.start()
+        // A host that mirrors THIS session nested it under its own group; now that we have it
+        // directly, the other sessions drop that copy (see [RemoteSession.peerOriginHashes]).
+        sessions.forEach { if (it !== session) it.rereconcile() }
         return session
     }
+
+    /**
+     * Origin hashes of every attached session other than [self]: a host tab whose
+     * [TabNode.origin][ai.rever.bossterm.compose.share.TabNode] is one of these mirrors a
+     * session we already show directly, so it is skipped rather than shown twice.
+     */
+    private fun peerOriginHashes(self: RemoteSession): Set<String> =
+        sessions.mapNotNullTo(HashSet()) { if (it === self) null else it.originHash }
 
     /** True if [link]'s token belongs to a session this instance is hosting. */
     fun isOwnShareLink(link: String): Boolean =
@@ -77,6 +91,8 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
         session.close()
         sessions.remove(session)
         if (blockedInput.value?.session === session) blockedInput.value = null
+        // The direct copy is gone: any host that nests this session may show its copy again.
+        sessions.forEach { it.rereconcile() }
     }
 
     /** The remote session that owns [tab] (a mirror tab), or null if it's a local tab. */
@@ -134,8 +150,31 @@ class RemoteSession internal constructor(
     /** Two-way: once the host grants control, offer it this window's own share link. */
     shareBack: Boolean = false,
     private val onHostEnded: (RemoteSession) -> Unit = {},
+    /**
+     * Origin hashes of the OTHER sessions attached beside this one (see
+     * [RemoteSessionManager.peerOriginHashes]). Host tabs mirroring one of them are skipped:
+     * two devices on one BOSS account each attach the third directly, so the copy nested under
+     * a peer would be the same session twice. Tabs mirroring a session we do NOT have directly
+     * still come through, so a hand-made share's nested groups stay visible.
+     */
+    private val peerOriginHashes: (RemoteSession) -> Set<String> = { emptySet() },
 ) {
     private val log = LoggerFactory.getLogger(RemoteSession::class.java)
+    /** The host's last Layout, so [rereconcile] can re-apply the peer filter without a resend. */
+    @Volatile private var lastLayout: ServerMessage.Layout? = null
+
+    /** A [rereconcile] that arrived mid-drag (reconcile skips Layouts then); applied on release. */
+    @Volatile private var rereconcilePending = false
+
+    /** Re-run [reconcile] on the last Layout (the set of peer sessions changed). Runs on Main. */
+    fun rereconcile() {
+        val layout = lastLayout ?: return
+        uiScope.launch {
+            if (draggingSplit) { rereconcilePending = true; return@launch }
+            runCatching { reconcile(layout) }
+                .onFailure { log.warn("remote layout re-reconcile failed: {}", it.message) }
+        }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val offeredShareBack = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var shareBackEnabled = shareBack
@@ -459,6 +498,7 @@ class RemoteSession internal constructor(
         if (committed) {
             draggingSplit = false
             conn.send(ClientMessage.ResizeSplit(rid, splitId, ratio))
+            if (rereconcilePending) { rereconcilePending = false; rereconcile() }
         } else {
             draggingSplit = true
             val now = System.currentTimeMillis()
@@ -539,6 +579,7 @@ class RemoteSession internal constructor(
             is ServerMessage.Layout -> {
                 filesAvailable.value = msg.filesAvailable && conn.hasEncryptionSecret
                 msg.sessionName?.takeIf { it.isNotBlank() }?.let { hostName.value = it }
+                lastLayout = msg
                 runCatching { reconcile(msg) }
                     .onFailure { log.warn("remote layout reconcile failed: {}", it.message) }
             }
@@ -620,10 +661,13 @@ class RemoteSession internal constructor(
         val controller = state.tabController ?: return
         // Skip the host's tabs that mirror OUR OWN session (their origin is the hash of one of
         // this instance's share tokens) — mirroring them back here would loop our tabs through
-        // the peer. The host's own tabs, and its mirrors of third sessions, come through as-is.
+        // the peer — and tabs that mirror a session we ALREADY show directly (a peer session's
+        // origin hash): that would be the same terminal twice. The host's own tabs, and its
+        // mirrors of sessions we do not have, come through as-is.
+        val peers = peerOriginHashes(this)
         val tabs = layout.tabs.filter { node ->
             val o = node.origin
-            o == null || !ai.rever.bossterm.compose.share.SessionShareManager.ownsTokenHash(o)
+            o == null || (o !in peers && !ai.rever.bossterm.compose.share.SessionShareManager.ownsTokenHash(o))
         }
         val remoteIds = tabs.map { it.id }.toSet()
 

@@ -110,6 +110,14 @@ fun SessionSharingSettingsSection(
                         "Independent of Enable Session Sharing and of the tab Share/Stop button: those " +
                         "govern your own shares. Off = share tabs by hand as before."
             )
+            SettingsToggle(
+                label = "Attach my other devices' sessions automatically",
+                checked = settings.autoConnectAccountSessions,
+                onCheckedChange = { onSettingsChange(settings.copy(autoConnectAccountSessions = it)) },
+                description = "Sessions shared by your other signed-in BossTerms appear here as remote tabs " +
+                        "without opening Remote Sessions and pressing Connect. A session you disconnect by " +
+                        "hand stays disconnected. Off = connect from the Remote Sessions window."
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

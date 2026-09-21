@@ -212,7 +212,10 @@ with Connect for when the automatic attach is off. Your own shares are filtered 
 
 The account share never includes remote mirrors, so a device you have attached is not re-shared
 onward as part of your machine; each device is listed once, by itself, on every other device.
-Hand-made shares still nest remotes as before.
+Hand-made shares still nest remotes as before. The receiving side also skips a nested tab that
+mirrors a session it already has attached directly (same share token), so a host that does nest
+(an older BossTerm, or a hand-made share) never shows a device twice; if you disconnect the direct
+session, the nested copy comes back. Nested tabs of sessions you do not have stay visible.
 
 Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
 plugin), where the account menu is hidden.

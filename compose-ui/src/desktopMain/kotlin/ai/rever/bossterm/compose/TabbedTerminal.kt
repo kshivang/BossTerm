@@ -31,6 +31,7 @@ import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.material.TextButton
 import androidx.compose.runtime.*
+import ai.rever.bossterm.compose.window.hoverCardBackdropBlur
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -1388,7 +1389,11 @@ fun TabbedTerminal(
     }
     var windowHeaderHeightPx by remember { mutableStateOf(0) }
     val headerDensity = androidx.compose.ui.platform.LocalDensity.current
-    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+    // The tab hover card blurs whatever this window shows behind it (terminal, bars); it
+    // reports its screen bounds here and the root repaints that region blurred.
+    val hoverCardBackdrop = remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    CompositionLocalProvider(ai.rever.bossterm.compose.window.LocalHoverCardBackdrop provides hoverCardBackdrop) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize().hoverCardBackdropBlur(hoverCardBackdrop.value)) {
         Column(Modifier.fillMaxWidth().zIndex(1f).onSizeChanged { windowHeaderHeightPx = it.height }) {
         headerContent?.invoke(statusStripContent) {
             ai.rever.bossterm.compose.window.TitleBarActions(
@@ -2716,6 +2721,7 @@ fun TabbedTerminal(
     }
 
     } // Window header + terminal body
+    } // LocalHoverCardBackdrop
 
     // Account sign-in window — a real top-level OS window like the share window.
     if (showSignInWindow) {

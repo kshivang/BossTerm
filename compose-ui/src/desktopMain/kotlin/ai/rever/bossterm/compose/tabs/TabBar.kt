@@ -60,6 +60,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionOnScreen
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
@@ -1539,11 +1541,17 @@ private fun TabTooltipCard(
     val settings by ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.collectAsState()
     val cardAlpha = if (preferences.reduceTransparency || preferences.increaseContrast) 1f
         else LocalWindowGlassMode.current.terminalOpacity(settings.surfaceOpacity(LocalNativeWindowGlass.current))
+    // Tell the window root where we are so it blurs what shows through (HoverCardBackdrop).
+    val backdrop = ai.rever.bossterm.compose.window.LocalHoverCardBackdrop.current
+    DisposableEffect(backdrop) { onDispose { backdrop?.value = null } }
     Surface(
         color = bg.copy(alpha = cardAlpha),
         shadowElevation = 8.dp,
         shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, fg.copy(alpha = 0.14f))
+        border = androidx.compose.foundation.BorderStroke(1.dp, fg.copy(alpha = 0.14f)),
+        modifier = Modifier.onGloballyPositioned { c ->
+            if (cardAlpha < 1f) backdrop?.value = androidx.compose.ui.geometry.Rect(c.positionOnScreen(), c.size.toSize())
+        },
     ) {
         Column(
             // Wide enough for a real project path, wrapping past that rather than ellipsising

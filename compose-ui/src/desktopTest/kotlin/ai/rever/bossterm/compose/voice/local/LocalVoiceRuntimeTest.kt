@@ -396,11 +396,28 @@ class LocalVoiceRuntimeTest {
         assertTrue(survivors.isEmpty(), "teardown left ${survivors.size} server process(es) alive: $survivors")
     }
 
+
+    /**
+     * A probe that reports "nothing is serving" until this runtime actually spawns something.
+     *
+     * `probe = { true }` used to be a fine stand-in for "readiness succeeds", but the runtime now
+     * adopts a server that is already answering on the port rather than spawning a second one that
+     * would lose the bind. A probe that is true from the start therefore describes a DIFFERENT
+     * scenario - somebody else's server is already up - and the spawn path under test never runs.
+     *
+     * Keyed off the runner's own spawn count so the fake stays faithful: not serving, then serving
+     * the moment a process exists.
+     */
+    private fun readyOnceSpawned(spawns: () -> Int): suspend (String) -> Boolean = { spawns() > 0 }
+
     @Test
     fun `serve receives managed environment without replacing inherited variables`() = runBlocking {
         val home = installedHome()
         val runner = FakeRunner(process = FakeServerProcess("serve"))
-        val runtime = LocalVoiceRuntime(home = home, windows = false, exec = runner, probe = { true })
+        val runtime = LocalVoiceRuntime(
+            home = home, windows = false, exec = runner,
+            probe = readyOnceSpawned { runner.spawned.size },
+        )
         try {
             assertEquals(LocalVoiceInstall.realtimeUrl(8765), runtime.ensureRunning(8765))
             assertEquals(LocalVoiceInstall.processEnvironment(home), runner.spawnEnvironments.single())
@@ -417,7 +434,7 @@ class LocalVoiceRuntimeTest {
             home = installedHome(),
             windows = false,
             exec = runner,
-            probe = { true },
+            probe = readyOnceSpawned { runner.spawnCount.get() },
         )
         val first = runtime.ensureRunning(8765)
         val second = runtime.ensureRunning(8765)
@@ -439,7 +456,8 @@ class LocalVoiceRuntimeTest {
             home = installedHome(),
             windows = false,
             exec = failing,
-            probe = { true },
+            // A spawn that throws never produces a server, so the probe must never claim one.
+            probe = { false },
         )
         assertNull(runtime.ensureRunning(8765))
         val failed = assertIs<LocalVoiceRuntimeState.Failed>(runtime.state.value)

@@ -127,6 +127,47 @@ internal interface AURenderCallback : Callback {
     ): Int
 }
 
+/**
+ * `AudioBuffer`: one channel group's bytes.
+ *
+ * `mData` is a raw pointer we own and reuse. Allocating one per callback would put a JNA
+ * allocation on CoreAudio's realtime thread, which is exactly what must not happen there.
+ */
+@Structure.FieldOrder("mNumberChannels", "mDataByteSize", "mData")
+internal open class AudioBuffer : Structure() {
+    @JvmField var mNumberChannels: Int = 0
+    @JvmField var mDataByteSize: Int = 0
+    @JvmField var mData: Pointer? = null
+}
+
+/**
+ * `AudioBufferList` with a single buffer, which is all mono needs.
+ *
+ * The C type ends in a flexible array member; with one buffer the fixed layout below matches it
+ * exactly. A second buffer would require manual layout rather than another field.
+ */
+@Structure.FieldOrder("mNumberBuffers", "mBuffers")
+internal open class AudioBufferList : Structure() {
+    @JvmField var mNumberBuffers: Int = 1
+    @JvmField var mBuffers: AudioBuffer = AudioBuffer()
+}
+
+/**
+ * An [AudioBufferList] bound to memory CoreAudio owns, rather than to its own.
+ *
+ * `Structure.useMemory` is protected, so this exposes it deliberately instead of hand-computing
+ * the struct's offsets. Those offsets involve alignment padding that differs by architecture, and
+ * getting one wrong reads a plausible-looking pointer from the wrong place - a crash on the audio
+ * thread, not a compile error. Letting JNA do the layout keeps that correct by construction.
+ */
+internal class BoundAudioBufferList : AudioBufferList() {
+    /** Point this struct at [pointer] and read the current field values out of it. */
+    fun bind(pointer: Pointer) {
+        useMemory(pointer)
+        read()
+    }
+}
+
 /** A retained audio unit instance. */
 internal class AudioUnitRef : PointerType()
 

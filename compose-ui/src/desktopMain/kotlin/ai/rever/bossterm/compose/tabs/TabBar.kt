@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FileUpload
@@ -328,6 +329,20 @@ data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
  * (inline edit; blank reverts to the host name), [onSetColor] sets [colorHex], the box's
  * border/icon/chip accent (null reverts to the default remote cyan).
  */
+/**
+ * Content for the inline "lost connection" card the vertical sidebar shows right under its
+ * "Remote connections" header (see [TabBar]'s `remoteDisconnectNotice` param) — the native
+ * counterpart of the web viewer's disconnect overlay, moved out of an app-wide modal so
+ * losing one device's connection doesn't block everything else in the window.
+ */
+data class RemoteDisconnectNotice(
+    val name: String,
+    val message: String?,
+    val onReconnect: () -> Unit,
+    val onDisconnect: () -> Unit,
+    val onDismiss: () -> Unit,
+)
+
 data class RemoteTabGroup(
     val id: String,
     val header: String,
@@ -473,6 +488,13 @@ fun TabBar(
     onSettings: () -> Unit = {},
     onAddRemote: () -> Unit = {},
     remoteGroups: List<RemoteTabGroup> = emptyList(),
+    /**
+     * Vertical bar only: a remote session lost its connection and needs Reconnect/Disconnect.
+     * Rendered as an inline card right under the "Remote connections" header, inside the same
+     * collapsible section as the device boxes — collapsing it hides this too, same as the rest
+     * of that device's state. Null = nothing to show.
+     */
+    remoteDisconnectNotice: RemoteDisconnectNotice? = null,
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
     /** Vertical bar only: render as a slim icon rail ([TabBarRailWidth]) instead of the full panel. */
@@ -1199,6 +1221,9 @@ fun TabBar(
                             )
                         }
                     }
+                    if (remoteConnectionsExpanded) {
+                        remoteDisconnectNotice?.let { notice -> RemoteDisconnectToast(notice, barMuted) }
+                    }
                     // Each connected remote session: a bordered box with the link header, its
                     // mirrored tab chips, and footer actions that target the remote.
                     (if (remoteConnectionsExpanded) remoteGroups else emptyList()).forEach { rg ->
@@ -1531,6 +1556,51 @@ fun TabBar(
                 }
                 newTabButton()
             }
+        }
+    }
+}
+
+/**
+ * Inline "lost connection" card for [TabBar.remoteDisconnectNotice] — the native counterpart
+ * of the web viewer's disconnect overlay, but anchored in the sidebar instead of an app-wide
+ * modal (the vertical bar already carries that device's own box, so the notice belongs there,
+ * not blocking every other window). Lives inside the collapsible "Remote connections" section,
+ * so collapsing it hides the notice along with the boxes. Reconnect retries; Disconnect removes
+ * the session and its frozen mirror tabs; the × snoozes this failure without re-prompting.
+ */
+@Composable
+private fun RemoteDisconnectToast(notice: RemoteDisconnectNotice, muted: Color) {
+    val alert = BossUiTheme.current.alert
+    Column(
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .background(alert.copy(alpha = 0.10f))
+            .border(1.dp, alert.copy(alpha = 0.30f), RoundedCornerShape(8.dp))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(Icons.Default.CloudOff, contentDescription = null, tint = alert, modifier = Modifier.size(13.dp))
+            Text(
+                "Lost connection to ${notice.name}",
+                color = BossUiTheme.current.mist, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+            )
+            Box(
+                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = notice.onDismiss).padding(2.dp)
+            ) { Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = muted, modifier = Modifier.size(11.dp)) }
+        }
+        notice.message?.let { Text(it, color = muted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        Text("Its tabs stay frozen until it reconnects.", color = muted, fontSize = 10.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(
+                modifier = Modifier.clip(RoundedCornerShape(5.dp))
+                    .background(BossUiTheme.current.signalText.copy(alpha = 0.16f))
+                    .clickable(onClick = notice.onReconnect).padding(horizontal = 8.dp, vertical = 3.dp)
+            ) { Text("Reconnect", color = BossUiTheme.current.signalText, fontSize = 11.sp, fontWeight = FontWeight.Medium) }
+            Box(
+                modifier = Modifier.clip(RoundedCornerShape(5.dp))
+                    .clickable(onClick = notice.onDisconnect).padding(horizontal = 8.dp, vertical = 3.dp)
+            ) { Text("Disconnect", color = alert, fontSize = 11.sp) }
         }
     }
 }

@@ -1752,9 +1752,24 @@ fun TabbedTerminal(
             // so it highlights. Otherwise highlight the focused split pane.
             val focusedPaneId = if (summaryMode) tabController.activeTabId
                                 else tabController.activeTab?.let { splitStates[it.id]?.focusedPaneId }
+            // A remote session that lost its connection: the vertical sidebar shows this
+            // inline (below); the top bar (no sidebar to house it) keeps the modal further down.
+            val remoteDisconnectNotice = rm?.sessions?.firstOrNull {
+                it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
+            }?.let { failed ->
+                ai.rever.bossterm.compose.tabs.RemoteDisconnectNotice(
+                    name = failed.customName.value ?: failed.hostName.value
+                        ?: runCatching { java.net.URI(failed.link).host ?: failed.link }.getOrDefault(failed.link),
+                    message = (failed.statusState.value as? ai.rever.bossterm.compose.remote.RemoteStatus.Failed)?.message,
+                    onReconnect = { failed.reconnect() },
+                    onDisconnect = { rm.disconnect(failed) },
+                    onDismiss = { failed.failureDismissed.value = true },
+                )
+            }
             TabBar(
                 groups = tabGroups,
                 remoteGroups = remoteGroups,
+                remoteDisconnectNotice = if (tabBarOnLeft) remoteDisconnectNotice else null,
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->
@@ -2826,20 +2841,24 @@ fun TabbedTerminal(
         }
     }
 
-    // Disconnect → reconnect dialog (like the web viewer's overlay): prompt for the first
-    // remote session that lost its connection and hasn't had this failure dismissed.
-    state?.remoteSessions?.let { mgr ->
-        mgr.sessions.firstOrNull {
-            it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
-        }?.let { failed ->
-            ai.rever.bossterm.compose.remote.RemoteDisconnectedDialog(
-                name = failed.customName.value ?: failed.hostName.value
-                    ?: runCatching { java.net.URI(failed.link).host ?: failed.link }.getOrDefault(failed.link),
-                message = (failed.statusState.value as? ai.rever.bossterm.compose.remote.RemoteStatus.Failed)?.message,
-                onReconnect = { failed.reconnect() },
-                onDisconnect = { mgr.disconnect(failed) },
-                onDismiss = { failed.failureDismissed.value = true },
-            )
+    // Disconnect → reconnect: the vertical sidebar shows this inline, under its "Remote
+    // connections" header (TabBar's remoteDisconnectNotice, set above). Only the top-bar
+    // layout — no sidebar to anchor it in — still falls back to this app-wide modal.
+    // (tabBarOnLeft itself is out of scope this far down; same condition, recomputed.)
+    if (settings.tabBarPosition != "left") {
+        state?.remoteSessions?.let { mgr ->
+            mgr.sessions.firstOrNull {
+                it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
+            }?.let { failed ->
+                ai.rever.bossterm.compose.remote.RemoteDisconnectedDialog(
+                    name = failed.customName.value ?: failed.hostName.value
+                        ?: runCatching { java.net.URI(failed.link).host ?: failed.link }.getOrDefault(failed.link),
+                    message = (failed.statusState.value as? ai.rever.bossterm.compose.remote.RemoteStatus.Failed)?.message,
+                    onReconnect = { failed.reconnect() },
+                    onDisconnect = { mgr.disconnect(failed) },
+                    onDismiss = { failed.failureDismissed.value = true },
+                )
+            }
         }
     }
 

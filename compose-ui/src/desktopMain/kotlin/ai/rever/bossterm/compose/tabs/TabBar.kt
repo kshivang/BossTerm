@@ -9,6 +9,7 @@ import ai.rever.bossterm.compose.window.LocalWindowGlassTint
 import ai.rever.bossterm.compose.window.LocalWindowGlassMode
 import ai.rever.bossterm.compose.window.WindowGlassMode
 import ai.rever.bossterm.compose.window.LocalNativeWindowGlass
+import ai.rever.bossterm.compose.window.surfaceOpacity
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.settings.theme.Theme
@@ -1532,10 +1533,14 @@ private fun TabTooltipCard(
         }
     }
     val preferences = ai.rever.bossterm.compose.window.rememberMacChromePreferences()
-    val glassPreview = LocalWindowGlassMode.current != WindowGlassMode.OFF &&
-        !preferences.reduceTransparency && !preferences.increaseContrast
+    // The card is a snapshot of the terminal, so it wears the terminal area's own
+    // opacity (ProperTerminal's background alpha), not the chrome tint: a 70% terminal
+    // gets a 70% preview, an opaque one an opaque preview. Accessibility overrides win.
+    val settings by ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.collectAsState()
+    val cardAlpha = if (preferences.reduceTransparency || preferences.increaseContrast) 1f
+        else LocalWindowGlassMode.current.terminalOpacity(settings.surfaceOpacity(LocalNativeWindowGlass.current))
     Surface(
-        color = bg.copy(alpha = if (glassPreview) LocalWindowGlassTint.current.coerceIn(0f, 1f) else 1f),
+        color = bg.copy(alpha = cardAlpha),
         shadowElevation = 8.dp,
         shape = RoundedCornerShape(10.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, fg.copy(alpha = 0.14f))

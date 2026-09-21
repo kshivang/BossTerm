@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
@@ -662,6 +663,11 @@ fun TabBar(
     // Remote group box currently renaming its header inline (by RemoteTabGroup.id).
     var editingRemoteId by remember { mutableStateOf<String?>(null) }
 
+    // Vertical bar only: whether the "Remote connections (N)" section (all the boxes below
+    // the local tabs) is expanded. Local, not persisted — same as the Share dialog's collapsed
+    // "advanced" sections; defaults open so nothing already visible hides on upgrade.
+    var remoteConnectionsExpanded by remember { mutableStateOf(true) }
+
     // Everything above that survives past a single click, reported upward so a hover-driven
     // owner doesn't dispose this composition mid-interaction. Disposal reports false —
     // whoever is still listening must not be left holding a stale "busy".
@@ -1167,9 +1173,34 @@ fun TabBar(
                             paneGroup(group)
                         }
                     }
+                    // Collapsible header for everything below: every tab mirrored in from another
+                    // device signed into this account, one box per device (see remoteByTabIndex
+                    // for the count — tabs, not devices, matching what "available" means here).
+                    if (remoteGroups.isNotEmpty()) {
+                        val chevronRotation by animateFloatAsState(if (remoteConnectionsExpanded) 90f else 0f)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                                .consumeSecondaryPress()
+                                .clickable { remoteConnectionsExpanded = !remoteConnectionsExpanded }
+                                .padding(vertical = 4.dp, horizontal = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = if (remoteConnectionsExpanded) "Collapse remote connections" else "Expand remote connections",
+                                tint = barMuted,
+                                modifier = Modifier.size(14.dp).graphicsLayer { rotationZ = chevronRotation }
+                            )
+                            Text(
+                                "Remote connections (${remoteByTabIndex.size})",
+                                color = barMuted, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1
+                            )
+                        }
+                    }
                     // Each connected remote session: a bordered box with the link header, its
                     // mirrored tab chips, and footer actions that target the remote.
-                    remoteGroups.forEach { rg ->
+                    (if (remoteConnectionsExpanded) remoteGroups else emptyList()).forEach { rg ->
                         // Group accent: a custom color set via the header's right-click, else the
                         // default remote cyan. Drives the box border, the cloud icon, and (via
                         // colorHexFor upstream) the chips' accent stripes.

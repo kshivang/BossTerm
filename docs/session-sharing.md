@@ -197,6 +197,11 @@ is "off". The only things that stop it are its two switches, in Settings > Sessi
 the Share dialog's collapsed "Auto-share to <your email>" section (above Remote access), or
 signing out. It never touches a share you started by hand.
 
+When a session opened from the page ends (host stopped sharing, connection lost for good, request
+denied), the viewer returns to the page after a couple of seconds instead of showing "you can
+close this tab". The page tags the link with `from=live-sessions`; a plain share link never
+redirects anywhere.
+
 **Your other devices, inside BossTerm.** The Remote Sessions window (the cloud "Add remote"
 button) lists the sessions your other signed-in BossTerms are sharing, refreshed on open and every
 15 seconds. Connect mirrors that device's tabs here through the native client, using the account

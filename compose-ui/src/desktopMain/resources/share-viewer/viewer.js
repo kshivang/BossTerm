@@ -23,6 +23,22 @@
   }
   var params = new URLSearchParams(location.search);
   var token = params.get("t");
+  // Opened from the BOSS account's live-sessions page (it appends `from=live-sessions` to the
+  // link). When the session ends for good, go back there instead of stranding the user on a
+  // "you can close this tab" overlay. Fixed destination, never a URL from the query: a viewer
+  // that redirected wherever `?from=` pointed would be an open redirect on every share link.
+  var LIVE_SESSIONS_URL = "https://api.risaboss.com/functions/v1/live-sessions";
+  var RETURN_TO_LIVE_SESSIONS_MS = 2000;
+  var returnToLiveSessions = params.get("from") === "live-sessions";
+  var returnTimer = null;
+  function returnToLiveSessionsSoon() {
+    if (!returnToLiveSessions || returnTimer) return false;
+    returnTimer = setTimeout(function () { location.replace(LIVE_SESSIONS_URL); }, RETURN_TO_LIVE_SESSIONS_MS);
+    return true;
+  }
+  function backToLiveSessionsAction() {
+    return { label: "Back to live sessions", primary: true, onClick: function () { location.replace(LIVE_SESSIONS_URL); } };
+  }
 
   // ---- end-to-end encryption ----
   // The session secret rides in the URL fragment (#k=…), which the browser never sends to any
@@ -1555,6 +1571,14 @@
     setStatus("down");
     if (sessionEnded || disconnectShown) return;
     disconnectShown = true;
+    if (returnToLiveSessions) {
+      returnToLiveSessionsSoon();
+      showOverlay("Disconnected", "The connection to the host was lost. Returning to your live sessions…", false, [
+        backToLiveSessionsAction(),
+        { label: "Reconnect", onClick: function () { location.reload(); } }
+      ]);
+      return;
+    }
     showOverlay("Disconnected", "The connection to the host was lost.", false, [
       { label: "Reconnect", primary: true, onClick: function () { location.reload(); } },
       { label: "Close", onClick: function () {
@@ -3071,11 +3095,12 @@
         ws = null;
         sessionEnded = true;
         setStatus("down");
-        showOverlay(
-          "Connection ended",
-          (ev && ev.reason) || "The shared session is unavailable or no longer accepts this link.",
-          false
-        );
+        var endedReason = (ev && ev.reason) || "The shared session is unavailable or no longer accepts this link.";
+        if (returnToLiveSessionsSoon()) {
+          showOverlay("Connection ended", endedReason + " Returning to your live sessions…", false, [backToLiveSessionsAction()]);
+        } else {
+          showOverlay("Connection ended", endedReason, false);
+        }
         return;
       }
       handleConnectionLost(socket);
@@ -3097,7 +3122,11 @@
       case "denied":
         clearKey();
         sessionEnded = true; // terminal — keep this message, don't replace with "Disconnected"
-        showOverlay("Request denied", m.reason || "The host declined this device.", false);
+        if (returnToLiveSessionsSoon()) {
+          showOverlay("Request denied", (m.reason || "The host declined this device.") + " Returning to your live sessions…", false, [backToLiveSessionsAction()]);
+        } else {
+          showOverlay("Request denied", m.reason || "The host declined this device.", false);
+        }
         break;
       case "theme": applyTheme(m); break;
       case "layout": if (filesUi) filesUi.layout({ filesAvailable: m.filesAvailable && canE2E }); hideOverlay(); onLayout(m); break;

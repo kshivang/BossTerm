@@ -603,11 +603,15 @@ function loadViewer(options) {
   define("location", {
     protocol: "http:",
     host: "192.168.1.20:8770",
-    search: "?t=view-token",
+    search: opts.search || "?t=view-token",
     hash: "",
     reloaded: 0,
+    replaced: [],
     reload() {
       win.location.reloaded += 1;
+    },
+    replace(url) {
+      win.location.replaced.push(url);
     },
   });
   define("navigator", { platform: "TestPhone", userAgent: "harness", clipboard: undefined });
@@ -799,6 +803,41 @@ const scenarios = {
     advance(60000);
     assert.strictEqual(FakeWebSocket.instances.length, before, "1000 must not consume a retry");
     assert.strictEqual(overlayTitle(), "Connection ended");
+  },
+
+  "opened from the live-sessions page, a terminal close returns there after a short delay"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions" });
+    connectPanes(["pane-1"]);
+    FakeWebSocket.latest.drop(4001);
+    assert.strictEqual(overlayTitle(), "Connection ended");
+    assert.deepStrictEqual(overlayActions(), ["Back to live sessions"]);
+    assert.deepStrictEqual(location.replaced, [], "must give the user a moment to read the reason");
+    advance(2500);
+    assert.deepStrictEqual(location.replaced, ["https://api.risaboss.com/functions/v1/live-sessions"]);
+  },
+
+  "opened from the live-sessions page, exhausted reconnects also return there"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions" });
+    connectPanes(["pane-1"]);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      FakeWebSocket.latest.drop(1006);
+      advance(10000);
+      FakeWebSocket.latest.open();
+    }
+    FakeWebSocket.latest.drop(1006);
+    advance(60000);
+    assert.strictEqual(overlayTitle(), "Disconnected");
+    assert.deepStrictEqual(overlayActions(), ["Back to live sessions", "Reconnect"]);
+    assert.deepStrictEqual(location.replaced, ["https://api.risaboss.com/functions/v1/live-sessions"]);
+  },
+
+  "a plain share link never redirects anywhere on close"() {
+    loadViewer({ search: "?t=view-token&from=https://evil.example/" });
+    connectPanes(["pane-1"]);
+    FakeWebSocket.latest.drop(4001);
+    advance(60000);
+    assert.strictEqual(overlayTitle(), "Connection ended");
+    assert.deepStrictEqual(location.replaced, [], "only the fixed live-sessions marker may redirect");
   },
 
   "an error without a close does not consume a retry"() {

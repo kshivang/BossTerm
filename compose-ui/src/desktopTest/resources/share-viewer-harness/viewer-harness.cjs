@@ -600,6 +600,8 @@ function loadViewer(options) {
   delete win.BossTermViewerLogic;
   define("window", win);
   define("document", document);
+  // A page embedding the viewer in an iframe: `parent` is another window that receives messages.
+  define("parent", opts.framed ? { posted: [], postMessage(msg, origin) { win.parent.posted.push({ msg, origin }); } } : undefined);
   define("location", {
     protocol: "http:",
     host: "192.168.1.20:8770",
@@ -829,6 +831,17 @@ const scenarios = {
     assert.strictEqual(overlayTitle(), "Disconnected");
     assert.deepStrictEqual(overlayActions(), ["Back to live sessions", "Reconnect"]);
     assert.deepStrictEqual(location.replaced, ["https://api.risaboss.com/functions/v1/live-sessions"]);
+  },
+
+  "embedded by the live-sessions page, a close tells the parent instead of navigating the frame"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions", framed: true });
+    connectPanes(["pane-1"]);
+    FakeWebSocket.latest.drop(4001);
+    advance(2500);
+    assert.deepStrictEqual(location.replaced, [], "the frame must not navigate itself");
+    assert.deepStrictEqual(parent.posted, [
+      { msg: { type: "bossterm-session-ended", reason: "ended" }, origin: "https://api.risaboss.com/functions/v1/live-sessions" },
+    ]);
   },
 
   "a plain share link never redirects anywhere on close"() {

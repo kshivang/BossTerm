@@ -10,7 +10,10 @@ import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.call
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
+import io.ktor.server.response.header
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -490,6 +493,9 @@ object SessionShareManager {
 
     /** Is [tabId] currently shared? */
     fun isSharing(tabId: String): Boolean = sharesByTab[tabId]?.accountManaged == false
+
+    /** True for a share's ACCOUNT token (the auto-admit link the live-sessions page hands out). */
+    fun isAccountToken(token: String): Boolean = sharesByToken[token]?.autoAdmit == true
 
     /**
      * Is [token] one of THIS instance's active share tokens (view or control)? Used to refuse
@@ -1037,8 +1043,19 @@ object SessionShareManager {
             try {
                 val started = embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
-                    install(DefaultHeaders) {
-                        header("X-Frame-Options", "DENY")
+                    install(DefaultHeaders)
+                    // Frame policy per request. Every response refuses framing, EXCEPT the shell
+                    // loaded with the ACCOUNT token, which the BOSS live-sessions page embeds in an
+                    // iframe so the address bar stays on api.risaboss.com. frame-ancestors is a
+                    // response-header-only directive (ignored in a <meta> CSP), which is why it is
+                    // set here and not in index.html. View/control links stay un-frameable.
+                    intercept(ApplicationCallPipeline.Plugins) {
+                        val token = call.request.queryParameters["t"]
+                        if (token != null && isAccountToken(token)) {
+                            call.response.header("Content-Security-Policy", "frame-ancestors ${AccountSessionPublisher.LIVE_SESSIONS_ORIGIN}")
+                        } else {
+                            call.response.header("X-Frame-Options", "DENY")
+                        }
                     }
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }

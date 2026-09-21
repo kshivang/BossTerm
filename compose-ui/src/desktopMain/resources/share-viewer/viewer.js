@@ -30,14 +30,28 @@
   var LIVE_SESSIONS_URL = "https://api.risaboss.com/functions/v1/live-sessions";
   var RETURN_TO_LIVE_SESSIONS_MS = 2000;
   var returnToLiveSessions = params.get("from") === "live-sessions";
+  // Embedded by that page in an iframe (its address bar stays on api.risaboss.com). Then "return"
+  // means telling the parent, which swaps the frame for its list; navigating the frame itself
+  // would only load the list inside the frame. The host only allows framing for the account
+  // link, and only by that origin, so the message goes to that origin alone.
+  var framedByLiveSessions = returnToLiveSessions && (function () {
+    try { return !!window.parent && window.parent !== window; } catch (e) { return true; }
+  })();
   var returnTimer = null;
-  function returnToLiveSessionsSoon() {
+  function goBackToLiveSessions(reason) {
+    if (framedByLiveSessions) {
+      try { window.parent.postMessage({ type: "bossterm-session-ended", reason: reason || "" }, LIVE_SESSIONS_URL); } catch (e) {}
+    } else {
+      location.replace(LIVE_SESSIONS_URL);
+    }
+  }
+  function returnToLiveSessionsSoon(reason) {
     if (!returnToLiveSessions || returnTimer) return false;
-    returnTimer = setTimeout(function () { location.replace(LIVE_SESSIONS_URL); }, RETURN_TO_LIVE_SESSIONS_MS);
+    returnTimer = setTimeout(function () { goBackToLiveSessions(reason); }, RETURN_TO_LIVE_SESSIONS_MS);
     return true;
   }
   function backToLiveSessionsAction() {
-    return { label: "Back to live sessions", primary: true, onClick: function () { location.replace(LIVE_SESSIONS_URL); } };
+    return { label: "Back to live sessions", primary: true, onClick: function () { goBackToLiveSessions("user"); } };
   }
 
   // ---- end-to-end encryption ----
@@ -1572,7 +1586,7 @@
     if (sessionEnded || disconnectShown) return;
     disconnectShown = true;
     if (returnToLiveSessions) {
-      returnToLiveSessionsSoon();
+      returnToLiveSessionsSoon("disconnected");
       showOverlay("Disconnected", "The connection to the host was lost. Returning to your live sessions…", false, [
         backToLiveSessionsAction(),
         { label: "Reconnect", onClick: function () { location.reload(); } }
@@ -3096,7 +3110,7 @@
         sessionEnded = true;
         setStatus("down");
         var endedReason = (ev && ev.reason) || "The shared session is unavailable or no longer accepts this link.";
-        if (returnToLiveSessionsSoon()) {
+        if (returnToLiveSessionsSoon("ended")) {
           showOverlay("Connection ended", endedReason + " Returning to your live sessions…", false, [backToLiveSessionsAction()]);
         } else {
           showOverlay("Connection ended", endedReason, false);
@@ -3122,7 +3136,7 @@
       case "denied":
         clearKey();
         sessionEnded = true; // terminal — keep this message, don't replace with "Disconnected"
-        if (returnToLiveSessionsSoon()) {
+        if (returnToLiveSessionsSoon("denied")) {
           showOverlay("Request denied", (m.reason || "The host declined this device.") + " Returning to your live sessions…", false, [backToLiveSessionsAction()]);
         } else {
           showOverlay("Request denied", m.reason || "The host declined this device.", false);

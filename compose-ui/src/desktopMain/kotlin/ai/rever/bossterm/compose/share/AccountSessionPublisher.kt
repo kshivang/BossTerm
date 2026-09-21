@@ -255,7 +255,8 @@ class AccountSessionPublisher(
     companion object {
         const val DEFAULT_HEARTBEAT_MS = 30_000L
         private const val STOP_TIMEOUT_MS = 3_000L
-        const val LIVE_SESSIONS_PAGE = "https://api.risaboss.com/functions/v1/live-sessions"
+        const val LIVE_SESSIONS_ORIGIN = "https://api.risaboss.com"
+        const val LIVE_SESSIONS_PAGE = "$LIVE_SESSIONS_ORIGIN/functions/v1/live-sessions"
 
         /** Fingerprint of a link's `#k=` secret, as the share-viewer's E2E badge shows it. */
         fun e2eCodeOf(url: String): String? {

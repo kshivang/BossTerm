@@ -216,6 +216,74 @@ jobs:
           path: .gradleBuild/bossterm-app/compose/binaries/main/dmg/*.dmg
           retention-days: 30
 
+  build-windows:
+    needs: prepare-version
+    if: ${{ github.event.inputs.publish_only != 'true' }}
+    runs-on: windows-latest
+    # First Windows packaging attempt for this project (jpackage + WiX have never run on this
+    # repo's CI before). Non-blocking like linux-arm64/snap: a problem here must not hold back
+    # the macOS/Linux release everyone already depends on. Tighten this once it's proven.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Setup JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: false
+
+      - name: Package Windows MSI
+        run: ./gradlew :bossterm-app:packageMsi
+        env:
+          RELEASE_BUILD: true
+          APP_VERSION: ${{ needs.prepare-version.outputs.version }}
+
+      - name: Find MSI File
+        id: find-msi
+        shell: pwsh
+        run: |
+          $msiFiles = Get-ChildItem ".gradleBuild/bossterm-app/compose/binaries/main/msi/*.msi" -ErrorAction SilentlyContinue
+          if ($msiFiles) {
+            Write-Host "Found MSI: $($msiFiles[0].FullName)"
+            echo "msi-path=$($msiFiles[0].FullName)" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "MSI file not found!"
+            exit 1
+          }
+
+      # Same action BossConsole's release.yml uses (risa-labs-inc/BossConsole is public, so it's
+      # referenceable cross-repo). No-ops with a warning — producing an unsigned MSI rather than
+      # failing the job — until CODE_SIGNING_CERT_HOST and friends are added as secrets on this
+      # repo; see risa-labs-inc/BossConsole's DigiCert KeyLocker setup for what those five values
+      # are and where they come from.
+      - name: Sign and verify the Windows MSI
+        id: sign-msi
+        uses: risa-labs-inc/BossConsole/.github/actions/sign-windows-msi@master
+        with:
+          msi-path: ${{ steps.find-msi.outputs.msi-path }}
+          cert-host: ${{ secrets.CODE_SIGNING_CERT_HOST }}
+          api-key: ${{ secrets.CODE_SIGNING_CERT_HOST_API_KEY }}
+          client-cert: ${{ secrets.CODE_SIGNING_CLIENT_CERT }}
+          client-cert-password: ${{ secrets.CODE_SIGNING_CLIENT_CERT_PASSWORD }}
+          keypair-alias: ${{ secrets.CODE_SIGNING_KEYPAIR_ALIAS }}
+          allow-unsigned: 'true' # No signing secrets configured on this repo yet
+          label: Windows x64
+
+      - name: Upload Windows MSI
+        uses: actions/upload-artifact@v7
+        with:
+          name: bossterm-windows-${{ needs.prepare-version.outputs.version }}
+          path: .gradleBuild/bossterm-app/compose/binaries/main/msi/*.msi
+          retention-days: 30
+
   build-linux-amd64:
     needs: prepare-version
     if: ${{ github.event.inputs.publish_only != 'true' }}
@@ -407,7 +475,7 @@ jobs:
           release: edge
 
   create-release:
-    needs: [prepare-version, build-macos, build-linux-amd64, build-linux-arm64, build-snap]
+    needs: [prepare-version, build-macos, build-windows, build-linux-amd64, build-linux-arm64, build-snap]
     # Continue even if ARM64/snap builds fail or are skipped
     # Skip entirely if publish_only is true
     if: |
@@ -442,6 +510,9 @@ jobs:
           # Linux ARM64 (if available)
           find ./artifacts -name "*.deb" -path "*arm64*" -exec cp {} ./release-assets/bossterm_${VERSION}_arm64.deb \; 2>/dev/null || true
           find ./artifacts -name "*.rpm" -path "*arm64*" -exec cp {} ./release-assets/bossterm-${VERSION}.aarch64.rpm \; 2>/dev/null || true
+
+          # Windows (best-effort: build-windows is non-blocking, see its job comment)
+          find ./artifacts -name "*.msi" -exec cp {} ./release-assets/BossTerm-${VERSION}.msi \; 2>/dev/null || true
 
           # Snap (only present when dispatched with build_snap=true). Intentional
           # asymmetry: the release-notes body below does NOT mention the snap — it is
@@ -489,6 +560,7 @@ jobs:
             | **Ubuntu/Debian** | ARM64 | `bossterm_${{ needs.prepare-version.outputs.version }}_arm64.deb` |
             | **Fedora/RHEL** | AMD64 | `bossterm-${{ needs.prepare-version.outputs.version }}.x86_64.rpm` |
             | **Fedora/RHEL** | ARM64 | `bossterm-${{ needs.prepare-version.outputs.version }}.aarch64.rpm` |
+            | **Windows** | x64 | `BossTerm-${{ needs.prepare-version.outputs.version }}.msi` |
             | **Any (JAR)** | Any | `bossterm-${{ needs.prepare-version.outputs.version }}.jar` |
 
             ### Installation
@@ -510,6 +582,11 @@ jobs:
             sudo dnf install bossterm-${{ needs.prepare-version.outputs.version }}.x86_64.rpm
             ```
 
+            **Windows:**
+            Run `BossTerm-${{ needs.prepare-version.outputs.version }}.msi` and follow the installer.
+            The installer is unsigned until code-signing credentials are configured for this repo,
+            so Windows SmartScreen will warn on first run ("More info" → "Run anyway").
+
             **JAR (requires Java 17+):**
             ```bash
             java -jar bossterm-${{ needs.prepare-version.outputs.version }}.jar
@@ -518,6 +595,7 @@ jobs:
             ### System Requirements
             - **macOS**: 11.0+ (Big Sur or later), Apple Silicon or Intel
             - **Linux**: X11 or Wayland, glibc 2.31+
+            - **Windows**: 10 or later, x64
             - **JAR**: Java 17+ runtime
           files: ./release-assets/*
           draft: false

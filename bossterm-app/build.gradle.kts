@@ -94,7 +94,7 @@ compose.desktop {
         }
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Deb, TargetFormat.Rpm)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm)
 
             packageName = "BossTerm"
             packageVersion = project.version.toString().removeSuffix("-SNAPSHOT")
@@ -157,6 +157,25 @@ compose.desktop {
                         </array>
                     """.trimIndent()
                 }
+            }
+
+            windows {
+                iconFile.set(rootProject.file("BossTerm.ico"))
+                menuGroup = "BossTerm"
+                // jpackage/WiX identifies upgrades by this GUID, not by version or package
+                // name — changing it makes every future release install side-by-side instead
+                // of replacing the last one. Minted once for this app; never regenerate it.
+                upgradeUuid = "4eadb832-a512-440b-bb96-7a75deaf3aa6"
+                console = false // Compose owns the window; no separate console
+                dirChooser = true
+                perUserInstall = true // No admin prompt, matches the macOS/Linux install model
+                shortcut = true
+                menu = true
+                // Windows code signing (Authenticode) is applied in CI after packaging, the
+                // same DigiCert KeyLocker step BossConsole's release.yml uses — see release.yml.
+                // No bossterm:// protocol registration yet: CFBundleURLTypes below is macOS-only
+                // and there is no WindowsProtocolHandler counterpart, so a magic-link/deep-link
+                // opened on Windows currently has nothing to hand it to. Out of scope here.
             }
 
             linux {

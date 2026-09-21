@@ -21,6 +21,7 @@ so even a public tunnel relay can't read your session.
 - [The native "Add remote" client](#the-native-add-remote-client)
 - [Remote MCP](#remote-mcp)
 - [Security & end-to-end encryption](#security--end-to-end-encryption)
+- [Live sessions on your BOSS account](#live-sessions-on-your-boss-account)
 - [Settings reference](#settings-reference)
 - [Troubleshooting](#troubleshooting)
 
@@ -153,6 +154,62 @@ shared session.
   allowed only there; any `https`/tunnel link is end-to-end encrypted. An old plaintext-only client
   connecting to a public tunnel is rejected with an "update BossTerm" message.
 
+## Live sessions on your BOSS account
+
+Sign in (menu > **Sign In...**) and every share you start is also registered against your BOSS
+account, so you can open it from any browser without pasting a link:
+
+1. Open <https://cli.risaboss.com> on the other device.
+2. Enter the email you signed into BossTerm with and click the button in the email.
+3. You land back on the page, signed in. With exactly one live session it opens straight away;
+   with several you get a list (device, session name, scope, E2E badge) and pick one.
+
+What is published, and to whom:
+
+- One row per share in a Supabase table (`terminal_sessions`) that only your account can read
+  (row-level security on `auth.uid()`). BossTerm writes it as **you**, with your own session
+  token; there is no service key in the app.
+- The row holds the **links** (read-only and an account link), your `username_machine` device
+  name, the session name, scope, app version and server-side timestamps. Never terminal output,
+  input or history.
+- The links include the `#k=` end-to-end secret, so Supabase (not the Cloudflare relay) could read
+  it. That is the trade for opening a session from a phone with nothing to paste; turn
+  `publishSessionsToAccount` off if you would rather not.
+- BossTerm heartbeats each row every 30 s (an upsert; the server stamps the time). The page shows a
+  session for 90 s after the last heartbeat, and stale rows are swept server-side after 15 min.
+  Quitting, unsharing or signing out deletes your rows immediately.
+
+The **account link** is a third token on every share, next to the view and control tokens. It
+grants control and is **auto-admitted**: a device arriving on it over an end-to-end encrypted
+connection skips the approval prompt, since holding the secret from your own registry is the
+proof. That link carries its **own** `#k` secret (derived one-way from the share's), so someone
+holding your read-only link cannot combine it with a relay-logged account token to skip the
+prompt; the E2E badge for an account-link viewer therefore differs from the Share sheet's code,
+and the live-sessions page shows the right one. The account link is never shown in the Share
+sheet; the ordinary view/control links still prompt as `sessionSharingApprovalScope` says.
+
+**Automatic sharing.** While you are signed in and publishing, BossTerm keeps one all-windows
+share running by itself (`autoShareToAccount`, on by default), so the page always lists this
+machine with no Share Tab step. It is a separate kind of share from the ones you start: the tab
+Share/Stop button does not show or stop it, switching **Enable Session Sharing** off leaves it
+running (only your own shares stop), and it is reached over Cloudflare even when the remote mode
+is "off". The only things that stop it are its two switches, in Settings > Session Sharing and in
+the Share dialog's collapsed "Auto-share to <your email>" section (above Remote access), or
+signing out. It never touches a share you started by hand.
+
+When a session opened from the page ends (host stopped sharing, connection lost for good, request
+denied), the viewer returns to the page after a couple of seconds instead of showing "you can
+close this tab". The page tags the link with `from=live-sessions`; a plain share link never
+redirects anywhere.
+
+**Your other devices, inside BossTerm.** The Remote Sessions window (the cloud "Add remote"
+button) lists the sessions your other signed-in BossTerms are sharing, refreshed on open and every
+15 seconds. Connect mirrors that device's tabs here through the native client, using the account
+link, so the other machine does not prompt for approval. Your own shares are filtered out.
+
+Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
+plugin), where the account menu is hidden.
+
 ## Settings reference
 
 All under **Settings → Session Sharing**, persisted in `~/.bossterm/settings.json`:
@@ -167,6 +224,8 @@ All under **Settings → Session Sharing**, persisted in `~/.bossterm/settings.j
 | `sessionSharingPublicUrl` | `""` | Advertise this URL instead of the bound/tunnel URL (for a custom proxy). |
 | `sessionSharingApprovalScope` | `"funnel"` | Require join approval: `"all"`, `"off"`, or `"funnel"` (only for public links). |
 | `sessionSharingShowIndicator` | `true` | Show the sharing indicator in the tab bar. |
+| `publishSessionsToAccount` | `true` | While signed in, list every active share under your BOSS account (see below). |
+| `autoShareToAccount` | `true` | With the above, keep an all-windows share running automatically while signed in. |
 
 > Note `shareTailscaleMode` defaults to `cloudflare`, but sharing is still gated by
 > `sessionSharingEnabled` (off by default) - so no tunnel opens until you turn sharing on.

@@ -10,7 +10,10 @@ import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.call
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
+import io.ktor.server.response.header
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -232,14 +235,44 @@ object SessionShareManager {
     private const val MAX_REFRESHES = 2
 
     /** A token resolves to a share and whether that token grants control. */
-    private data class TokenRef(val share: MirrorShare, val canControl: Boolean)
+    private data class TokenRef(
+        val share: MirrorShare,
+        val canControl: Boolean,
+        /** Skip the device-approval prompt (the account link; see [MirrorShare.accountToken]). */
+        val autoAdmit: Boolean = false,
+    )
 
     private val sharesByToken = ConcurrentHashMap<String, TokenRef>()
     private val sharesByTab = ConcurrentHashMap<String, MirrorShare>()
 
     private val _sharedTabIds = MutableStateFlow<Set<String>>(emptySet())
-    /** Tab ids currently being shared — drives the UI indicator + Share/Stop menu state. */
+    /**
+     * Tab ids the USER is sharing — drives the UI indicator + Share/Stop menu state. Excludes the
+     * account-managed share (see [MirrorShare.accountManaged]); that one has its own controls.
+     */
     val sharedTabIds: StateFlow<Set<String>> = _sharedTabIds.asStateFlow()
+
+    private val _allSharedTabIds = MutableStateFlow<Set<String>>(emptySet())
+    /** Every active share, account-managed included - what the registry publisher lists. */
+    val allSharedTabIds: StateFlow<Set<String>> = _allSharedTabIds.asStateFlow()
+
+    /**
+     * Set by [AccountAutoShare] while it wants its share to exist. It is a SECOND enable switch,
+     * independent of [TerminalSettings.sessionSharingEnabled]: the account share must survive the
+     * user turning ordinary sharing off, and turning ordinary sharing on must not be required for
+     * it. While set, a remote mode of "off" is treated as "cloudflare", since a share nobody can
+     * reach from another device is useless to the account page.
+     */
+    val accountSharingWanted = MutableStateFlow(false)
+
+    private fun sharingEnabled(s: TerminalSettings): Boolean = s.sessionSharingEnabled || accountSharingWanted.value
+    private fun remoteMode(s: TerminalSettings): String =
+        if (s.shareTailscaleMode == "off" && accountSharingWanted.value) "cloudflare" else s.shareTailscaleMode
+
+    private fun publishSharedTabIds() {
+        _allSharedTabIds.value = sharesByTab.keys.toSet()
+        _sharedTabIds.value = sharesByTab.filterValues { !it.accountManaged }.keys.toSet()
+    }
 
     // @Volatile: written by [shutdown] from a shutdown-hook / embedder-dispose thread while
     // [start] reads and writes it from another.
@@ -369,7 +402,7 @@ object SessionShareManager {
      */
     private fun keepWarm(): Boolean {
         val s = settingsManager.settings.value
-        return s.sessionSharingEnabled && s.shareTailscaleMode != "off"
+        return sharingEnabled(s) && remoteMode(s) != "off"
     }
 
     private fun newKey(): String = UUID.randomUUID().toString().replace("-", "")
@@ -392,6 +425,12 @@ object SessionShareManager {
          * viewer shows to confirm the same untampered key end-to-end.
          */
         val e2eCode: String? = null,
+        /**
+         * Account link: control + auto-admit, for the owner's own devices via the BOSS live-sessions
+         * page. Not for sharing with others; the Share sheet never displays it. Null when no URL can
+         * be built (same conditions as [url]).
+         */
+        val accountUrl: String? = null,
     )
 
     /**
@@ -419,10 +458,17 @@ object SessionShareManager {
             // pre-warm or prefetch would silently kill the settings observer for good: no
             // pre-warm, no teardown on disable, and nothing logged.
             supervisorScope {
-                settingsManager.settings
-                    .map { it.sessionSharingEnabled to it.shareTailscaleMode }
+                // The user's own switch is part of the key: with the account share wanted, flipping
+                // sessionSharingEnabled off leaves (enabled, mode) unchanged, and distinctUntilChanged
+                // would swallow the very emission that has to stop the user's shares.
+                kotlinx.coroutines.flow.combine(settingsManager.settings, accountSharingWanted) { s, _ ->
+                    Triple(s.sessionSharingEnabled, sharingEnabled(s), remoteMode(s))
+                }
                     .distinctUntilChanged()
-                    .collect { (enabled, mode) ->
+                    .collect { (_, enabled, mode) ->
+                        // Ordinary sharing switched off: the user's shares go, the account share
+                        // (if wanted) stays and keeps the engine. Nothing wanted at all: full stop.
+                        if (!settingsManager.settings.value.sessionSharingEnabled) stopUserShares()
                         if (!enabled) { stopAll(); return@collect }
                         // EAGER prefetch: as soon as cloudflare sharing is enabled, fetch cloudflared in
                         // the background so the first share doesn't pay the download. No-op when a
@@ -449,7 +495,10 @@ object SessionShareManager {
     }
 
     /** Is [tabId] currently shared? */
-    fun isSharing(tabId: String): Boolean = sharesByTab.containsKey(tabId)
+    fun isSharing(tabId: String): Boolean = sharesByTab[tabId]?.accountManaged == false
+
+    /** True for a share's ACCOUNT token (the auto-admit link the live-sessions page hands out). */
+    fun isAccountToken(token: String): Boolean = sharesByToken[token]?.autoAdmit == true
 
     /**
      * Is [token] one of THIS instance's active share tokens (view or control)? Used to refuse
@@ -495,7 +544,7 @@ object SessionShareManager {
         val share = sharesByTab[tabId] ?: return null
         val url = buildUrl(share.viewToken) ?: return null
         val controlUrl = buildUrl(share.controlToken) ?: url
-        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope, e2eCodeOf(url))
+        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope, e2eCodeOf(url), buildUrl(share.accountToken))
     }
 
     /**
@@ -507,7 +556,7 @@ object SessionShareManager {
     private suspend fun prewarmRemote() {
         if (shuttingDown) return
         val settings = settingsManager.settings.value
-        if (!settings.sessionSharingEnabled || settings.shareTailscaleMode == "off") return
+        if (!sharingEnabled(settings) || remoteMode(settings) == "off") return
         // Let the BossTerm MCP server claim its port FIRST. It shares the 7676+ range with the
         // share server; pre-warm runs at app launch concurrently with the MCP server, so if both
         // probe the same free port before either binds, the share server's wildcard bind coexists
@@ -535,18 +584,29 @@ object SessionShareManager {
      * grouped by window in the viewer). Boots the share server if needed. Returns null
      * when sharing is disabled or the server can't bind. Idempotent per [tabId].
      */
-    suspend fun share(tabId: String, scope: ShareScope = ShareScope.TAB): ShareInfo? {
+    suspend fun share(tabId: String, scope: ShareScope = ShareScope.TAB, accountManaged: Boolean = false): ShareInfo? {
         val settings = settingsManager.settings.value
-        if (!settings.sessionSharingEnabled) return null
+        if (!(if (accountManaged) sharingEnabled(settings) else settings.sessionSharingEnabled)) return null
         return mutex.withLock {
             val epoch = shutdownEpoch.get()
             if (!ensureEngineLocked(settings)) return@withLock null
-            val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId) }).also {
+            // A tab carries at most one share, and the account share and a user share are different
+            // things: handing the account caller a user's share would let sign-out stop it, and
+            // handing a user the account share would give them links they cannot see or stop.
+            sharesByTab[tabId]?.let { existing ->
+                if (existing.accountManaged != accountManaged) {
+                    log.info("share({}): tab already has a {} share; refusing the {} one", tabId,
+                        if (existing.accountManaged) "account" else "user", if (accountManaged) "account" else "user")
+                    return@withLock null
+                }
+            }
+            val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId, includeAccountManaged = true) }, accountManaged = accountManaged).also {
                 it.start()
                 sharesByToken[it.viewToken] = TokenRef(it, canControl = false)
                 sharesByToken[it.controlToken] = TokenRef(it, canControl = true)
+                sharesByToken[it.accountToken] = TokenRef(it, canControl = true, autoAdmit = true)
                 sharesByTab[tabId] = it
-                _sharedTabIds.value = sharesByTab.keys.toSet()
+                publishSharedTabIds()
             }
             // Adopt, then re-check — the same shape [ensureEngineLocked] uses for the engine.
             // A pre-check would not do: [shutdown] deliberately does not take this mutex, so it can
@@ -568,7 +628,7 @@ object SessionShareManager {
                     url
                 )
             }
-            ShareInfo(tabId, url, share.viewToken, controlUrl, secure, share.scope, e2eCodeOf(url))
+            ShareInfo(tabId, url, share.viewToken, controlUrl, secure, share.scope, e2eCodeOf(url), buildUrl(share.accountToken))
         }
     }
 
@@ -594,7 +654,7 @@ object SessionShareManager {
         if (shuttingDown) { log.debug("Ignoring refreshRemoteLink(): the manager is shut down"); return }
         scope.launch {
             val port = boundPort ?: return@launch
-            val mode = settingsManager.settings.value.shareTailscaleMode
+            val mode = remoteMode(settingsManager.settings.value)
             if (mode == "off") return@launch
             val op = claimRemoteOp()
             withContext(Dispatchers.IO) { establishRemote(mode, port, op) }
@@ -681,7 +741,7 @@ object SessionShareManager {
             scope.launch {
                 if (!isCurrentRemoteOp(op)) return@launch // a cooperative teardown/switch superseded us
                 val s = settingsManager.settings.value
-                if (!s.sessionSharingEnabled || s.shareTailscaleMode != "cloudflare") return@launch
+                if (!sharingEnabled(s) || remoteMode(s) != "cloudflare") return@launch
                 if (engine == null) return@launch
                 delay(2000) // brief backoff; a teardown during this window bumps the op
                 if (!isCurrentRemoteOp(op)) return@launch
@@ -777,12 +837,17 @@ object SessionShareManager {
     }
 
     /** Stop sharing [tabId]; stops the server if it was the last share. */
-    fun unshare(tabId: String) {
+    fun unshare(tabId: String, includeAccountManaged: Boolean = false) {
         // shutdown() already stopped and cleared every share, inline.
         if (shuttingDown) { log.debug("Ignoring unshare({}): the manager is shut down", tabId); return }
         scope.launch {
             mutex.withLock {
                 val share = sharesByTab[tabId] ?: return@withLock
+                // The account share is not the user's to stop from the tab menu; AccountAutoShare
+                // (and the Share dialog's own section) passes includeAccountManaged.
+                if (share.accountManaged && !includeAccountManaged) {
+                    log.debug("Ignoring unshare({}): account-managed share", tabId); return@withLock
+                }
                 unregisterShareLocked(tabId, share)
                 // Keep the engine + tunnel warm when sharing stays enabled with a remote provider,
                 // so a re-share is instant; otherwise tear down as before.
@@ -800,11 +865,23 @@ object SessionShareManager {
         sharesByTab.remove(tabId)
         sharesByToken.remove(share.viewToken)
         sharesByToken.remove(share.controlToken)
+        sharesByToken.remove(share.accountToken)
         grants.values.removeIf { it.shareId == share.viewToken }
         failPendingFor(tabId)
         releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
         runCatching { share.stop() }
-        _sharedTabIds.value = sharesByTab.keys.toSet()
+        publishSharedTabIds()
+    }
+
+    /** "Enable Session Sharing" was switched off: drop the user's shares, keep an account share. */
+    private fun stopUserShares() {
+        if (shuttingDown) return
+        scope.launch {
+            mutex.withLock {
+                sharesByTab.filterValues { !it.accountManaged }.forEach { (tabId, share) -> unregisterShareLocked(tabId, share) }
+                if (sharesByTab.isEmpty() && !keepWarm()) stopEngineLocked()
+            }
+        }
     }
 
     private fun stopAll() {
@@ -816,7 +893,7 @@ object SessionShareManager {
                 sharesByToken.clear()
                 grants.clear()
                 failAllPending()
-                _sharedTabIds.value = emptySet()
+                publishSharedTabIds()
                 stopEngineLocked()
             }
         }
@@ -890,7 +967,7 @@ object SessionShareManager {
         sharesByToken.clear()
         grants.clear()
         failAllPending()
-        _sharedTabIds.value = emptySet()
+        publishSharedTabIds()
         teardownRemoteAccess(boundPort)
         // Clear the bookkeeping before the (bounded, up to 1s) engine stop, so a second
         // shutdown() — or anything reading boundPort — never sees a half-torn-down manager.
@@ -979,8 +1056,22 @@ object SessionShareManager {
             try {
                 val started = embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
-                    install(DefaultHeaders) {
-                        header("X-Frame-Options", "DENY")
+                    install(DefaultHeaders)
+                    // Frame policy per request. Every response refuses framing, EXCEPT the shell
+                    // loaded with the ACCOUNT token, which the BOSS live-sessions page embeds in an
+                    // iframe so the address bar stays on api.risaboss.com. frame-ancestors is a
+                    // response-header-only directive (ignored in a <meta> CSP), which is why it is
+                    // set here and not in index.html. View/control links stay un-frameable.
+                    intercept(ApplicationCallPipeline.Plugins) {
+                        val token = call.request.queryParameters["t"]
+                        if (token != null && isAccountToken(token)) {
+                            call.response.header(
+                                "Content-Security-Policy",
+                                "frame-ancestors ${AccountSessionPublisher.LIVE_SESSIONS_ORIGIN} ${AccountSessionPublisher.LIVE_SESSIONS_LEGACY_ORIGIN}",
+                            )
+                        } else {
+                            call.response.header("X-Frame-Options", "DENY")
+                        }
                     }
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
@@ -1041,8 +1132,8 @@ object SessionShareManager {
                 // caller's (UI) thread — doing it inline would freeze the app. The dialog
                 // opens immediately with the LAN URL; the public URL is picked up via
                 // remoteUrlFlow when it resolves. Guarded so it only fires once per lifecycle.
-                if (settings.shareTailscaleMode != "off" && activeRemoteMode == "off") {
-                    val mode = settings.shareTailscaleMode
+                if (remoteMode(settings) != "off" && activeRemoteMode == "off") {
+                    val mode = remoteMode(settings)
                     val rPort = port
                     activeRemoteMode = mode // claim it now so this fires once per lifecycle
                     val op = claimRemoteOp()
@@ -1138,7 +1229,8 @@ object SessionShareManager {
             val saltC = runCatching { SessionCrypto.decodeSecretB64Url(kex.salt) }.getOrNull()
             if (saltC == null) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Bad handshake")); return }
             val saltS = SessionCrypto.randomSalt()
-            val keys = SessionCrypto.deriveKeys(share.sessionSecret, saltC, saltS)
+            // The account link carries its own secret (see MirrorShare.accountSecret).
+            val keys = SessionCrypto.deriveKeys(if (ref.autoAdmit) share.accountSecret else share.sessionSecret, saltC, saltS)
             serverCipher = SessionCrypto.FrameCipher(keys.kS2c, SessionCrypto.DIR_S2C)
             clientCipher = SessionCrypto.FrameCipher(keys.kC2s, SessionCrypto.DIR_C2S)
             ws.send(Frame.Text(ShareProtocol.encodeKex(
@@ -1194,7 +1286,14 @@ object SessionShareManager {
         var canControl = ref.canControl
 
         var accessKey: String? = null // this connection's grant key (for mid-session role upgrades)
-        if (requiresApproval()) {
+        // The account link skips approval, but ONLY over a negotiated E2E cipher keyed by the account
+        // link's OWN secret (MirrorShare.accountSecret): a Kex that completed proves the viewer holds
+        // that `#k`, which only the owner's registry ever carried - a relay log has the token but not
+        // the fragment, and the view/control links' `#k` is a different secret. A plaintext hello on
+        // that token gets the ordinary approval path.
+        val autoAdmit = ref.autoAdmit && serverCipher != null
+        if (autoAdmit) log.info("Account link viewer admitted without approval for share {}", share.tabId)
+        if (requiresApproval() && !autoAdmit) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
             if (existing != null && existing.shareId == shareId && existing.expiresAtMs > now) {
@@ -1294,7 +1393,9 @@ object SessionShareManager {
         // loopback). Plain-LAN http (no relay, no crypto.subtle) stays plaintext as before.
         // The native client uses #k whenever present, regardless of transport.
         if (e2eCapable(base)) {
-            sharesByToken[token]?.share?.sessionSecretB64?.let { return "$base#k=$it" }
+            sharesByToken[token]?.let { ref ->
+                return "$base#k=${if (ref.autoAdmit) ref.share.accountSecretB64 else ref.share.sessionSecretB64}"
+            }
         }
         return base
     }

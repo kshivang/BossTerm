@@ -65,11 +65,25 @@ class MirrorShare(
     /** The tab the share was initiated from; also resolves the owning window. */
     val tabId: String,
     initialScope: ShareScope,
+    /**
+     * Started by [AccountAutoShare] for the BOSS account, not by the user. It is invisible to the
+     * tab Share/Stop button and to "Enable Session Sharing" (see SessionShareManager.sharedTabIds
+     * and stopUserShares); only the account feature starts and stops it. Declared before
+     * [onEnded] so callers can keep passing that as a trailing lambda.
+     */
+    val accountManaged: Boolean = false,
     /** Invoked when the share has no panes left (its tab/window closed) so the manager can drop it. */
     private val onEnded: () -> Unit,
 ) {
     val viewToken: String = secureToken()
     val controlToken: String = secureToken()
+    /**
+     * Account link token: control-capable and auto-admitted (no host approval prompt). Never shown in
+     * the Share sheet; it exists so the owner can open their own session from the BOSS account's
+     * live-sessions page on another device without being at this desk to approve it. Published to
+     * the account registry by [AccountSessionPublisher]; still E2E + bearer gated like the others.
+     */
+    val accountToken: String = secureToken()
 
     // E2E session secret (issue: end-to-end encryption). One per share, shared by the view +
     // control links — it travels ONLY in the link's URL fragment (`#k=`), which the relay never
@@ -77,6 +91,15 @@ class MirrorShare(
     // (view/control) stays enforced server-side by which token is presented.
     val sessionSecret: ByteArray = SessionCrypto.newSessionSecret()
     val sessionSecretB64: String = SessionCrypto.encodeSecretB64Url(sessionSecret)
+
+    // The ACCOUNT link gets its own secret, derived one-way from the session secret. Auto-admit
+    // rests on "this viewer holds the account link's `#k`"; if that were the shared session secret,
+    // a read-only invitee who then saw accountToken in a relay log would get control with no
+    // prompt. With a separate secret, view/control links prove nothing about the account link.
+    val accountSecret: ByteArray = SessionCrypto.hkdf(
+        sessionSecret, ByteArray(0), "bossterm-account-link-v1".toByteArray(), sessionSecret.size
+    )
+    val accountSecretB64: String = SessionCrypto.encodeSecretB64Url(accountSecret)
 
     // Observable so the layout observer re-emits when the scope is toggled live
     // (Tab ↔ Window) — same tokens/viewers, just a different set of mirrored tabs.

@@ -34,6 +34,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -143,6 +144,17 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
                         ) { Text("Connect") }
                     }
                 }
+
+                // Other BossTerms signed into the same BOSS account, from the live-session registry.
+                // One click connects through the same native client as a pasted link, using the
+                // account link (auto-admitted on the host, no approval prompt there).
+                AccountDevicesSection(
+                    onConnect = { url ->
+                        if (manager.connect(url, deviceName, shareBack) == null) {
+                            error = "That's this BossTerm's own share link - a session can't mirror itself."
+                        } else error = null
+                    },
+                )
 
                 if (manager.sessions.isNotEmpty()) {
                     Spacer(Modifier.height(20.dp))
@@ -325,3 +337,61 @@ private fun statusColor(s: RemoteStatus): Color = when (s) {
 private fun hostOf(link: String): String = runCatching {
     java.net.URI(link).host ?: link
 }.getOrDefault(link)
+
+/**
+ * "Your other devices": live sessions other BossTerms on this account are sharing right now.
+ * Reads [AccountSessionDirectory.Default]; refreshes on open and every 15 s while signed in.
+ */
+@Composable
+private fun AccountDevicesSection(onConnect: (String) -> Unit) {
+    val account by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+    val directory = ai.rever.bossterm.compose.share.AccountSessionDirectory.Default
+    val sessions by directory.sessions.collectAsState()
+    val lastError by directory.lastError.collectAsState()
+    LaunchedEffect(account) { directory.refresh() }
+
+    Spacer(Modifier.height(20.dp))
+    SettingsSection("Your other devices") {
+        when {
+            account !is ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn ->
+                Text(
+                    "Sign in (menu > Sign In...) to see terminals shared from your other devices.",
+                    color = TextMuted, fontSize = 12.sp
+                )
+            sessions.isEmpty() ->
+                Text(
+                    lastError ?: "No other device is sharing right now. A signed-in BossTerm shares " +
+                        "automatically; it appears here within a few seconds.",
+                    color = if (lastError != null) Danger else TextMuted, fontSize = 12.sp
+                )
+            else -> sessions.forEach { s -> AccountDeviceRow(s, onConnect = { onConnect(s.controlUrl) }) }
+        }
+    }
+}
+
+@Composable
+private fun AccountDeviceRow(s: ai.rever.bossterm.compose.share.AccountSession, onConnect: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(s.deviceName, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                if (!s.sessionName.isNullOrBlank() && s.sessionName != s.deviceName) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(s.sessionName, color = TextSecondary, fontSize = 12.sp)
+                }
+            }
+            val scopeLabel = when (s.scope) { "ALL" -> "All windows"; "WINDOW" -> "Whole window"; else -> "One tab" }
+            val seen = s.lastSeen?.let { java.time.Duration.between(it, java.time.Instant.now()).seconds }
+            val seenLabel = when { seen == null -> ""; seen < 60 -> " - seen ${seen}s ago"; else -> " - seen ${seen / 60} min ago" }
+            val e2e = if (s.secure && s.e2eCode != null) " - E2E ${s.e2eCode}" else if (!s.secure) " - not encrypted" else ""
+            Text("$scopeLabel$seenLabel$e2e", color = TextMuted, fontSize = 11.sp)
+        }
+        Button(
+            onClick = onConnect,
+            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
+        ) { Text("Connect") }
+    }
+}

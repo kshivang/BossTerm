@@ -1135,6 +1135,24 @@ data class TerminalSettings(
     val sessionSharingApprovalScope: String = "funnel",
 
     /**
+     * Publish each active share to the signed-in BOSS account's live-session registry
+     * (Supabase `terminal_sessions`, owner-only), so it can be opened from any browser via
+     * https://cli.risaboss.com after a magic-link sign-in. Only the LINK
+     * leaves the machine (device/session name, scope, the share URL incl. its E2E secret), never
+     * terminal content. No effect while signed out. See AccountSessionPublisher.
+     */
+    val publishSessionsToAccount: Boolean = true,
+
+    /**
+     * With [publishSessionsToAccount], keep an all-windows share running automatically while
+     * signed in, so the live-sessions page always lists this machine with no manual Share Tab.
+     * Independent of [sessionSharingEnabled]: that switch and the tab Share/Stop button govern
+     * the user's own shares only; this share is reached over Cloudflare even when
+     * [shareTailscaleMode] is "off". See AccountAutoShare and MirrorShare.accountManaged.
+     */
+    val autoShareToAccount: Boolean = true,
+
+    /**
      * Show the small status indicator while a tab is being shared. Mirrors
      * [mcpShowStatusIndicator] for the share server.
      */

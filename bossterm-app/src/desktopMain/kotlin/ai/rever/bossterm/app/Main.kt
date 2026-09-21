@@ -199,6 +199,13 @@ fun main(args: Array<String>) {
     // the unreachable-daemon fallback. (Both share subsystems thus coexist when daemonEnabled, but only
     // one is ever fed a share.)
     ai.rever.bossterm.compose.share.SessionShareManager.start()
+    // Registers active shares against the signed-in BOSS account (live-sessions page). Inert while
+    // signed out or when the setting is off.
+    ai.rever.bossterm.compose.share.AccountSessionPublisher.Default.start()
+    // Keeps an all-windows share running while signed in + publishing (setting autoShareToAccount).
+    ai.rever.bossterm.compose.share.AccountAutoShare.Default.start()
+    // Other devices' live sessions on this account, for the Remote Sessions window.
+    ai.rever.bossterm.compose.share.AccountSessionDirectory.Default.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
         // When daemonEnabled, MCP is normally owned by the daemon (mcpManager stays null) and
@@ -207,6 +214,11 @@ fun main(args: Array<String>) {
         // in-process SessionShareManager is always shut down (it's GUI-owned; the daemon-hosted share
         // server has its own lifecycle) to avoid leaving a tunnel published after exit (issue #276).
         synchronized(mcpLock) { mcpManager }?.stop()
+        // Before the share manager: deletes this process's registry rows (bounded) while the shares
+        // are still ours to describe.
+        ai.rever.bossterm.compose.share.AccountSessionDirectory.Default.stop()
+        ai.rever.bossterm.compose.share.AccountAutoShare.Default.stop()
+        ai.rever.bossterm.compose.share.AccountSessionPublisher.Default.stop()
         ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()
         daemonScope.cancel()

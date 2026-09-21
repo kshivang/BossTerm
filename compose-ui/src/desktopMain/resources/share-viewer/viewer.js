@@ -23,6 +23,41 @@
   }
   var params = new URLSearchParams(location.search);
   var token = params.get("t");
+  // Opened from the BOSS account's live-sessions page (it appends `from=live-sessions` to the
+  // link). When the session ends for good, go back there instead of stranding the user on a
+  // "you can close this tab" overlay. Fixed destination, never a URL from the query: a viewer
+  // that redirected wherever `?from=` pointed would be an open redirect on every share link.
+  var LIVE_SESSIONS_URL = "https://cli.risaboss.com";
+  // Every origin the host lets frame the account link (its frame-ancestors). The end-of-session
+  // message is posted to each; a browser delivers it only to the one actually framing us.
+  var LIVE_SESSIONS_ORIGINS = ["https://cli.risaboss.com", "https://api.risaboss.com"];
+  var RETURN_TO_LIVE_SESSIONS_MS = 2000;
+  var returnToLiveSessions = params.get("from") === "live-sessions";
+  // Embedded by that page in an iframe (its address bar stays on api.risaboss.com). Then "return"
+  // means telling the parent, which swaps the frame for its list; navigating the frame itself
+  // would only load the list inside the frame. The host only allows framing for the account
+  // link, and only by that origin, so the message goes to that origin alone.
+  var framedByLiveSessions = returnToLiveSessions && (function () {
+    try { return !!window.parent && window.parent !== window; } catch (e) { return true; }
+  })();
+  var returnTimer = null;
+  function goBackToLiveSessions(reason) {
+    if (framedByLiveSessions) {
+      LIVE_SESSIONS_ORIGINS.forEach(function (origin) {
+        try { window.parent.postMessage({ type: "bossterm-session-ended", reason: reason || "" }, origin); } catch (e) {}
+      });
+    } else {
+      location.replace(LIVE_SESSIONS_URL);
+    }
+  }
+  function returnToLiveSessionsSoon(reason) {
+    if (!returnToLiveSessions || returnTimer) return false;
+    returnTimer = setTimeout(function () { goBackToLiveSessions(reason); }, RETURN_TO_LIVE_SESSIONS_MS);
+    return true;
+  }
+  function backToLiveSessionsAction() {
+    return { label: "Back to live sessions", primary: true, onClick: function () { goBackToLiveSessions("user"); } };
+  }
 
   // ---- end-to-end encryption ----
   // The session secret rides in the URL fragment (#k=…), which the browser never sends to any
@@ -837,12 +872,14 @@
   stageEl.addEventListener("pointerdown", function () { sidebarEl.classList.remove("open"); }, true);
   stageEl.addEventListener("touchstart", function () { sidebarEl.classList.remove("open"); }, { passive: true, capture: true });
 
-  // Install banner: shown until dismissed (persists across visits).
+  // Install banner: shown until dismissed (persists across visits). Never shown to a viewer who
+  // came from the BOSS live-sessions page: that person is signed into the account that owns the
+  // session and already has BossTerm, so "Get BossTerm" is noise there.
   (function () {
     var banner = document.getElementById("installbanner");
     var dismissed = null;
     try { dismissed = localStorage.getItem("bossterm-install-banner"); } catch (e) {}
-    if (dismissed !== "dismissed") banner.style.display = "flex";
+    if (dismissed !== "dismissed" && !returnToLiveSessions) banner.style.display = "flex";
     document.getElementById("installbanner-close").onclick = function () {
       banner.style.display = "none";
       try { localStorage.setItem("bossterm-install-banner", "dismissed"); } catch (e) {}
@@ -1555,6 +1592,14 @@
     setStatus("down");
     if (sessionEnded || disconnectShown) return;
     disconnectShown = true;
+    if (returnToLiveSessions) {
+      returnToLiveSessionsSoon("disconnected");
+      showOverlay("Disconnected", "The connection to the host was lost. Returning to your live sessions…", false, [
+        backToLiveSessionsAction(),
+        { label: "Reconnect", onClick: function () { location.reload(); } }
+      ]);
+      return;
+    }
     showOverlay("Disconnected", "The connection to the host was lost.", false, [
       { label: "Reconnect", primary: true, onClick: function () { location.reload(); } },
       { label: "Close", onClick: function () {
@@ -3071,11 +3116,12 @@
         ws = null;
         sessionEnded = true;
         setStatus("down");
-        showOverlay(
-          "Connection ended",
-          (ev && ev.reason) || "The shared session is unavailable or no longer accepts this link.",
-          false
-        );
+        var endedReason = (ev && ev.reason) || "The shared session is unavailable or no longer accepts this link.";
+        if (returnToLiveSessionsSoon("ended")) {
+          showOverlay("Connection ended", endedReason + " Returning to your live sessions…", false, [backToLiveSessionsAction()]);
+        } else {
+          showOverlay("Connection ended", endedReason, false);
+        }
         return;
       }
       handleConnectionLost(socket);
@@ -3097,7 +3143,11 @@
       case "denied":
         clearKey();
         sessionEnded = true; // terminal — keep this message, don't replace with "Disconnected"
-        showOverlay("Request denied", m.reason || "The host declined this device.", false);
+        if (returnToLiveSessionsSoon("denied")) {
+          showOverlay("Request denied", (m.reason || "The host declined this device.") + " Returning to your live sessions…", false, [backToLiveSessionsAction()]);
+        } else {
+          showOverlay("Request denied", m.reason || "The host declined this device.", false);
+        }
         break;
       case "theme": applyTheme(m); break;
       case "layout": if (filesUi) filesUi.layout({ filesAvailable: m.filesAvailable && canE2E }); hideOverlay(); onLayout(m); break;

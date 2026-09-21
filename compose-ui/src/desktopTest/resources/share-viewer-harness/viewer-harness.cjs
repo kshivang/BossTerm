@@ -600,14 +600,20 @@ function loadViewer(options) {
   delete win.BossTermViewerLogic;
   define("window", win);
   define("document", document);
+  // A page embedding the viewer in an iframe: `parent` is another window that receives messages.
+  define("parent", opts.framed ? { posted: [], postMessage(msg, origin) { win.parent.posted.push({ msg, origin }); } } : undefined);
   define("location", {
     protocol: "http:",
     host: "192.168.1.20:8770",
-    search: "?t=view-token",
+    search: opts.search || "?t=view-token",
     hash: "",
     reloaded: 0,
+    replaced: [],
     reload() {
       win.location.reloaded += 1;
+    },
+    replace(url) {
+      win.location.replaced.push(url);
     },
   });
   define("navigator", { platform: "TestPhone", userAgent: "harness", clipboard: undefined });
@@ -799,6 +805,61 @@ const scenarios = {
     advance(60000);
     assert.strictEqual(FakeWebSocket.instances.length, before, "1000 must not consume a retry");
     assert.strictEqual(overlayTitle(), "Connection ended");
+  },
+
+  "opened from the live-sessions page, a terminal close returns there after a short delay"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions" });
+    connectPanes(["pane-1"]);
+    FakeWebSocket.latest.drop(4001);
+    assert.strictEqual(overlayTitle(), "Connection ended");
+    assert.deepStrictEqual(overlayActions(), ["Back to live sessions"]);
+    assert.deepStrictEqual(location.replaced, [], "must give the user a moment to read the reason");
+    advance(2500);
+    assert.deepStrictEqual(location.replaced, ["https://cli.risaboss.com"]);
+  },
+
+  "opened from the live-sessions page, exhausted reconnects also return there"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions" });
+    connectPanes(["pane-1"]);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      FakeWebSocket.latest.drop(1006);
+      advance(10000);
+      FakeWebSocket.latest.open();
+    }
+    FakeWebSocket.latest.drop(1006);
+    advance(60000);
+    assert.strictEqual(overlayTitle(), "Disconnected");
+    assert.deepStrictEqual(overlayActions(), ["Back to live sessions", "Reconnect"]);
+    assert.deepStrictEqual(location.replaced, ["https://cli.risaboss.com"]);
+  },
+
+  "embedded by the live-sessions page, a close tells the parent instead of navigating the frame"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions", framed: true });
+    connectPanes(["pane-1"]);
+    FakeWebSocket.latest.drop(4001);
+    advance(2500);
+    assert.deepStrictEqual(location.replaced, [], "the frame must not navigate itself");
+    assert.deepStrictEqual(parent.posted, [
+      { msg: { type: "bossterm-session-ended", reason: "ended" }, origin: "https://cli.risaboss.com" },
+      { msg: { type: "bossterm-session-ended", reason: "ended" }, origin: "https://api.risaboss.com" },
+    ]);
+  },
+
+  "the Get BossTerm banner is hidden for viewers from the live-sessions page, shown for a plain link"() {
+    loadViewer({ search: "?t=view-token&from=live-sessions" });
+    // The fake DOM leaves an untouched inline style undefined; "shown" is the only value the code sets.
+    assert.notStrictEqual(el("installbanner").style.display, "flex", "account viewers already have BossTerm");
+    loadViewer();
+    assert.strictEqual(el("installbanner").style.display, "flex", "a plain share link still offers the install");
+  },
+
+  "a plain share link never redirects anywhere on close"() {
+    loadViewer({ search: "?t=view-token&from=https://evil.example/" });
+    connectPanes(["pane-1"]);
+    FakeWebSocket.latest.drop(4001);
+    advance(60000);
+    assert.strictEqual(overlayTitle(), "Connection ended");
+    assert.deepStrictEqual(location.replaced, [], "only the fixed live-sessions marker may redirect");
   },
 
   "an error without a close does not consume a retry"() {

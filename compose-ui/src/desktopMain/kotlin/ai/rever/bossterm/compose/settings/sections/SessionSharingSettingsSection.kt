@@ -8,6 +8,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
+import ai.rever.bossterm.compose.share.AccountSessionPublisher
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 
 /**
  * Session sharing / remote control (issue #276): a self-hosted web viewer that
@@ -84,6 +87,28 @@ fun SessionSharingSettingsSection(
                 description = "Ask before a new device may view/control. funnel (default) = only for " +
                         "public reach (Funnel or a custom URL); all = every device incl. LAN; off = the " +
                         "link alone grants access. Approved devices get a 24h key so they aren't re-prompted."
+            )
+            val account by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+            val signedIn = account is ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn
+            SettingsToggle(
+                label = "Publish live sessions to my BOSS account",
+                checked = settings.publishSessionsToAccount,
+                onCheckedChange = { onSettingsChange(settings.copy(publishSessionsToAccount = it)) },
+                description = (if (signedIn) "" else "Sign in (menu > Sign In) to enable. ") +
+                        "Each active share is listed under your account so you can open it from any browser at " +
+                        AccountSessionPublisher.LIVE_SESSIONS_PAGE + " after a magic-link sign-in. Only the link, " +
+                        "device and session names leave this machine, never terminal content. Devices opening a " +
+                        "session from that page are admitted without the approval prompt. Not yet applied to " +
+                        "shares hosted by the background daemon."
+            )
+            SettingsToggle(
+                label = "Share all windows automatically while signed in",
+                checked = settings.autoShareToAccount,
+                onCheckedChange = { onSettingsChange(settings.copy(autoShareToAccount = it)) },
+                description = "Keeps one whole-app share running (over the Cloudflare tunnel) whenever you are " +
+                        "signed in and publishing, so the live-sessions page always shows this machine. " +
+                        "Independent of Enable Session Sharing and of the tab Share/Stop button: those " +
+                        "govern your own shares. Off = share tabs by hand as before."
             )
         }
 

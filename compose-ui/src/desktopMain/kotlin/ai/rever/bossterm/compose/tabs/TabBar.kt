@@ -665,8 +665,9 @@ fun TabBar(
 
     // Vertical bar only: whether the "Remote connections (N)" section (all the boxes below
     // the local tabs) is expanded. Local, not persisted — same as the Share dialog's collapsed
-    // "advanced" sections; defaults open so nothing already visible hides on upgrade.
-    var remoteConnectionsExpanded by remember { mutableStateOf(true) }
+    // "advanced" sections, and collapsed by default like those: a device's own tabs already
+    // stand out in the sidebar, so the boxes below them start tucked away.
+    var remoteConnectionsExpanded by remember { mutableStateOf(false) }
 
     // Everything above that survives past a single click, reported upward so a hover-driven
     // owner doesn't dispose this composition mid-interaction. Disposal reports false —

@@ -127,10 +127,9 @@ class AccountSessionPublisherTest {
         assertTrue(requests.all { it.method == "POST" })
 
         remote.value = "https://abc.trycloudflare.com"
-        awaitRequests(requests.size + 1)
-        val latest = requests.last()
-        assertTrue(latest.body.contains("\"control_url\":\"https://abc.trycloudflare.com/?t=acct-t1#k=secret\""), latest.body)
-        assertTrue(latest.body.contains("\"secure\":true"), latest.body)
+        val swapped = "\"control_url\":\"https://abc.trycloudflare.com/?t=acct-t1#k=secret\""
+        withTimeout(5_000) { while (requests.none { it.body.contains(swapped) }) delay(20) }
+        assertTrue(requests.last { it.body.contains(swapped) }.body.contains("\"secure\":true"))
     }
 
     @Test
@@ -166,15 +165,33 @@ class AccountSessionPublisherTest {
     }
 
     @Test
-    fun `a failed upsert is retried by the next heartbeat rather than dropped`() = runBlocking {
+    fun `a share whose upsert failed is not tracked, so unsharing it sends no DELETE`() = runBlocking {
         nextStatus = 500
         account.value = AccountState.SignedIn("me@x.y", "user-1")
         tabs.value = setOf("t1")
         publisher.start()
         awaitRequests(1)
+        tabs.value = emptySet()
+        delay(500)
+        assertTrue(requests.none { it.method == "DELETE" }, "nothing to delete: the row never landed")
+        // and once the server is healthy a new share is tracked and its end IS deleted
         nextStatus = 204
-        awaitRequests(2)
-        assertTrue(requests.count { it.method == "POST" } >= 2)
+        tabs.value = setOf("t2")
+        awaitRequests(requests.size + 1)
+        tabs.value = emptySet()
+        withTimeout(5_000) { while (requests.none { it.method == "DELETE" }) delay(20) }
+    }
+
+    @Test
+    fun `signed-out state sends no network at all, even with tracked rows`() = runBlocking {
+        account.value = AccountState.SignedIn("me@x.y", "user-1")
+        tabs.value = setOf("t1")
+        publisher.start()
+        awaitRequests(1)
+        val before = requests.size
+        account.value = AccountState.SignedOut // the sign-out listener owns the delete, not reconcile
+        delay(500)
+        assertEquals(before, requests.size)
     }
 
     @Test

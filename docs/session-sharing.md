@@ -182,8 +182,11 @@ What is published, and to whom:
 The **account link** is a third token on every share, next to the view and control tokens. It
 grants control and is **auto-admitted**: a device arriving on it over an end-to-end encrypted
 connection skips the approval prompt, since holding the secret from your own registry is the
-proof. It is never shown in the Share sheet; the ordinary view/control links still prompt as
-`sessionSharingApprovalScope` says.
+proof. That link carries its **own** `#k` secret (derived one-way from the share's), so someone
+holding your read-only link cannot combine it with a relay-logged account token to skip the
+prompt; the E2E badge for an account-link viewer therefore differs from the Share sheet's code,
+and the live-sessions page shows the right one. The account link is never shown in the Share
+sheet; the ordinary view/control links still prompt as `sessionSharingApprovalScope` says.
 
 Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
 plugin), where the account menu is hidden.

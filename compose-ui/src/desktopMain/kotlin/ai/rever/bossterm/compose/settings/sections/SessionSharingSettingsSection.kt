@@ -98,7 +98,8 @@ fun SessionSharingSettingsSection(
                         "Each active share is listed under your account so you can open it from any browser at " +
                         AccountSessionPublisher.LIVE_SESSIONS_PAGE + " after a magic-link sign-in. Only the link, " +
                         "device and session names leave this machine, never terminal content. Devices opening a " +
-                        "session from that page are admitted without the approval prompt."
+                        "session from that page are admitted without the approval prompt. Not yet applied to " +
+                        "shares hosted by the background daemon."
             )
         }
 

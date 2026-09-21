@@ -191,6 +191,10 @@ object BossAccountManager {
      * feature to provide.
      */
     suspend fun accessToken(forceRefresh: Boolean = false): String? = refreshMutex.withLock {
+        // Never refresh (and so never adoptSession -> SignedIn) once a sign-out has started: the
+        // stored file outlives the state flip by a few ms, and a refresh in that window would
+        // resurrect the account as a signed-in zombie with no file behind it.
+        if (_state.value !is AccountState.SignedIn) return@withLock null
         val stored = AuthStorage.load() ?: return@withLock null
         if (!forceRefresh && stored.expiresAtEpochSec > Instant.now().epochSecond + 60) return@withLock stored.accessToken
         try {
@@ -198,15 +202,26 @@ object BossAccountManager {
                 "token?grant_type=refresh_token",
                 json.encodeToString(RefreshRequest.serializer(), RefreshRequest(stored.refreshToken))
             )
-            if (resp.status.value in 200..299) {
-                val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
-                adoptSession(session, fallbackEmail = stored.email, fallbackUserId = stored.userId)
-                session.accessToken
-            } else {
-                log.info("Session refresh rejected ({}); signing out", resp.status.value)
-                AuthStorage.clear()
-                _state.value = AccountState.SignedOut
-                null
+            when (resp.status.value) {
+                in 200..299 -> {
+                    val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
+                    if (_state.value !is AccountState.SignedIn) return@withLock null // signed out meanwhile
+                    adoptSession(session, fallbackEmail = stored.email, fallbackUserId = stored.userId)
+                    session.accessToken
+                }
+                // Only a definite rejection ends the session. This runs on every 30s heartbeat, so a
+                // 429 / 5xx / Cloudflare 52x must NOT sign the user out - hand back the cached token
+                // and let the call fail on its own.
+                400, 401, 403 -> {
+                    log.info("Session refresh rejected ({}); signing out", resp.status.value)
+                    AuthStorage.clear()
+                    _state.value = AccountState.SignedOut
+                    null
+                }
+                else -> {
+                    log.warn("Session refresh failed transiently ({}); using cached token", resp.status.value)
+                    stored.accessToken
+                }
             }
         } catch (e: Exception) {
             // Offline: hand back what we have (an expired token fails the call, which is the honest
@@ -215,6 +230,9 @@ object BossAccountManager {
             stored.accessToken
         }
     }
+
+    /** The stored access token as-is, no refresh, no network. For a shutdown hook's last call. */
+    fun cachedAccessToken(): String? = AuthStorage.load()?.accessToken
 
     /** Sign out: flip state immediately (called from a Compose onClick), then do the disk IO and
      *  best-effort server revoke off the UI thread. */

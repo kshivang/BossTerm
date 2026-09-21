@@ -1151,7 +1151,8 @@ object SessionShareManager {
             val saltC = runCatching { SessionCrypto.decodeSecretB64Url(kex.salt) }.getOrNull()
             if (saltC == null) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Bad handshake")); return }
             val saltS = SessionCrypto.randomSalt()
-            val keys = SessionCrypto.deriveKeys(share.sessionSecret, saltC, saltS)
+            // The account link carries its own secret (see MirrorShare.accountSecret).
+            val keys = SessionCrypto.deriveKeys(if (ref.autoAdmit) share.accountSecret else share.sessionSecret, saltC, saltS)
             serverCipher = SessionCrypto.FrameCipher(keys.kS2c, SessionCrypto.DIR_S2C)
             clientCipher = SessionCrypto.FrameCipher(keys.kC2s, SessionCrypto.DIR_C2S)
             ws.send(Frame.Text(ShareProtocol.encodeKex(
@@ -1207,9 +1208,11 @@ object SessionShareManager {
         var canControl = ref.canControl
 
         var accessKey: String? = null // this connection's grant key (for mid-session role upgrades)
-        // The account link skips approval, but ONLY over a negotiated E2E cipher: possession of the
-        // `#k` secret is what proves the viewer got the link from the owner's registry rather than
-        // from a relay log. A plaintext hello on that token gets the ordinary approval path.
+        // The account link skips approval, but ONLY over a negotiated E2E cipher keyed by the account
+        // link's OWN secret (MirrorShare.accountSecret): a Kex that completed proves the viewer holds
+        // that `#k`, which only the owner's registry ever carried - a relay log has the token but not
+        // the fragment, and the view/control links' `#k` is a different secret. A plaintext hello on
+        // that token gets the ordinary approval path.
         val autoAdmit = ref.autoAdmit && serverCipher != null
         if (autoAdmit) log.info("Account link viewer admitted without approval for share {}", share.tabId)
         if (requiresApproval() && !autoAdmit) {
@@ -1312,7 +1315,9 @@ object SessionShareManager {
         // loopback). Plain-LAN http (no relay, no crypto.subtle) stays plaintext as before.
         // The native client uses #k whenever present, regardless of transport.
         if (e2eCapable(base)) {
-            sharesByToken[token]?.share?.sessionSecretB64?.let { return "$base#k=$it" }
+            sharesByToken[token]?.let { ref ->
+                return "$base#k=${if (ref.autoAdmit) ref.share.accountSecretB64 else ref.share.sessionSecretB64}"
+            }
         }
         return base
     }

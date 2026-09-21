@@ -71,6 +71,8 @@ class AccountSessionPublisher(
     private val sessionNameFor: (tabId: String) -> String?,
     private val deviceName: () -> String,
     private val accessToken: suspend (forceRefresh: Boolean) -> String?,
+    /** Stored token without a refresh, for [stop] from the shutdown hook. */
+    private val cachedAccessToken: () -> String? = { null },
     private val restBaseUrl: String,
     private val anonKey: String,
     private val appVersion: String,
@@ -125,7 +127,8 @@ class AccountSessionPublisher(
         // Delete FIRST, under the mutex, so an upsert in flight finishes (and is then deleted) rather
         // than being cancelled after the server accepted it and before we recorded it. Cancelling the
         // loop first was measured to leave exactly that row behind.
-        runBlocking { withTimeoutOrNull(STOP_TIMEOUT_MS) { deleteAll() } }
+        // cachedAccessToken: a refresh round-trip cannot fit in the hook's budget.
+        runBlocking { withTimeoutOrNull(STOP_TIMEOUT_MS) { deleteAll(tokenOverride = cachedAccessToken()) } }
         job?.cancel(); job = null
         scope.cancel()
     }
@@ -153,11 +156,16 @@ class AccountSessionPublisher(
 
     private suspend fun reconcile(s: Snapshot) = mutex.withLock {
         val account = s.account
-        if (account == null || !s.enabled) {
-            // Signed out or opted out: our rows must go. On sign-out the token is already gone
-            // (the sign-out listener handled the delete while it was valid); toggle-off still has it.
-            deleteTrackedLocked()
-            published.clear() // whatever did not land: the server sweeps stale rows
+        if (account == null) {
+            // Signed out: the sign-out listener already deleted our rows while the token was valid
+            // (BossAccountManager.addSignOutListener). No network here - accessToken() is null now,
+            // and trying would only race the revoke. Whatever did not land, the server sweeps.
+            published.clear()
+            return@withLock
+        }
+        if (!s.enabled) {
+            deleteTrackedLocked() // opted out with a live token: take our rows down now
+            published.clear()
             return@withLock
         }
         val token = accessToken(false) ?: return@withLock
@@ -181,7 +189,9 @@ class AccountSessionPublisher(
                 view_url = info.url,
                 control_url = accountUrl,
                 secure = info.secure,
-                e2e_code = info.e2eCode,
+                // The account link has its own secret, so its badge differs from the Share sheet's
+                // code; the page must show the one the viewer will actually see.
+                e2e_code = e2eCodeOf(accountUrl),
                 app_version = appVersion.take(40),
             )
             val ok = request(token) { b -> upsert(json.encodeToString(Row.serializer(), row), b) }
@@ -236,16 +246,24 @@ class AccountSessionPublisher(
         private const val STOP_TIMEOUT_MS = 3_000L
         const val LIVE_SESSIONS_PAGE = "https://api.risaboss.com/functions/v1/live-sessions"
 
+        /** Fingerprint of a link's `#k=` secret, as the share-viewer's E2E badge shows it. */
+        fun e2eCodeOf(url: String): String? {
+            val k = url.substringAfter("#k=", "").substringBefore('&').takeIf { it.isNotBlank() } ?: return null
+            return runCatching { SessionCrypto.fingerprint(SessionCrypto.decodeSecretB64Url(k)) }.getOrNull()
+        }
+
         /** Stable, non-reversible id for a share: first 16 hex of SHA-256(viewToken). */
         fun shareIdOf(viewToken: String): String =
             MessageDigest.getInstance("SHA-256").digest(viewToken.toByteArray()).take(8).joinToString("") { "%02x".format(it) }
 
         private fun defaultHttp() = HttpClient(CIO) {
             expectSuccess = false
+            // Short on purpose: every call runs under [mutex], and the sign-out listener (5s budget)
+            // and shutdown hook (3s) wait on that mutex. A slow network must not outlive them.
             install(HttpTimeout) {
-                requestTimeoutMillis = 15_000
-                connectTimeoutMillis = 10_000
-                socketTimeoutMillis = 10_000
+                requestTimeoutMillis = 4_000
+                connectTimeoutMillis = 3_000
+                socketTimeoutMillis = 3_000
             }
         }
 
@@ -261,6 +279,7 @@ class AccountSessionPublisher(
                 sessionNameFor = SessionShareManager::sessionNameFor,
                 deviceName = SessionShareManager::defaultSessionName,
                 accessToken = { force -> BossAccountManager.accessToken(force) },
+                cachedAccessToken = BossAccountManager::cachedAccessToken,
                 restBaseUrl = "${SupabaseAuthConfig.url}/rest/v1",
                 anonKey = SupabaseAuthConfig.anonKey,
                 appVersion = Version.CURRENT.toString(),

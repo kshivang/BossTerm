@@ -85,6 +85,15 @@ class MirrorShare(
     val sessionSecret: ByteArray = SessionCrypto.newSessionSecret()
     val sessionSecretB64: String = SessionCrypto.encodeSecretB64Url(sessionSecret)
 
+    // The ACCOUNT link gets its own secret, derived one-way from the session secret. Auto-admit
+    // rests on "this viewer holds the account link's `#k`"; if that were the shared session secret,
+    // a read-only invitee who then saw accountToken in a relay log would get control with no
+    // prompt. With a separate secret, view/control links prove nothing about the account link.
+    val accountSecret: ByteArray = SessionCrypto.hkdf(
+        sessionSecret, ByteArray(0), "bossterm-account-link-v1".toByteArray(), sessionSecret.size
+    )
+    val accountSecretB64: String = SessionCrypto.encodeSecretB64Url(accountSecret)
+
     // Observable so the layout observer re-emits when the scope is toggled live
     // (Tab ↔ Window) — same tokens/viewers, just a different set of mirrored tabs.
     private var scopeVar by mutableStateOf(initialScope)

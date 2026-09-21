@@ -190,9 +190,12 @@ sheet; the ordinary view/control links still prompt as `sessionSharingApprovalSc
 
 **Automatic sharing.** While you are signed in and publishing, BossTerm keeps one all-windows
 share running by itself (`autoShareToAccount`, on by default), so the page always lists this
-machine with no Share Tab step. Starting it turns session sharing on and a remote mode of "off"
-into Cloudflare, the same way the Share Tab menu enables sharing on first use. It never touches a
-share you started by hand, and it stops its own share when you sign out or turn either toggle off.
+machine with no Share Tab step. It is a separate kind of share from the ones you start: the tab
+Share/Stop button does not show or stop it, switching **Enable Session Sharing** off leaves it
+running (only your own shares stop), and it is reached over Cloudflare even when the remote mode
+is "off". The only things that stop it are its two switches, in Settings > Session Sharing and in
+the Share dialog's collapsed "Auto-share to <your email>" section (above Remote access), or
+signing out. It never touches a share you started by hand.
 
 **Your other devices, inside BossTerm.** The Remote Sessions window (the cloud "Add remote"
 button) lists the sessions your other signed-in BossTerms are sharing, refreshed on open and every

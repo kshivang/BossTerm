@@ -65,6 +65,13 @@ class MirrorShare(
     /** The tab the share was initiated from; also resolves the owning window. */
     val tabId: String,
     initialScope: ShareScope,
+    /**
+     * Started by [AccountAutoShare] for the BOSS account, not by the user. It is invisible to the
+     * tab Share/Stop button and to "Enable Session Sharing" (see SessionShareManager.sharedTabIds
+     * and stopUserShares); only the account feature starts and stops it. Declared before
+     * [onEnded] so callers can keep passing that as a trailing lambda.
+     */
+    val accountManaged: Boolean = false,
     /** Invoked when the share has no panes left (its tab/window closed) so the manager can drop it. */
     private val onEnded: () -> Unit,
 ) {

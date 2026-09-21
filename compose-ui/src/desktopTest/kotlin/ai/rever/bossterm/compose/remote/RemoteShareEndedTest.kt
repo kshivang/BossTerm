@@ -100,7 +100,7 @@ class RemoteShareEndedTest {
     }
 
     @Test fun `host stop discards pending output and also rejects late admissions`() = runBlocking<Unit> {
-        val share = MirrorShare("test", ShareScope.TAB) {}
+        val share = MirrorShare("test", ShareScope.TAB, onEnded = {})
         val viewer = share.addViewer(false)
         viewer.outbox.trySend("stale output")
         share.stop()

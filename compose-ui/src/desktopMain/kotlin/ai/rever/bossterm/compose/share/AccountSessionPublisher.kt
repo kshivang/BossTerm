@@ -281,7 +281,7 @@ class AccountSessionPublisher(
         /** The process-wide publisher wired to the singletons. Started from main(). */
         val Default: AccountSessionPublisher by lazy {
             AccountSessionPublisher(
-                sharedTabIds = SessionShareManager.sharedTabIds,
+                sharedTabIds = SessionShareManager.allSharedTabIds,
                 remoteUrl = SessionShareManager.remoteUrlFlow,
                 accountState = BossAccountManager.state,
                 enabled = SettingsManager.instance.settings.map { it.publishSessionsToAccount }

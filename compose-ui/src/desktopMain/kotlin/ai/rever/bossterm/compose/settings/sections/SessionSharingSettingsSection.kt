@@ -106,8 +106,9 @@ fun SessionSharingSettingsSection(
                 checked = settings.autoShareToAccount,
                 onCheckedChange = { onSettingsChange(settings.copy(autoShareToAccount = it)) },
                 description = "Keeps one whole-app share running (over the Cloudflare tunnel) whenever you are " +
-                        "signed in and publishing, so the live-sessions page always shows this machine. Turns " +
-                        "session sharing on if it is off. Off = share tabs by hand as before."
+                        "signed in and publishing, so the live-sessions page always shows this machine. " +
+                        "Independent of Enable Session Sharing and of the tab Share/Stop button: those " +
+                        "govern your own shares. Off = share tabs by hand as before."
             )
         }
 

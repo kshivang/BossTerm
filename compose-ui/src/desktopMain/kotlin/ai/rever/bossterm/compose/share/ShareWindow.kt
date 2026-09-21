@@ -293,6 +293,8 @@ fun ShareWindow(
                 BossCallingSection(showAgentOptions = false, callLabel = callLabel)
                 Spacer(Modifier.height(20.dp))
 
+                AccountAutoShareSection()
+                Spacer(Modifier.height(12.dp))
                 RemoteAccessSetupSection(
                     mode = tailscaleMode,
                     onModeChange = onTailscaleModeChange,
@@ -695,3 +697,85 @@ private fun qrImageBitmap(text: String, target: Int = 512): ImageBitmap? = runCa
     }
     image.toComposeImageBitmap()
 }.getOrNull()
+
+/**
+ * Collapsible "Auto-share to <email>" subsection, above Remote access. The account share is a
+ * separate thing from the share this window is about: this window's Stop button and the tab
+ * Share/Stop button never touch it, and neither does switching Session Sharing off. These two
+ * toggles (and signing out) are the only way to stop it. Collapsed by default.
+ */
+@Composable
+private fun AccountAutoShareSection() {
+    var expanded by remember { mutableStateOf(false) }
+    val account by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+    val settings by ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.collectAsState()
+    val allShared by SessionShareManager.allSharedTabIds.collectAsState()
+    val userShared by SessionShareManager.sharedTabIds.collectAsState()
+    val signedIn = account as? ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn
+    val active = signedIn != null && settings.publishSessionsToAccount && settings.autoShareToAccount &&
+        (allShared - userShared).isNotEmpty()
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ArrowDropDown else Icons.Default.ArrowRight,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = TextSecondary,
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(Modifier.width(2.dp))
+            Text(
+                if (signedIn != null) "Auto-share to ${signedIn.email}" else "Auto-share to BOSS account",
+                color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                when {
+                    signedIn == null -> "signed out"
+                    !settings.publishSessionsToAccount || !settings.autoShareToAccount -> "off"
+                    active -> "all windows · live"
+                    else -> "starting…"
+                },
+                color = if (active) Success else TextMuted,
+                fontSize = 11.sp
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Separate from the share above: an all-windows share kept running for your BOSS account so " +
+                    "your other devices and the live-sessions page can open this machine. Stopping the share " +
+                    "above or turning Session Sharing off does not stop it; only these switches (or signing out) do.",
+                color = TextSecondary, fontSize = 12.sp
+            )
+            if (signedIn == null) {
+                Spacer(Modifier.height(6.dp))
+                Text("Sign in (menu > Sign In...) to use it.", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(6.dp))
+            ai.rever.bossterm.compose.settings.components.SettingsToggle(
+                label = "Share all windows automatically while signed in",
+                checked = settings.autoShareToAccount,
+                onCheckedChange = { on ->
+                    ai.rever.bossterm.compose.settings.SettingsManager.instance.updateSetting { copy(autoShareToAccount = on) }
+                },
+                description = "Off = your account still lists shares you start by hand, but nothing is shared automatically."
+            )
+            ai.rever.bossterm.compose.settings.components.SettingsToggle(
+                label = "Publish live sessions to my BOSS account",
+                checked = settings.publishSessionsToAccount,
+                onCheckedChange = { on ->
+                    ai.rever.bossterm.compose.settings.SettingsManager.instance.updateSetting { copy(publishSessionsToAccount = on) }
+                },
+                description = "Off = nothing about this machine leaves it for the account; auto-share stops too."
+            )
+            Text(
+                "Open from anywhere: " + ai.rever.bossterm.compose.share.AccountSessionPublisher.LIVE_SESSIONS_PAGE,
+                color = TextMuted, fontSize = 11.sp
+            )
+        }
+    }
+}

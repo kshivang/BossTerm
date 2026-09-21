@@ -22,24 +22,18 @@ import org.slf4j.LoggerFactory
 
 /**
  * Keeps one whole-app share ([ShareScope.ALL]) running while the user is signed in and publishing
- * to their BOSS account, so the live-sessions page always lists this machine without anyone
- * right-clicking Share Tab.
+ * to their BOSS account, so the live-sessions page always lists this machine.
  *
- * Rules, evaluated on every change to the account, the settings or the share set, and every
- * [pollMs] (tabs are not observable as a flow; a window may open after start-up):
+ * It is a SEPARATE kind of share from the ones the user starts: flagged [MirrorShare.accountManaged],
+ * hidden from the tab Share/Stop button, untouched by "Enable Session Sharing" being switched off
+ * (the manager's `accountSharingWanted` is a second enable switch), and reached over Cloudflare
+ * even when the remote mode is "off". Only the account toggles ([TerminalSettings.autoShareToAccount],
+ * [TerminalSettings.publishSessionsToAccount]) and signing out stop it; the Share dialog carries
+ * them in its own collapsed section.
  *
- *   - signed in AND [TerminalSettings.publishSessionsToAccount] AND
- *     [TerminalSettings.autoShareToAccount] AND at least one tab exists AND nothing is currently
- *     shared  ->  start an ALL-scope share from the first tab. If session sharing is switched off
- *     it is switched ON (the Share Tab menu does the same; the setting is persisted so the user
- *     sees it in Settings), and a remote mode of "off" becomes "cloudflare", the default and the
- *     only way the page can reach this machine from elsewhere.
- *   - any of the conditions stops holding  ->  the share THIS component started is stopped. A share
- *     the user started by hand is never touched, which is why the started tab id is remembered.
- *
- * A share that ends on its own (its initiating tab closed, the window closed) is simply started
- * again on the next tick while the conditions hold. The publisher then re-registers it under a
- * new share_id, which is correct: it is a new share.
+ * Evaluated on every change to the account, the settings or the share set, and every [pollMs]
+ * (tabs are not observable as a flow; a window may open after start-up). A share that ends on its
+ * own (window closed) is started again on the next tick while the conditions hold.
  */
 class AccountAutoShare(
     private val accountState: StateFlow<AccountState>,
@@ -48,7 +42,8 @@ class AccountAutoShare(
     private val firstTabId: () -> String?,
     private val share: suspend (tabId: String) -> Boolean,
     private val unshare: (tabId: String) -> Unit,
-    private val updateSettings: ((TerminalSettings) -> TerminalSettings) -> Unit,
+    /** The manager's second enable switch; true while this component wants its share to exist. */
+    private val setWanted: (Boolean) -> Unit,
     private val pollMs: Long = DEFAULT_POLL_MS,
 ) {
     private val log = LoggerFactory.getLogger(AccountAutoShare::class.java)
@@ -86,9 +81,10 @@ class AccountAutoShare(
         val s = settings.value
         val wanted = accountState.value is AccountState.SignedIn && s.publishSessionsToAccount && s.autoShareToAccount
         val mine = autoSharedTabId
+        setWanted(wanted)
         if (!wanted) {
             if (mine != null) {
-                log.info("Auto-share: conditions no longer hold; stopping the share this started")
+                log.info("Auto-share: conditions no longer hold; stopping the account share")
                 unshare(mine)
                 autoSharedTabId = null
             }
@@ -98,22 +94,7 @@ class AccountAutoShare(
         // window closed - in which case it is no longer in sharedTabIds and we fall through.)
         if (mine != null && mine in sharedTabIds.value) return@withLock
         autoSharedTabId = null
-        // Something is shared already (by the user, or a previous instance): do not stack a second
-        // ALL share on top of it. The publisher lists whatever is shared.
-        if (sharedTabIds.value.isNotEmpty()) return@withLock
         val tabId = firstTabId() ?: return@withLock // no window yet; the poll will retry
-        if (!s.sessionSharingEnabled || s.shareTailscaleMode == "off") {
-            log.info(
-                "Auto-share: enabling session sharing{} for the signed-in account",
-                if (s.shareTailscaleMode == "off") " with the Cloudflare tunnel" else "",
-            )
-            updateSettings { cur ->
-                cur.copy(
-                    sessionSharingEnabled = true,
-                    shareTailscaleMode = if (cur.shareTailscaleMode == "off") "cloudflare" else cur.shareTailscaleMode,
-                )
-            }
-        }
         if (share(tabId)) {
             autoSharedTabId = tabId
             log.info("Auto-share: started an all-windows share for the signed-in account")
@@ -129,11 +110,11 @@ class AccountAutoShare(
             AccountAutoShare(
                 accountState = BossAccountManager.state,
                 settings = SettingsManager.instance.settings,
-                sharedTabIds = SessionShareManager.sharedTabIds,
+                sharedTabIds = SessionShareManager.allSharedTabIds,
                 firstTabId = { McpTerminalRegistry.primaryState()?.tabs?.firstOrNull()?.id },
-                share = { tabId -> SessionShareManager.share(tabId, ShareScope.ALL) != null },
-                unshare = SessionShareManager::unshare,
-                updateSettings = { f -> SettingsManager.instance.updateSetting { f(this) } },
+                share = { tabId -> SessionShareManager.share(tabId, ShareScope.ALL, accountManaged = true) != null },
+                unshare = { tabId -> SessionShareManager.unshare(tabId, includeAccountManaged = true) },
+                setWanted = { SessionShareManager.accountSharingWanted.value = it },
             )
         }
     }

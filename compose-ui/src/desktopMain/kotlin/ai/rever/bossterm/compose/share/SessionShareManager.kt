@@ -243,8 +243,33 @@ object SessionShareManager {
     private val sharesByTab = ConcurrentHashMap<String, MirrorShare>()
 
     private val _sharedTabIds = MutableStateFlow<Set<String>>(emptySet())
-    /** Tab ids currently being shared — drives the UI indicator + Share/Stop menu state. */
+    /**
+     * Tab ids the USER is sharing — drives the UI indicator + Share/Stop menu state. Excludes the
+     * account-managed share (see [MirrorShare.accountManaged]); that one has its own controls.
+     */
     val sharedTabIds: StateFlow<Set<String>> = _sharedTabIds.asStateFlow()
+
+    private val _allSharedTabIds = MutableStateFlow<Set<String>>(emptySet())
+    /** Every active share, account-managed included - what the registry publisher lists. */
+    val allSharedTabIds: StateFlow<Set<String>> = _allSharedTabIds.asStateFlow()
+
+    /**
+     * Set by [AccountAutoShare] while it wants its share to exist. It is a SECOND enable switch,
+     * independent of [TerminalSettings.sessionSharingEnabled]: the account share must survive the
+     * user turning ordinary sharing off, and turning ordinary sharing on must not be required for
+     * it. While set, a remote mode of "off" is treated as "cloudflare", since a share nobody can
+     * reach from another device is useless to the account page.
+     */
+    val accountSharingWanted = MutableStateFlow(false)
+
+    private fun sharingEnabled(s: TerminalSettings): Boolean = s.sessionSharingEnabled || accountSharingWanted.value
+    private fun remoteMode(s: TerminalSettings): String =
+        if (s.shareTailscaleMode == "off" && accountSharingWanted.value) "cloudflare" else s.shareTailscaleMode
+
+    private fun publishSharedTabIds() {
+        _allSharedTabIds.value = sharesByTab.keys.toSet()
+        _sharedTabIds.value = sharesByTab.filterValues { !it.accountManaged }.keys.toSet()
+    }
 
     // @Volatile: written by [shutdown] from a shutdown-hook / embedder-dispose thread while
     // [start] reads and writes it from another.
@@ -374,7 +399,7 @@ object SessionShareManager {
      */
     private fun keepWarm(): Boolean {
         val s = settingsManager.settings.value
-        return s.sessionSharingEnabled && s.shareTailscaleMode != "off"
+        return sharingEnabled(s) && remoteMode(s) != "off"
     }
 
     private fun newKey(): String = UUID.randomUUID().toString().replace("-", "")
@@ -430,10 +455,14 @@ object SessionShareManager {
             // pre-warm or prefetch would silently kill the settings observer for good: no
             // pre-warm, no teardown on disable, and nothing logged.
             supervisorScope {
-                settingsManager.settings
-                    .map { it.sessionSharingEnabled to it.shareTailscaleMode }
+                kotlinx.coroutines.flow.combine(settingsManager.settings, accountSharingWanted) { s, _ ->
+                    sharingEnabled(s) to remoteMode(s)
+                }
                     .distinctUntilChanged()
                     .collect { (enabled, mode) ->
+                        // Ordinary sharing switched off: the user's shares go, the account share
+                        // (if wanted) stays and keeps the engine. Nothing wanted at all: full stop.
+                        if (!settingsManager.settings.value.sessionSharingEnabled) stopUserShares()
                         if (!enabled) { stopAll(); return@collect }
                         // EAGER prefetch: as soon as cloudflare sharing is enabled, fetch cloudflared in
                         // the background so the first share doesn't pay the download. No-op when a
@@ -460,7 +489,7 @@ object SessionShareManager {
     }
 
     /** Is [tabId] currently shared? */
-    fun isSharing(tabId: String): Boolean = sharesByTab.containsKey(tabId)
+    fun isSharing(tabId: String): Boolean = sharesByTab[tabId]?.accountManaged == false
 
     /**
      * Is [token] one of THIS instance's active share tokens (view or control)? Used to refuse
@@ -518,7 +547,7 @@ object SessionShareManager {
     private suspend fun prewarmRemote() {
         if (shuttingDown) return
         val settings = settingsManager.settings.value
-        if (!settings.sessionSharingEnabled || settings.shareTailscaleMode == "off") return
+        if (!sharingEnabled(settings) || remoteMode(settings) == "off") return
         // Let the BossTerm MCP server claim its port FIRST. It shares the 7676+ range with the
         // share server; pre-warm runs at app launch concurrently with the MCP server, so if both
         // probe the same free port before either binds, the share server's wildcard bind coexists
@@ -546,19 +575,19 @@ object SessionShareManager {
      * grouped by window in the viewer). Boots the share server if needed. Returns null
      * when sharing is disabled or the server can't bind. Idempotent per [tabId].
      */
-    suspend fun share(tabId: String, scope: ShareScope = ShareScope.TAB): ShareInfo? {
+    suspend fun share(tabId: String, scope: ShareScope = ShareScope.TAB, accountManaged: Boolean = false): ShareInfo? {
         val settings = settingsManager.settings.value
-        if (!settings.sessionSharingEnabled) return null
+        if (!(if (accountManaged) sharingEnabled(settings) else settings.sessionSharingEnabled)) return null
         return mutex.withLock {
             val epoch = shutdownEpoch.get()
             if (!ensureEngineLocked(settings)) return@withLock null
-            val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId) }).also {
+            val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId, includeAccountManaged = true) }, accountManaged = accountManaged).also {
                 it.start()
                 sharesByToken[it.viewToken] = TokenRef(it, canControl = false)
                 sharesByToken[it.controlToken] = TokenRef(it, canControl = true)
                 sharesByToken[it.accountToken] = TokenRef(it, canControl = true, autoAdmit = true)
                 sharesByTab[tabId] = it
-                _sharedTabIds.value = sharesByTab.keys.toSet()
+                publishSharedTabIds()
             }
             // Adopt, then re-check — the same shape [ensureEngineLocked] uses for the engine.
             // A pre-check would not do: [shutdown] deliberately does not take this mutex, so it can
@@ -606,7 +635,7 @@ object SessionShareManager {
         if (shuttingDown) { log.debug("Ignoring refreshRemoteLink(): the manager is shut down"); return }
         scope.launch {
             val port = boundPort ?: return@launch
-            val mode = settingsManager.settings.value.shareTailscaleMode
+            val mode = remoteMode(settingsManager.settings.value)
             if (mode == "off") return@launch
             val op = claimRemoteOp()
             withContext(Dispatchers.IO) { establishRemote(mode, port, op) }
@@ -693,7 +722,7 @@ object SessionShareManager {
             scope.launch {
                 if (!isCurrentRemoteOp(op)) return@launch // a cooperative teardown/switch superseded us
                 val s = settingsManager.settings.value
-                if (!s.sessionSharingEnabled || s.shareTailscaleMode != "cloudflare") return@launch
+                if (!sharingEnabled(s) || remoteMode(s) != "cloudflare") return@launch
                 if (engine == null) return@launch
                 delay(2000) // brief backoff; a teardown during this window bumps the op
                 if (!isCurrentRemoteOp(op)) return@launch
@@ -789,12 +818,17 @@ object SessionShareManager {
     }
 
     /** Stop sharing [tabId]; stops the server if it was the last share. */
-    fun unshare(tabId: String) {
+    fun unshare(tabId: String, includeAccountManaged: Boolean = false) {
         // shutdown() already stopped and cleared every share, inline.
         if (shuttingDown) { log.debug("Ignoring unshare({}): the manager is shut down", tabId); return }
         scope.launch {
             mutex.withLock {
                 val share = sharesByTab[tabId] ?: return@withLock
+                // The account share is not the user's to stop from the tab menu; AccountAutoShare
+                // (and the Share dialog's own section) passes includeAccountManaged.
+                if (share.accountManaged && !includeAccountManaged) {
+                    log.debug("Ignoring unshare({}): account-managed share", tabId); return@withLock
+                }
                 unregisterShareLocked(tabId, share)
                 // Keep the engine + tunnel warm when sharing stays enabled with a remote provider,
                 // so a re-share is instant; otherwise tear down as before.
@@ -817,7 +851,18 @@ object SessionShareManager {
         failPendingFor(tabId)
         releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
         runCatching { share.stop() }
-        _sharedTabIds.value = sharesByTab.keys.toSet()
+        publishSharedTabIds()
+    }
+
+    /** "Enable Session Sharing" was switched off: drop the user's shares, keep an account share. */
+    private fun stopUserShares() {
+        if (shuttingDown) return
+        scope.launch {
+            mutex.withLock {
+                sharesByTab.filterValues { !it.accountManaged }.forEach { (tabId, share) -> unregisterShareLocked(tabId, share) }
+                if (sharesByTab.isEmpty() && !keepWarm()) stopEngineLocked()
+            }
+        }
     }
 
     private fun stopAll() {
@@ -829,7 +874,7 @@ object SessionShareManager {
                 sharesByToken.clear()
                 grants.clear()
                 failAllPending()
-                _sharedTabIds.value = emptySet()
+                publishSharedTabIds()
                 stopEngineLocked()
             }
         }
@@ -903,7 +948,7 @@ object SessionShareManager {
         sharesByToken.clear()
         grants.clear()
         failAllPending()
-        _sharedTabIds.value = emptySet()
+        publishSharedTabIds()
         teardownRemoteAccess(boundPort)
         // Clear the bookkeeping before the (bounded, up to 1s) engine stop, so a second
         // shutdown() — or anything reading boundPort — never sees a half-torn-down manager.
@@ -1054,8 +1099,8 @@ object SessionShareManager {
                 // caller's (UI) thread — doing it inline would freeze the app. The dialog
                 // opens immediately with the LAN URL; the public URL is picked up via
                 // remoteUrlFlow when it resolves. Guarded so it only fires once per lifecycle.
-                if (settings.shareTailscaleMode != "off" && activeRemoteMode == "off") {
-                    val mode = settings.shareTailscaleMode
+                if (remoteMode(settings) != "off" && activeRemoteMode == "off") {
+                    val mode = remoteMode(settings)
                     val rPort = port
                     activeRemoteMode = mode // claim it now so this fires once per lifecycle
                     val op = claimRemoteOp()

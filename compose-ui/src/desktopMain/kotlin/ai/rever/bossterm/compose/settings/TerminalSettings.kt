@@ -1146,8 +1146,9 @@ data class TerminalSettings(
     /**
      * With [publishSessionsToAccount], keep an all-windows share running automatically while
      * signed in, so the live-sessions page always lists this machine with no manual Share Tab.
-     * Starting it turns [sessionSharingEnabled] on and a remote mode of "off" into "cloudflare",
-     * the same way the Share Tab menu enables sharing on first use. See AccountAutoShare.
+     * Independent of [sessionSharingEnabled]: that switch and the tab Share/Stop button govern
+     * the user's own shares only; this share is reached over Cloudflare even when
+     * [shareTailscaleMode] is "off". See AccountAutoShare and MirrorShare.accountManaged.
      */
     val autoShareToAccount: Boolean = true,
 

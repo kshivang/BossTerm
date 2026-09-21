@@ -25,6 +25,7 @@ class AccountAutoShareTest {
     private var tabs = listOf("tab-1")
     private val shares = CopyOnWriteArrayList<String>()
     private val unshares = CopyOnWriteArrayList<String>()
+    private val wanted = MutableStateFlow(false)
     @Volatile private var shareSucceeds = true
 
     private val auto = AccountAutoShare(
@@ -34,7 +35,7 @@ class AccountAutoShareTest {
         firstTabId = { tabs.firstOrNull() },
         share = { id -> shares += id; if (shareSucceeds) { shared.value = shared.value + id; true } else false },
         unshare = { id -> unshares += id; shared.value = shared.value - id },
-        updateSettings = { f -> settings.value = f(settings.value) },
+        setWanted = { wanted.value = it },
         pollMs = 150,
     )
 
@@ -44,32 +45,36 @@ class AccountAutoShareTest {
     private suspend fun awaitShares(n: Int) = withTimeout(5_000) { while (shares.size < n) delay(20) }
 
     @Test
-    fun `signed out shares nothing, signing in starts one ALL share and enables sharing over cloudflare`() = runBlocking {
+    fun `signed out shares nothing, signing in raises the wanted switch and starts one ALL share`() = runBlocking {
         auto.start()
         delay(400)
         assertEquals(0, shares.size)
+        assertEquals(false, wanted.value)
 
         account.value = AccountState.SignedIn("me@x.y", "u1")
         awaitShares(1)
         assertEquals("tab-1", shares[0])
         assertEquals("tab-1", auto.autoSharedTabId)
-        assertTrue(settings.value.sessionSharingEnabled)
-        assertEquals("cloudflare", settings.value.shareTailscaleMode)
+        assertEquals(true, wanted.value)
+        // The user's own switches are NOT flipped: the account share has its own enable path.
+        assertEquals(false, settings.value.sessionSharingEnabled)
+        assertEquals("off", settings.value.shareTailscaleMode)
         delay(500) // several polls: no second share while ours runs
         assertEquals(1, shares.size)
     }
 
     @Test
-    fun `an existing user share is respected - nothing stacked on top and nothing unshared on sign-out`() = runBlocking {
+    fun `a user share coexists - the account share is started beside it and only ours is stopped on sign-out`() = runBlocking {
         shared.value = setOf("user-tab")
         account.value = AccountState.SignedIn("me@x.y", "u1")
         auto.start()
-        delay(500)
-        assertEquals(0, shares.size)
-        assertNull(auto.autoSharedTabId)
+        awaitShares(1)
+        assertEquals("tab-1", auto.autoSharedTabId)
         account.value = AccountState.SignedOut
-        delay(300)
-        assertEquals(0, unshares.size, "a share we did not start is never touched")
+        withTimeout(5_000) { while (unshares.isEmpty()) delay(20) }
+        assertEquals(listOf("tab-1"), unshares, "a share we did not start is never touched")
+        assertTrue("user-tab" in shared.value)
+        assertEquals(false, wanted.value)
     }
 
     @Test

@@ -202,10 +202,13 @@ denied), the viewer returns to the page after a couple of seconds instead of sho
 close this tab". The page tags the link with `from=live-sessions`; a plain share link never
 redirects anywhere.
 
-**Your other devices, inside BossTerm.** The Remote Sessions window (the cloud "Add remote"
-button) lists the sessions your other signed-in BossTerms are sharing, refreshed on open and every
-15 seconds. Connect mirrors that device's tabs here through the native client, using the account
-link, so the other machine does not prompt for approval. Your own shares are filtered out.
+**Your other devices, inside BossTerm.** Sessions your other signed-in BossTerms are sharing
+are attached to this window automatically as remote tabs (`autoConnectAccountSessions`, on by
+default), through the native client and the account link, so the other machine does not prompt
+for approval. Only the primary window connects, so each session appears once; a session you
+disconnect by hand stays disconnected until that device starts a new share. The Remote Sessions
+window (the cloud "Add remote" button) still lists them, refreshed on open and every 15 seconds,
+with Connect for when the automatic attach is off. Your own shares are filtered out.
 
 Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
 plugin), where the account menu is hidden.
@@ -226,6 +229,7 @@ All under **Settings → Session Sharing**, persisted in `~/.bossterm/settings.j
 | `sessionSharingShowIndicator` | `true` | Show the sharing indicator in the tab bar. |
 | `publishSessionsToAccount` | `true` | While signed in, list every active share under your BOSS account (see below). |
 | `autoShareToAccount` | `true` | With the above, keep an all-windows share running automatically while signed in. |
+| `autoConnectAccountSessions` | `true` | Attach your other devices' live sessions here as remote tabs automatically. |
 
 > Note `shareTailscaleMode` defaults to `cloudflare`, but sharing is still gated by
 > `sessionSharingEnabled` (off by default) - so no tunnel opens until you turn sharing on.

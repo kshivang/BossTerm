@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.voice.local.LocalVoiceInstall
+import ai.rever.bossterm.compose.voice.aec.VoiceAudioIoSelection
 import ai.rever.bossterm.compose.voice.local.LocalVoiceRuntime
 
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -89,7 +90,7 @@ internal class HostVoiceCallController(
      * HostVoiceCall happening to construct a fresh controller each time. A factory makes it
      * impossible to violate rather than merely documented.
      */
-    private val newAudio: () -> VoiceAudioIo = { JavaSoundVoiceAudioIo() },
+    private val newAudio: () -> VoiceAudioIo = { VoiceAudioIoSelection.create() },
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
     private val loadKey: () -> String? = { VoiceKeySource.resolve() },
     /**

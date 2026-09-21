@@ -1199,6 +1199,22 @@ data class TerminalSettings(
     val voiceCallVoice: String = "marin",
 
     /**
+     * Let the operating system cancel the agent's echo, where it can.
+     *
+     * On macOS this selects Voice Processing I/O, the audio unit behind FaceTime's microphone
+     * path, which subtracts the speaker signal from the capture using both streams sample-aligned.
+     * Everywhere else it has no effect: the JavaSound path and its
+     * [ai.rever.bossterm.compose.voice.VoiceDuplexGate] remain the only option.
+     *
+     * On by default because the alternative is a heuristic that measurably fails on open speakers:
+     * with a correct reference it still held its attenuation estimate at 0.10-0.24 against a true
+     * coupling near 0.83, so the agent's own voice read as a barge-in. The switch exists because
+     * this swaps the whole audio device implementation, and a machine whose driver misbehaves
+     * needs a way back that is not a rebuild.
+     */
+    val voiceHardwareEchoCancellation: Boolean = true,
+
+    /**
      * Which service carries a call - see [ai.rever.bossterm.compose.voice.VoiceBackend].
      *
      * A String rather than the enum because this file is the persisted schema: an unknown value

@@ -1137,7 +1137,7 @@ data class TerminalSettings(
     /**
      * Publish each active share to the signed-in BOSS account's live-session registry
      * (Supabase `terminal_sessions`, owner-only), so it can be opened from any browser via
-     * https://api.risaboss.com/functions/v1/live-sessions after a magic-link sign-in. Only the LINK
+     * https://cli.risaboss.com after a magic-link sign-in. Only the LINK
      * leaves the machine (device/session name, scope, the share URL incl. its E2E secret), never
      * terminal content. No effect while signed out. See AccountSessionPublisher.
      */

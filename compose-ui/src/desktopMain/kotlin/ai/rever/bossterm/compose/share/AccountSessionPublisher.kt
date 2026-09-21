@@ -255,8 +255,11 @@ class AccountSessionPublisher(
     companion object {
         const val DEFAULT_HEARTBEAT_MS = 30_000L
         private const val STOP_TIMEOUT_MS = 3_000L
-        const val LIVE_SESSIONS_ORIGIN = "https://api.risaboss.com"
-        const val LIVE_SESSIONS_PAGE = "$LIVE_SESSIONS_ORIGIN/functions/v1/live-sessions"
+        /** The page's vanity host (a Cloudflare Worker in front of the edge function). */
+        const val LIVE_SESSIONS_ORIGIN = "https://cli.risaboss.com"
+        const val LIVE_SESSIONS_PAGE = LIVE_SESSIONS_ORIGIN
+        /** The function's own host, still valid; framing is allowed from both during the move. */
+        const val LIVE_SESSIONS_LEGACY_ORIGIN = "https://api.risaboss.com"
 
         /** Fingerprint of a link's `#k=` secret, as the share-viewer's E2E badge shows it. */
         fun e2eCodeOf(url: String): String? {

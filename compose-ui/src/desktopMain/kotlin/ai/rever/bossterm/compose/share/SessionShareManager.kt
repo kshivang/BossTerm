@@ -1052,7 +1052,10 @@ object SessionShareManager {
                     intercept(ApplicationCallPipeline.Plugins) {
                         val token = call.request.queryParameters["t"]
                         if (token != null && isAccountToken(token)) {
-                            call.response.header("Content-Security-Policy", "frame-ancestors ${AccountSessionPublisher.LIVE_SESSIONS_ORIGIN}")
+                            call.response.header(
+                                "Content-Security-Policy",
+                                "frame-ancestors ${AccountSessionPublisher.LIVE_SESSIONS_ORIGIN} ${AccountSessionPublisher.LIVE_SESSIONS_LEGACY_ORIGIN}",
+                            )
                         } else {
                             call.response.header("X-Frame-Options", "DENY")
                         }

@@ -159,7 +159,7 @@ shared session.
 Sign in (menu > **Sign In...**) and every share you start is also registered against your BOSS
 account, so you can open it from any browser without pasting a link:
 
-1. Open <https://api.risaboss.com/functions/v1/live-sessions> on the other device.
+1. Open <https://cli.risaboss.com> on the other device.
 2. Enter the email you signed into BossTerm with and click the button in the email.
 3. You land back on the page, signed in. With exactly one live session it opens straight away;
    with several you get a list (device, session name, scope, E2E badge) and pick one.

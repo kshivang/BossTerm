@@ -815,7 +815,7 @@ const scenarios = {
     assert.deepStrictEqual(overlayActions(), ["Back to live sessions"]);
     assert.deepStrictEqual(location.replaced, [], "must give the user a moment to read the reason");
     advance(2500);
-    assert.deepStrictEqual(location.replaced, ["https://api.risaboss.com/functions/v1/live-sessions"]);
+    assert.deepStrictEqual(location.replaced, ["https://cli.risaboss.com"]);
   },
 
   "opened from the live-sessions page, exhausted reconnects also return there"() {
@@ -830,7 +830,7 @@ const scenarios = {
     advance(60000);
     assert.strictEqual(overlayTitle(), "Disconnected");
     assert.deepStrictEqual(overlayActions(), ["Back to live sessions", "Reconnect"]);
-    assert.deepStrictEqual(location.replaced, ["https://api.risaboss.com/functions/v1/live-sessions"]);
+    assert.deepStrictEqual(location.replaced, ["https://cli.risaboss.com"]);
   },
 
   "embedded by the live-sessions page, a close tells the parent instead of navigating the frame"() {
@@ -840,7 +840,7 @@ const scenarios = {
     advance(2500);
     assert.deepStrictEqual(location.replaced, [], "the frame must not navigate itself");
     assert.deepStrictEqual(parent.posted, [
-      { msg: { type: "bossterm-session-ended", reason: "ended" }, origin: "https://api.risaboss.com/functions/v1/live-sessions" },
+      { msg: { type: "bossterm-session-ended", reason: "ended" }, origin: "https://cli.risaboss.com" },
     ]);
   },
 

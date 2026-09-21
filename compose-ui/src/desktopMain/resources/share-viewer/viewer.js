@@ -27,7 +27,7 @@
   // link). When the session ends for good, go back there instead of stranding the user on a
   // "you can close this tab" overlay. Fixed destination, never a URL from the query: a viewer
   // that redirected wherever `?from=` pointed would be an open redirect on every share link.
-  var LIVE_SESSIONS_URL = "https://api.risaboss.com/functions/v1/live-sessions";
+  var LIVE_SESSIONS_URL = "https://cli.risaboss.com";
   var RETURN_TO_LIVE_SESSIONS_MS = 2000;
   var returnToLiveSessions = params.get("from") === "live-sessions";
   // Embedded by that page in an iframe (its address bar stays on api.risaboss.com). Then "return"

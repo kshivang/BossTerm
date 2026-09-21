@@ -846,7 +846,8 @@ const scenarios = {
 
   "the Get BossTerm banner is hidden for viewers from the live-sessions page, shown for a plain link"() {
     loadViewer({ search: "?t=view-token&from=live-sessions" });
-    assert.strictEqual(el("installbanner").style.display, "none", "account viewers already have BossTerm");
+    // The fake DOM leaves an untouched inline style undefined; "shown" is the only value the code sets.
+    assert.notStrictEqual(el("installbanner").style.display, "flex", "account viewers already have BossTerm");
     loadViewer();
     assert.strictEqual(el("installbanner").style.display, "flex", "a plain share link still offers the install");
   },

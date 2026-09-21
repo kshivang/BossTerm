@@ -11,6 +11,12 @@ import ai.rever.bossterm.compose.util.UrlOpener
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Laptop
+import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -91,7 +97,7 @@ fun SignInWindow(
         onCloseRequest = onDismiss,
         title = "BossTerm - Sign In",
         resizable = false,
-        state = rememberWindowState(size = DpSize(440.dp, 600.dp))
+        state = rememberWindowState(size = DpSize(460.dp, 780.dp))
     ) {
         // Raise an already-open window when the menu item is clicked again.
         LaunchedEffect(focusTick) {
@@ -215,51 +221,22 @@ fun SignInWindow(
  */
 @Composable
 private fun AnywhereSection() {
-    val clipboard = LocalClipboardManager.current
     val settings by SettingsManager.instance.settings.collectAsState()
     val url = AccountSessionPublisher.LIVE_SESSIONS_ORIGIN
     val sharing = settings.publishSessionsToAccount && settings.autoShareToAccount
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
 
     SettingsSection("Use your terminals anywhere") {
         AnywhereCard(
-            icon = "📱",
+            icon = Icons.Outlined.Smartphone,
             title = "Phone or tablet",
             body = "Open this page in any browser and sign in with the same email. Your live terminals appear there and open in one tap.",
-        ) {
-            Surface(color = BackgroundColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    SelectionContainer(Modifier.weight(1f)) {
-                        Text(url.removePrefix("https://"), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    TextButton(
-                        onClick = { clipboard.setText(AnnotatedString(url)); copied = true },
-                        colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
-                    ) { Text(if (copied) "Copied" else "Copy", fontSize = 12.sp) }
-                    if (ShareSheet.isSupported()) {
-                        TextButton(
-                            onClick = { if (!ShareSheet.share(url)) { clipboard.setText(AnnotatedString(url)); copied = true } },
-                            colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
-                        ) { Text("⤴ Share", fontSize = 12.sp) }
-                    }
-                    TextButton(
-                        onClick = { UrlOpener.open(url) },
-                        colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
-                    ) { Text("Open", fontSize = 12.sp) }
-                }
-            }
-        }
+        ) { LinkActions(url) }
         Spacer(Modifier.height(8.dp))
         AnywhereCard(
-            icon = "💻",
+            icon = Icons.Outlined.Laptop,
             title = "Another computer",
             body = "Install BossTerm there and sign in with the same account. Its terminals attach here as remote tabs automatically, and this machine's appear there. No links to paste, no approval prompts.",
-        )
+        ) { LinkActions(BOSSTERM_DOWNLOAD_URL) }
         Spacer(Modifier.height(8.dp))
         Text(
             if (sharing) "This machine is shared with your account over an encrypted Cloudflare tunnel while you are signed in. Manage it under Share > Auto-share to your account."
@@ -269,12 +246,47 @@ private fun AnywhereSection() {
     }
 }
 
+private const val BOSSTERM_DOWNLOAD_URL = "https://bossterm.com"
+
+/** A link with Copy (flips to "Copied"), the macOS share sheet when available, and Open. */
 @Composable
-private fun AnywhereCard(icon: String, title: String, body: String, extra: (@Composable () -> Unit)? = null) {
+private fun LinkActions(url: String) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
+    Surface(color = BackgroundColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            SelectionContainer(Modifier.weight(1f)) {
+                Text(url, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            }
+            Spacer(Modifier.width(4.dp))
+            TextButton(
+                onClick = { clipboard.setText(AnnotatedString(url)); copied = true },
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+            ) { Text(if (copied) "Copied" else "Copy", fontSize = 12.sp) }
+            if (ShareSheet.isSupported()) {
+                TextButton(
+                    onClick = { if (!ShareSheet.share(url)) { clipboard.setText(AnnotatedString(url)); copied = true } },
+                    colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                ) { Text("⤴ Share", fontSize = 12.sp) }
+            }
+            TextButton(
+                onClick = { UrlOpener.open(url) },
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+            ) { Text("Open", fontSize = 12.sp) }
+        }
+    }
+}
+
+@Composable
+private fun AnywhereCard(icon: ImageVector, title: String, body: String, extra: (@Composable () -> Unit)? = null) {
     Surface(color = SurfaceColor, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(icon, fontSize = 16.sp)
+                Icon(icon, contentDescription = null, tint = AccentTextColor, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(title, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }

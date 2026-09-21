@@ -205,10 +205,13 @@ redirects anywhere.
 **Your other devices, inside BossTerm.** Sessions your other signed-in BossTerms are sharing
 are attached to this window automatically as remote tabs (`autoConnectAccountSessions`, on by
 default), through the native client and the account link, so the other machine does not prompt
-for approval. Only the primary window connects, so each session appears once; a session you
-disconnect by hand stays disconnected until that device starts a new share. The Remote Sessions
-window (the cloud "Add remote" button) still lists them, refreshed on open and every 15 seconds,
-with Connect for when the automatic attach is off. Your own shares are filtered out.
+for approval. Only the other device's account share (all its windows) is attached; a TAB or
+WINDOW share it started by hand would show the same terminals again, so those stay a choice in
+the Remote Sessions window. Only the primary window connects, so each session appears once; a
+session you disconnect by hand stays disconnected, even if its entry briefly drops out of the
+list and returns, until that device starts a new share or you sign out. The Remote Sessions
+window (the cloud "Add remote" button) still lists everything, refreshed on open and every 15
+seconds, with Connect for when the automatic attach is off. Your own shares are filtered out.
 
 The account share never includes remote mirrors, so a device you have attached is not re-shared
 onward as part of your machine; each device is listed once, by itself, on every other device.

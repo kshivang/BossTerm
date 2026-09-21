@@ -36,9 +36,15 @@ import org.slf4j.LoggerFactory
  *     up once, not once per window.
  *   - A session already connected in that window (same link token) is left alone, whether the
  *     user or this component connected it.
- *   - A session the user DISCONNECTS by hand is not re-attached while its registry row keeps
- *     the same token; it comes back only as a new share (new token). Otherwise "Disconnect"
- *     would be undone within one tick.
+ *   - Only the other device's ACCOUNT share (scope ALL) is attached. Its hand-made TAB/WINDOW
+ *     shares are also in the registry, but they show the same terminals again; those stay a
+ *     choice in the Remote Sessions window.
+ *   - A session the user DISCONNECTS by hand is not re-attached under the same token, even if
+ *     its row blips out of the directory (heartbeat lag, token refresh) and returns; it comes
+ *     back only as a new share (new token), or after sign-out/toggle-off. Otherwise
+ *     "Disconnect" would be undone within one tick.
+ *   - When the primary window changes (the old one closed), what it had attached is forgotten
+ *     without counting as a hand disconnect, so the new primary attaches afresh.
  *   - Signing out or switching the setting off disconnects the sessions this component
  *     attached and nothing else.
  *
@@ -50,7 +56,9 @@ class AccountAutoRemote(
     private val settings: StateFlow<TerminalSettings>,
     private val directory: StateFlow<List<AccountSession>>,
     /** Link tokens currently connected in the primary window, or null when there is no window yet. */
-    private val connectedTokens: () -> Set<String>?,
+    private val connectedTokens: suspend () -> Set<String>?,
+    /** Identity of the primary window the tokens belong to; a change resets [attached]. */
+    private val windowKey: () -> Any? = { null },
     /** Connect a link in the primary window; false when refused (own link, no window). */
     private val connect: suspend (url: String, deviceName: String) -> Boolean,
     /** Disconnect the remote session with this link token in the primary window. */
@@ -65,8 +73,9 @@ class AccountAutoRemote(
 
     /** Tokens this component connected (still believed attached). */
     private val attached = LinkedHashSet<String>()
-    /** Tokens the user disconnected by hand; skipped until the registry stops listing them. */
+    /** Tokens the user disconnected by hand; skipped until sign-out/toggle-off. */
     private val dismissed = LinkedHashSet<String>()
+    private var lastWindowKey: Any? = null
 
     /** Test/inspection view of what this component attached. */
     val attachedTokens: Set<String> get() = synchronized(attached) { attached.toSet() }
@@ -87,6 +96,7 @@ class AccountAutoRemote(
         }
     }
 
+    @Synchronized
     fun stop() {
         job?.cancel(); job = null
         scope.cancel()
@@ -105,8 +115,16 @@ class AccountAutoRemote(
             return@withLock
         }
         if (connected == null) return@withLock // no window yet; the poll will retry
+        val key = windowKey()
+        if (key != lastWindowKey) {
+            // A different primary window: its sessions were never ours to judge.
+            lastWindowKey = key
+            synchronized(attached) { attached.clear() }
+        }
 
-        val listed = directory.value.mapNotNull { s -> AccountSessionDirectory.tokenOf(s.controlUrl)?.let { it to s } }.toMap()
+        val listed = directory.value
+            .filter { it.scope == "ALL" }
+            .mapNotNull { s -> AccountSessionDirectory.tokenOf(s.controlUrl)?.let { it to s } }.toMap()
 
         // Sessions we attached that are no longer connected: either the host ended them (row
         // gone too, forget them) or the user disconnected by hand (row still listed: remember
@@ -116,7 +134,6 @@ class AccountAutoRemote(
             synchronized(attached) { attached.remove(t) }
             if (t in listed) dismissed.add(t)
         }
-        dismissed.retainAll(listed.keys)
 
         for ((token, s) in listed) {
             if (token in connected || token in dismissed) continue
@@ -139,8 +156,11 @@ class AccountAutoRemote(
                 settings = SettingsManager.instance.settings,
                 directory = AccountSessionDirectory.Default.sessions,
                 connectedTokens = {
-                    primaryManager()?.sessions?.mapNotNull { AccountSessionDirectory.tokenOf(it.link) }?.toSet()
+                    withContext(Dispatchers.Main) {
+                        primaryManager()?.sessions?.mapNotNull { AccountSessionDirectory.tokenOf(it.link) }?.toSet()
+                    }
                 },
+                windowKey = { McpTerminalRegistry.primaryState() },
                 // RemoteSessionManager.connect is UI-thread code (Compose state lists).
                 connect = { url, name -> withContext(Dispatchers.Main) { primaryManager()?.connect(url, name) != null } },
                 disconnect = { token ->

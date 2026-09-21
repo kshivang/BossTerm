@@ -163,10 +163,14 @@ class RemoteSession internal constructor(
     /** The host's last Layout, so [rereconcile] can re-apply the peer filter without a resend. */
     @Volatile private var lastLayout: ServerMessage.Layout? = null
 
+    /** A [rereconcile] that arrived mid-drag (reconcile skips Layouts then); applied on release. */
+    @Volatile private var rereconcilePending = false
+
     /** Re-run [reconcile] on the last Layout (the set of peer sessions changed). Runs on Main. */
     fun rereconcile() {
         val layout = lastLayout ?: return
         uiScope.launch {
+            if (draggingSplit) { rereconcilePending = true; return@launch }
             runCatching { reconcile(layout) }
                 .onFailure { log.warn("remote layout re-reconcile failed: {}", it.message) }
         }
@@ -494,6 +498,7 @@ class RemoteSession internal constructor(
         if (committed) {
             draggingSplit = false
             conn.send(ClientMessage.ResizeSplit(rid, splitId, ratio))
+            if (rereconcilePending) { rereconcilePending = false; rereconcile() }
         } else {
             draggingSplit = true
             val now = System.currentTimeMillis()

@@ -20,11 +20,12 @@ class AccountAutoRemoteTest {
     private val directory = MutableStateFlow<List<AccountSession>>(emptyList())
     /** null = no window yet */
     @Volatile private var connected: MutableSet<String>? = mutableSetOf()
+    @Volatile private var window: Any? = "window-1"
     private val connects = CopyOnWriteArrayList<String>()
     private val disconnects = CopyOnWriteArrayList<String>()
 
-    private fun session(device: String, token: String) = AccountSession(
-        shareId = token.hashCode().toString(16).padStart(16, '0').take(16), deviceName = device, sessionName = null, scope = "ALL",
+    private fun session(device: String, token: String, scope: String = "ALL") = AccountSession(
+        shareId = token.hashCode().toString(16).padStart(16, '0').take(16), deviceName = device, sessionName = null, scope = scope,
         controlUrl = "https://x.trycloudflare.com/?t=$token#k=s", secure = true, e2eCode = "deadbeef", appVersion = "1", lastSeen = null,
     )
 
@@ -36,6 +37,7 @@ class AccountAutoRemoteTest {
         connect = { url, _ -> val t = AccountSessionDirectory.tokenOf(url)!!; connects += t; connected?.add(t) == true },
         disconnect = { t -> disconnects += t; connected?.remove(t) },
         deviceName = { "me (BossTerm)" },
+        windowKey = { window },
         pollMs = 150,
     )
 
@@ -70,6 +72,43 @@ class AccountAutoRemoteTest {
         directory.value = listOf(session("laptop", "ccc")) // that device started a new share
         awaitConnects(2)
         assertEquals("ccc", connects.last())
+    }
+
+    @Test
+    fun `a hand disconnect survives the row blipping out of the directory and back`() = runBlocking {
+        account.value = AccountState.SignedIn("me@x.y", "u1")
+        directory.value = listOf(session("laptop", "aaa"))
+        auto.start()
+        awaitConnects(1)
+        connected!!.remove("aaa")
+        delay(400)
+        directory.value = emptyList() // heartbeat lag / token refresh emptied the list
+        delay(400)
+        directory.value = listOf(session("laptop", "aaa")) // same token is back
+        delay(500)
+        assertEquals(1, connects.size, "same token after a blip is still the user's disconnect")
+    }
+
+    @Test
+    fun `only the other device's ALL share is attached, not its hand-made TAB or WINDOW shares`() = runBlocking {
+        account.value = AccountState.SignedIn("me@x.y", "u1")
+        directory.value = listOf(session("laptop", "all", "ALL"), session("laptop", "tab", "TAB"), session("laptop", "win", "WINDOW"))
+        auto.start()
+        awaitConnects(1)
+        delay(500)
+        assertEquals(listOf("all"), connects)
+    }
+
+    @Test
+    fun `a new primary window forgets what the old one attached without treating it as a hand disconnect`() = runBlocking {
+        account.value = AccountState.SignedIn("me@x.y", "u1")
+        directory.value = listOf(session("laptop", "aaa"))
+        auto.start()
+        awaitConnects(1)
+        connected = mutableSetOf() // the old window closed; the new primary has nothing yet
+        window = "window-2"
+        awaitConnects(2)
+        assertEquals(listOf("aaa", "aaa"), connects)
     }
 
     @Test

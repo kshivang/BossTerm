@@ -194,6 +194,11 @@ machine with no Share Tab step. Starting it turns session sharing on and a remot
 into Cloudflare, the same way the Share Tab menu enables sharing on first use. It never touches a
 share you started by hand, and it stops its own share when you sign out or turn either toggle off.
 
+**Your other devices, inside BossTerm.** The Remote Sessions window (the cloud "Add remote"
+button) lists the sessions your other signed-in BossTerms are sharing, refreshed on open and every
+15 seconds. Connect mirrors that device's tabs here through the native client, using the account
+link, so the other machine does not prompt for approval. Your own shares are filtered out.
+
 Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
 plugin), where the account menu is hidden.
 

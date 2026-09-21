@@ -204,6 +204,8 @@ fun main(args: Array<String>) {
     ai.rever.bossterm.compose.share.AccountSessionPublisher.Default.start()
     // Keeps an all-windows share running while signed in + publishing (setting autoShareToAccount).
     ai.rever.bossterm.compose.share.AccountAutoShare.Default.start()
+    // Other devices' live sessions on this account, for the Remote Sessions window.
+    ai.rever.bossterm.compose.share.AccountSessionDirectory.Default.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
         // When daemonEnabled, MCP is normally owned by the daemon (mcpManager stays null) and
@@ -214,6 +216,7 @@ fun main(args: Array<String>) {
         synchronized(mcpLock) { mcpManager }?.stop()
         // Before the share manager: deletes this process's registry rows (bounded) while the shares
         // are still ours to describe.
+        ai.rever.bossterm.compose.share.AccountSessionDirectory.Default.stop()
         ai.rever.bossterm.compose.share.AccountAutoShare.Default.stop()
         ai.rever.bossterm.compose.share.AccountSessionPublisher.Default.stop()
         ai.rever.bossterm.compose.share.SessionShareManager.shutdown()

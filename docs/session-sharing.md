@@ -210,6 +210,10 @@ disconnect by hand stays disconnected until that device starts a new share. The 
 window (the cloud "Add remote" button) still lists them, refreshed on open and every 15 seconds,
 with Connect for when the automatic attach is off. Your own shares are filtered out.
 
+The account share never includes remote mirrors, so a device you have attached is not re-shared
+onward as part of your machine; each device is listed once, by itself, on every other device.
+Hand-made shares still nest remotes as before.
+
 Not covered yet: daemon-mode shares, and BossTerm embedded inside BossConsole (the `terminal-tab`
 plugin), where the account menu is hidden.
 

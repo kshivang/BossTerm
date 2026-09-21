@@ -1034,9 +1034,17 @@ class MirrorShare(
         else -> listOfNotNull(McpTerminalRegistry.findState(tabId))
     }
 
-    private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> = when (scope) {
-        ShareScope.WINDOW, ShareScope.ALL -> state.tabs
-        ShareScope.TAB -> state.tabs.filter { it.id == tabId }
+    private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> {
+        val tabs = when (scope) {
+            ShareScope.WINDOW, ShareScope.ALL -> state.tabs
+            ShareScope.TAB -> state.tabs.filter { it.id == tabId }
+        }
+        // The ACCOUNT share describes this device's own terminals. Remote mirrors (tabs that are
+        // themselves another device's share, e.g. attached by AccountAutoRemote) are left out:
+        // that device publishes its own row, so re-sharing its mirror made it appear twice on
+        // every other device - once directly, once nested under this one. Hand-made shares keep
+        // nesting; chaining a remote onward is a deliberate feature there.
+        return if (accountManaged) tabs.filter { !it.isRemote } else tabs
     }
 
     private fun computeSignature(): WindowSig {

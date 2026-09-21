@@ -29,16 +29,29 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal class VoiceProcessingUnit(
     private val sampleRate: Int = 24_000,
-    /** Ring capacity in bytes. A second of audio each way absorbs a long GC pause without loss. */
-    ringBytes: Int = 24_000 * 2,
+    /**
+     * Capture ring. One second is ample: its producer is the realtime callback and its consumer a
+     * pump thread that keeps up trivially, so this only has to absorb a GC pause.
+     */
+    captureBytes: Int = 24_000 * 2,
+    /**
+     * Playback ring, deliberately much larger.
+     *
+     * Its producer is the network, which for a local server arrives far faster than realtime -
+     * Qwen3-TTS measured at RTF 3.1-3.35, with one reply producing 36 seconds of audio - while the
+     * render callback drains at exactly 1x. A second of headroom overflowed within one reply and
+     * dropped the agent mid-sentence; eight seconds covers the burst, and [play] waits rather than
+     * drops for anything beyond it.
+     */
+    playbackBytes: Int = 24_000 * 2 * 8,
 ) {
     private val log = LoggerFactory.getLogger(VoiceProcessingUnit::class.java)
 
     /** Echo-cancelled microphone audio, written by the input callback. */
-    val capture = AudioRing(ringBytes)
+    val capture = AudioRing(captureBytes)
 
     /** Audio destined for the speakers, read by the render callback. */
-    val playback = AudioRing(ringBytes)
+    val playback = AudioRing(playbackBytes)
 
     private var unit: Pointer? = null
     private val running = AtomicBoolean(false)

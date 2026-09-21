@@ -95,14 +95,37 @@ internal class VoiceProcessingAudioIo(
         this.muted.set(muted)
     }
 
+    /**
+     * Queue audio for the speakers, WAITING for room rather than dropping.
+     *
+     * The realtime rule applies to the render callback, not to this. Callers are network threads,
+     * and a local speech server hands over audio far faster than it can be played - measured at
+     * RTF 3.1-3.35 - so the ring fills on any long reply. Dropping there deletes the middle of the
+     * agent's sentence, which is precisely the artifact this whole audio path exists to remove;
+     * the first version of this method did exactly that and logged "dropped 640 of 9216 bytes"
+     * during a real call.
+     *
+     * Bounded, because a wedged device must not park a network thread for the rest of the call. On
+     * timeout the remainder IS dropped, and said so.
+     */
     override fun play(pcm: ByteArray) {
         if (!capturing.get()) return
-        val accepted = unit.playback.write(pcm)
-        if (accepted < pcm.size) {
-            // The speaker ring only fills when the render callback has stopped draining it, which
-            // means the device is gone or wedged. Worth a line, because the audible symptom is a
-            // reply that simply stops partway with nothing else to explain it.
-            log.warn("Voice playback ring full; dropped {} of {} bytes", pcm.size - accepted, pcm.size)
+        var offset = 0
+        val deadline = System.nanoTime() + PLAY_WAIT_TIMEOUT_MS * 1_000_000
+        while (offset < pcm.size && capturing.get()) {
+            val accepted = unit.playback.write(pcm, offset, pcm.size - offset)
+            offset += accepted
+            if (offset >= pcm.size) return
+            if (System.nanoTime() > deadline) {
+                log.warn(
+                    "Voice playback stalled; dropped {} of {} bytes after {}ms",
+                    pcm.size - offset, pcm.size, PLAY_WAIT_TIMEOUT_MS,
+                )
+                return
+            }
+            // Sleep rather than spin: the drain rate is fixed by the audio device, so busy-waiting
+            // buys nothing and competes with the callback for a core.
+            runCatching { Thread.sleep(POLL_SLEEP_MS) }.onFailure { return }
         }
     }
 
@@ -137,6 +160,14 @@ internal class VoiceProcessingAudioIo(
         const val POLL_SLEEP_MS = 4L
 
         const val STOP_JOIN_MS = 500L
+
+        /**
+         * How long [play] waits for speaker room before giving up on the rest of a chunk.
+         *
+         * Longer than any legitimate backlog: the ring holds eight seconds, so reaching this means
+         * the device has stopped draining entirely rather than that a reply is simply long.
+         */
+        const val PLAY_WAIT_TIMEOUT_MS = 10_000L
 
         /**
          * Whether this implementation can be used on this machine.

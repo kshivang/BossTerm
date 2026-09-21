@@ -144,10 +144,11 @@ class AccountSessionPublisher(
 
     private suspend fun deleteTrackedLocked(tokenOverride: String? = null) {
         if (published.isEmpty()) return
-        val token = tokenOverride ?: accessToken(false) ?: return
+        var token = tokenOverride ?: accessToken(false) ?: return
         for (tabId in published.keys.toList()) {
             val (userId, shareId) = published[tabId]!!
-            if (request(token) { b -> del("$restBaseUrl/terminal_sessions?user_id=eq.$userId&share_id=eq.$shareId", b) }) published.remove(tabId)
+            val used = request(token) { b -> del("$restBaseUrl/terminal_sessions?user_id=eq.$userId&share_id=eq.$shareId", b) }
+            if (used != null) { token = used; published.remove(tabId) }
         }
     }
 
@@ -160,10 +161,9 @@ class AccountSessionPublisher(
         val account = s.account
         log.debug("Live-session reconcile: shares={} account={} enabled={} tracked={}", s.tabs.size, account?.userId?.take(8), s.enabled, published.size)
         if (account == null) {
-            // Signed out: the sign-out listener already deleted our rows while the token was valid
-            // (BossAccountManager.addSignOutListener). No network here - accessToken() is null now,
-            // and trying would only race the revoke. Whatever did not land, the server sweeps.
-            published.clear()
+            // Signed out: no network here (accessToken() is null now). The tracked set is left
+            // alone on purpose - the sign-out listener runs AFTER the state flip and needs it to
+            // know which rows to delete with the still-valid token; stop() needs it the same way.
             return@withLock
         }
         if (!s.enabled) {
@@ -171,13 +171,14 @@ class AccountSessionPublisher(
             published.clear()
             return@withLock
         }
-        val token = accessToken(false)
+        var token = accessToken(false)
         if (token == null) { log.warn("Live-session reconcile: no access token available; skipping"); return@withLock }
         // Rows for shares that ended.
         for (tabId in published.keys.toList()) {
             if (tabId in s.tabs) continue
             val (userId, shareId) = published[tabId]!!
-            if (request(token) { b -> del("$restBaseUrl/terminal_sessions?user_id=eq.$userId&share_id=eq.$shareId", b) }) published.remove(tabId)
+            val used = request(token!!) { b -> del("$restBaseUrl/terminal_sessions?user_id=eq.$userId&share_id=eq.$shareId", b) }
+            if (used != null) { token = used; published.remove(tabId) }
         }
         // Upsert (create or heartbeat) every current share.
         for (tabId in s.tabs) {
@@ -201,40 +202,45 @@ class AccountSessionPublisher(
                 app_version = appVersion.take(40),
             )
             val wasTracked = tabId in published
-            val ok = request(token) { b -> upsert(json.encodeToString(Row.serializer(), row), b) }
-            if (ok) published[tabId] = account.userId to shareId
+            val used = request(token!!) { b -> upsert(json.encodeToString(Row.serializer(), row), b) }
+            val ok = used != null
+            if (used != null) { token = used; published[tabId] = account.userId to shareId }
             if (ok && !wasTracked) log.info("Live-session published: tab {} share {}", tabId, shareId)
         }
     }
 
     /**
-     * One authenticated PostgREST call with a single refresh-and-retry on 401. Returns whether it
-     * succeeded; failures are logged at warn without the URL's query (it names the user id).
+     * One authenticated PostgREST call with a single refresh-and-retry on 401. Returns the bearer
+     * the call succeeded with (so a caller mid-loop keeps using the refreshed one instead of
+     * re-refreshing per row), or null on failure. Failures are logged at warn without the URL's
+     * query (it names the user id).
      */
-    private suspend fun request(token: String, call: suspend (bearer: String) -> HttpResponse): Boolean {
+    private suspend fun request(token: String, call: suspend (bearer: String) -> HttpResponse): String? {
         var bearer = token
         repeat(2) { attempt ->
             val resp = try {
                 call(bearer)
             } catch (e: Exception) {
                 log.warn("Live-session registry call failed: {}", e.message)
-                return false
+                return null
             }
             when {
-                resp.status.value in 200..299 -> return true
+                resp.status.value in 200..299 -> return bearer
                 resp.status.value == 401 && attempt == 0 -> {
-                    bearer = accessToken(true) ?: return false
+                    bearer = accessToken(true) ?: return null
                 }
                 else -> {
                     // PostgREST puts the reason (unknown column, CHECK violation) in the body; the
-                    // status alone was measured to be undiagnosable. Never contains our bearer.
-                    val detail = runCatching { resp.bodyAsText().take(300) }.getOrDefault("")
+                    // status alone was measured to be undiagnosable. A constraint failure echoes the
+                    // failing row, which carries the links' #k= secrets - redact before logging.
+                    val detail = runCatching { resp.bodyAsText().take(600) }.getOrDefault("")
+                        .replace(Regex("#k=[^\"\\s,)]+"), "#k=REDACTED").take(300)
                     log.warn("Live-session registry call rejected: HTTP {} {}", resp.status.value, detail)
-                    return false
+                    return null
                 }
             }
         }
-        return false
+        return null
     }
 
     private suspend fun del(url: String, bearer: String): HttpResponse = http.delete(url) { auth(bearer) }

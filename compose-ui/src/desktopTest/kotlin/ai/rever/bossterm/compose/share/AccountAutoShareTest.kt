@@ -32,8 +32,9 @@ class AccountAutoShareTest {
         accountState = account,
         settings = settings,
         sharedTabIds = shared,
-        firstTabId = { tabs.firstOrNull() },
-        share = { id -> shares += id; if (shareSucceeds) { shared.value = shared.value + id; true } else false },
+        tabIds = { tabs },
+        // Mirrors the manager: a tab the user already shares refuses the account share.
+        share = { id -> shares += id; if (shareSucceeds && id !in shared.value) { shared.value = shared.value + id; true } else false },
         unshare = { id -> unshares += id; shared.value = shared.value - id },
         setWanted = { wanted.value = it },
         pollMs = 150,
@@ -70,6 +71,7 @@ class AccountAutoShareTest {
         auto.start()
         awaitShares(1)
         assertEquals("tab-1", auto.autoSharedTabId)
+        assertTrue("user-tab" in shared.value && "tab-1" in shared.value, "both shares live side by side")
         account.value = AccountState.SignedOut
         withTimeout(5_000) { while (unshares.isEmpty()) delay(20) }
         assertEquals(listOf("tab-1"), unshares, "a share we did not start is never touched")
@@ -98,6 +100,20 @@ class AccountAutoShareTest {
         shared.value = emptySet() // window closed, share ended
         awaitShares(2)
         assertEquals("tab-1", auto.autoSharedTabId)
+    }
+
+    @Test
+    fun `a tab the user shares by hand is skipped in favour of the next tab`() = runBlocking {
+        tabs = listOf("tab-1", "tab-2")
+        shared.value = setOf("tab-1") // the user's share on the first tab
+        account.value = AccountState.SignedIn("me@x.y", "u1")
+        auto.start()
+        withTimeout(5_000) { while (auto.autoSharedTabId == null) delay(20) }
+        assertEquals("tab-2", auto.autoSharedTabId)
+        assertEquals(listOf("tab-1", "tab-2"), shares, "tried the user's tab, was refused, moved on")
+        account.value = AccountState.SignedOut
+        withTimeout(5_000) { while (unshares.isEmpty()) delay(20) }
+        assertEquals(listOf("tab-2"), unshares, "the user's share on tab-1 is never touched")
     }
 
     @Test

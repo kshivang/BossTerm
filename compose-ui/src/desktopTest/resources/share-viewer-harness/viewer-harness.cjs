@@ -841,6 +841,7 @@ const scenarios = {
     assert.deepStrictEqual(location.replaced, [], "the frame must not navigate itself");
     assert.deepStrictEqual(parent.posted, [
       { msg: { type: "bossterm-session-ended", reason: "ended" }, origin: "https://cli.risaboss.com" },
+      { msg: { type: "bossterm-session-ended", reason: "ended" }, origin: "https://api.risaboss.com" },
     ]);
   },
 

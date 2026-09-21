@@ -39,7 +39,8 @@ class AccountAutoShare(
     private val accountState: StateFlow<AccountState>,
     private val settings: StateFlow<TerminalSettings>,
     private val sharedTabIds: StateFlow<Set<String>>,
-    private val firstTabId: () -> String?,
+    /** Candidate tabs in preference order; a tab the user is sharing is refused by [share]. */
+    private val tabIds: () -> List<String>,
     private val share: suspend (tabId: String) -> Boolean,
     private val unshare: (tabId: String) -> Unit,
     /** The manager's second enable switch; true while this component wants its share to exist. */
@@ -94,13 +95,16 @@ class AccountAutoShare(
         // window closed - in which case it is no longer in sharedTabIds and we fall through.)
         if (mine != null && mine in sharedTabIds.value) return@withLock
         autoSharedTabId = null
-        val tabId = firstTabId() ?: return@withLock // no window yet; the poll will retry
-        if (share(tabId)) {
-            autoSharedTabId = tabId
-            log.info("Auto-share: started an all-windows share for the signed-in account")
-        } else {
-            log.warn("Auto-share: could not start a share (server not bound?); will retry")
+        val candidates = tabIds()
+        if (candidates.isEmpty()) return@withLock // no window yet; the poll will retry
+        for (tabId in candidates) {
+            if (share(tabId)) {
+                autoSharedTabId = tabId
+                log.info("Auto-share: started an all-windows share for the signed-in account")
+                return@withLock
+            }
         }
+        log.warn("Auto-share: no tab could host the account share (all shared by hand, or server not bound); will retry")
     }
 
     companion object {
@@ -111,7 +115,7 @@ class AccountAutoShare(
                 accountState = BossAccountManager.state,
                 settings = SettingsManager.instance.settings,
                 sharedTabIds = SessionShareManager.allSharedTabIds,
-                firstTabId = { McpTerminalRegistry.primaryState()?.tabs?.firstOrNull()?.id },
+                tabIds = { McpTerminalRegistry.allTabs().map { it.id } },
                 share = { tabId -> SessionShareManager.share(tabId, ShareScope.ALL, accountManaged = true) != null },
                 unshare = { tabId -> SessionShareManager.unshare(tabId, includeAccountManaged = true) },
                 setWanted = { SessionShareManager.accountSharingWanted.value = it },

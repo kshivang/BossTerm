@@ -239,7 +239,19 @@ object BossAccountManager {
     fun signOut() {
         _state.value = AccountState.SignedOut
         scope.launch {
-            val stored = AuthStorage.load()
+            val loaded = AuthStorage.load()
+            // Listeners need a token that WORKS: refresh a stale one first (accessToken() refuses to,
+            // since the state is already SignedOut), otherwise their last authenticated call 401s and
+            // the server keeps rows this device should have removed.
+            val stored: StoredAuth? = if (loaded != null && loaded.expiresAtEpochSec <= Instant.now().epochSecond + 60) {
+                runCatching {
+                    val resp = gotrue("token?grant_type=refresh_token", json.encodeToString(RefreshRequest.serializer(), RefreshRequest(loaded.refreshToken)))
+                    if (resp.status.value in 200..299) {
+                        val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
+                        loaded.copy(accessToken = session.accessToken, refreshToken = session.refreshToken)
+                    } else loaded
+                }.onFailure { log.warn("Pre-sign-out refresh failed: {}", it.message) }.getOrDefault(loaded)
+            } else loaded
             if (stored != null) signOutListeners.forEach { l ->
                 runCatching { kotlinx.coroutines.withTimeout(5_000) { l(stored) } }
                     .onFailure { log.warn("Sign-out listener failed: {}", it.message) }

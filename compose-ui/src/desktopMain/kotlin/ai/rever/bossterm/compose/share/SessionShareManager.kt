@@ -458,11 +458,14 @@ object SessionShareManager {
             // pre-warm or prefetch would silently kill the settings observer for good: no
             // pre-warm, no teardown on disable, and nothing logged.
             supervisorScope {
+                // The user's own switch is part of the key: with the account share wanted, flipping
+                // sessionSharingEnabled off leaves (enabled, mode) unchanged, and distinctUntilChanged
+                // would swallow the very emission that has to stop the user's shares.
                 kotlinx.coroutines.flow.combine(settingsManager.settings, accountSharingWanted) { s, _ ->
-                    sharingEnabled(s) to remoteMode(s)
+                    Triple(s.sessionSharingEnabled, sharingEnabled(s), remoteMode(s))
                 }
                     .distinctUntilChanged()
-                    .collect { (enabled, mode) ->
+                    .collect { (_, enabled, mode) ->
                         // Ordinary sharing switched off: the user's shares go, the account share
                         // (if wanted) stays and keeps the engine. Nothing wanted at all: full stop.
                         if (!settingsManager.settings.value.sessionSharingEnabled) stopUserShares()
@@ -587,6 +590,16 @@ object SessionShareManager {
         return mutex.withLock {
             val epoch = shutdownEpoch.get()
             if (!ensureEngineLocked(settings)) return@withLock null
+            // A tab carries at most one share, and the account share and a user share are different
+            // things: handing the account caller a user's share would let sign-out stop it, and
+            // handing a user the account share would give them links they cannot see or stop.
+            sharesByTab[tabId]?.let { existing ->
+                if (existing.accountManaged != accountManaged) {
+                    log.info("share({}): tab already has a {} share; refusing the {} one", tabId,
+                        if (existing.accountManaged) "account" else "user", if (accountManaged) "account" else "user")
+                    return@withLock null
+                }
+            }
             val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId, includeAccountManaged = true) }, accountManaged = accountManaged).also {
                 it.start()
                 sharesByToken[it.viewToken] = TokenRef(it, canControl = false)

@@ -28,6 +28,9 @@
   // "you can close this tab" overlay. Fixed destination, never a URL from the query: a viewer
   // that redirected wherever `?from=` pointed would be an open redirect on every share link.
   var LIVE_SESSIONS_URL = "https://cli.risaboss.com";
+  // Every origin the host lets frame the account link (its frame-ancestors). The end-of-session
+  // message is posted to each; a browser delivers it only to the one actually framing us.
+  var LIVE_SESSIONS_ORIGINS = ["https://cli.risaboss.com", "https://api.risaboss.com"];
   var RETURN_TO_LIVE_SESSIONS_MS = 2000;
   var returnToLiveSessions = params.get("from") === "live-sessions";
   // Embedded by that page in an iframe (its address bar stays on api.risaboss.com). Then "return"
@@ -40,7 +43,9 @@
   var returnTimer = null;
   function goBackToLiveSessions(reason) {
     if (framedByLiveSessions) {
-      try { window.parent.postMessage({ type: "bossterm-session-ended", reason: reason || "" }, LIVE_SESSIONS_URL); } catch (e) {}
+      LIVE_SESSIONS_ORIGINS.forEach(function (origin) {
+        try { window.parent.postMessage({ type: "bossterm-session-ended", reason: reason || "" }, origin); } catch (e) {}
+      });
     } else {
       location.replace(LIVE_SESSIONS_URL);
     }

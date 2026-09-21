@@ -97,7 +97,7 @@ fun SignInWindow(
         onCloseRequest = onDismiss,
         title = "BossTerm - Sign In",
         resizable = false,
-        state = rememberWindowState(size = DpSize(460.dp, 780.dp))
+        state = rememberWindowState(size = DpSize(460.dp, 720.dp))
     ) {
         // Raise an already-open window when the menu item is clicked again.
         LaunchedEffect(focusTick) {
@@ -118,15 +118,19 @@ fun SignInWindow(
                     when (val s = accountState) {
                         is BossAccountManager.AccountState.SignedIn -> {
                             SettingsSection("Account") {
-                                Text(s.email, color = TextPrimary, fontSize = 14.sp)
-                                Spacer(Modifier.height(8.dp))
-                                Text("You're signed in on this machine.", color = TextSecondary, fontSize = 12.sp)
-                                Spacer(Modifier.height(12.dp))
-                                TextButton(onClick = { BossAccountManager.signOut() }) {
-                                    Text("Sign out", color = Danger, fontSize = 13.sp)
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(s.email, color = TextPrimary, fontSize = 14.sp)
+                                        Spacer(Modifier.height(2.dp))
+                                        Text("Signed in on this machine", color = TextSecondary, fontSize = 12.sp)
+                                    }
+                                    TextButton(
+                                        onClick = { BossAccountManager.signOut() },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                                    ) { Text("Sign out", color = Danger, fontSize = 13.sp) }
                                 }
                             }
-                            Spacer(Modifier.height(16.dp))
+                            Spacer(Modifier.height(8.dp))
                             AnywhereSection()
                         }
 

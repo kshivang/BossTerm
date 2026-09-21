@@ -13,6 +13,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.coroutines.CoroutineScope
@@ -107,6 +108,7 @@ class AccountSessionPublisher(
     fun start() {
         if (job?.isActive == true) return
         if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        log.info("Live-session publisher started (registry {})", restBaseUrl)
         job = scope.launch {
             val trigger = combine(sharedTabIds, remoteUrl, accountState, enabled) { tabs, url, acct, on ->
                 Snapshot(tabs, url, acct as? AccountState.SignedIn, on)
@@ -156,6 +158,7 @@ class AccountSessionPublisher(
 
     private suspend fun reconcile(s: Snapshot) = mutex.withLock {
         val account = s.account
+        log.debug("Live-session reconcile: shares={} account={} enabled={} tracked={}", s.tabs.size, account?.userId?.take(8), s.enabled, published.size)
         if (account == null) {
             // Signed out: the sign-out listener already deleted our rows while the token was valid
             // (BossAccountManager.addSignOutListener). No network here - accessToken() is null now,
@@ -168,7 +171,8 @@ class AccountSessionPublisher(
             published.clear()
             return@withLock
         }
-        val token = accessToken(false) ?: return@withLock
+        val token = accessToken(false)
+        if (token == null) { log.warn("Live-session reconcile: no access token available; skipping"); return@withLock }
         // Rows for shares that ended.
         for (tabId in published.keys.toList()) {
             if (tabId in s.tabs) continue
@@ -177,8 +181,10 @@ class AccountSessionPublisher(
         }
         // Upsert (create or heartbeat) every current share.
         for (tabId in s.tabs) {
-            val info = infoFor(tabId) ?: continue
-            val accountUrl = info.accountUrl ?: continue
+            val info = infoFor(tabId)
+            if (info == null) { log.warn("Live-session reconcile: no ShareInfo for tab {}", tabId); continue }
+            val accountUrl = info.accountUrl
+            if (accountUrl == null) { log.warn("Live-session reconcile: no account URL for tab {} (no link base yet)", tabId); continue }
             val shareId = shareIdOf(info.token)
             val row = Row(
                 user_id = account.userId,
@@ -194,8 +200,10 @@ class AccountSessionPublisher(
                 e2e_code = e2eCodeOf(accountUrl),
                 app_version = appVersion.take(40),
             )
+            val wasTracked = tabId in published
             val ok = request(token) { b -> upsert(json.encodeToString(Row.serializer(), row), b) }
             if (ok) published[tabId] = account.userId to shareId
+            if (ok && !wasTracked) log.info("Live-session published: tab {} share {}", tabId, shareId)
         }
     }
 
@@ -218,7 +226,10 @@ class AccountSessionPublisher(
                     bearer = accessToken(true) ?: return false
                 }
                 else -> {
-                    log.warn("Live-session registry call rejected: HTTP {}", resp.status.value)
+                    // PostgREST puts the reason (unknown column, CHECK violation) in the body; the
+                    // status alone was measured to be undiagnosable. Never contains our bearer.
+                    val detail = runCatching { resp.bodyAsText().take(300) }.getOrDefault("")
+                    log.warn("Live-session registry call rejected: HTTP {} {}", resp.status.value, detail)
                     return false
                 }
             }

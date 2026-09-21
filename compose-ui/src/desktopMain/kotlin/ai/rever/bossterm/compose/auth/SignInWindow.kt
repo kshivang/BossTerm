@@ -4,6 +4,16 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.share.AccountSessionPublisher
+import ai.rever.bossterm.compose.share.ShareSheet
+import ai.rever.bossterm.compose.util.UrlOpener
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -81,7 +91,7 @@ fun SignInWindow(
         onCloseRequest = onDismiss,
         title = "BossTerm - Sign In",
         resizable = false,
-        state = rememberWindowState(size = DpSize(440.dp, 480.dp))
+        state = rememberWindowState(size = DpSize(440.dp, 600.dp))
     ) {
         // Raise an already-open window when the menu item is clicked again.
         LaunchedEffect(focusTick) {
@@ -110,6 +120,8 @@ fun SignInWindow(
                                     Text("Sign out", color = Danger, fontSize = 13.sp)
                                 }
                             }
+                            Spacer(Modifier.height(16.dp))
+                            AnywhereSection()
                         }
 
                         is BossAccountManager.AccountState.EmailSent -> {
@@ -190,6 +202,87 @@ fun SignInWindow(
                         colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                     ) { Text("Close", fontSize = 13.sp) }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Shown once signed in: the two ways to reach this machine's terminals from elsewhere with the
+ * same account. Phone/tablet: the live-sessions page (copy, share sheet, open). Another
+ * computer: BossTerm signed in there attaches these sessions by itself, and vice versa.
+ * Reflects the account-share toggles, since both routes depend on them.
+ */
+@Composable
+private fun AnywhereSection() {
+    val clipboard = LocalClipboardManager.current
+    val settings by SettingsManager.instance.settings.collectAsState()
+    val url = AccountSessionPublisher.LIVE_SESSIONS_ORIGIN
+    val sharing = settings.publishSessionsToAccount && settings.autoShareToAccount
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
+
+    SettingsSection("Use your terminals anywhere") {
+        AnywhereCard(
+            icon = "📱",
+            title = "Phone or tablet",
+            body = "Open this page in any browser and sign in with the same email. Your live terminals appear there and open in one tap.",
+        ) {
+            Surface(color = BackgroundColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    SelectionContainer(Modifier.weight(1f)) {
+                        Text(url.removePrefix("https://"), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    TextButton(
+                        onClick = { clipboard.setText(AnnotatedString(url)); copied = true },
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                    ) { Text(if (copied) "Copied" else "Copy", fontSize = 12.sp) }
+                    if (ShareSheet.isSupported()) {
+                        TextButton(
+                            onClick = { if (!ShareSheet.share(url)) { clipboard.setText(AnnotatedString(url)); copied = true } },
+                            colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                        ) { Text("⤴ Share", fontSize = 12.sp) }
+                    }
+                    TextButton(
+                        onClick = { UrlOpener.open(url) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                    ) { Text("Open", fontSize = 12.sp) }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        AnywhereCard(
+            icon = "💻",
+            title = "Another computer",
+            body = "Install BossTerm there and sign in with the same account. Its terminals attach here as remote tabs automatically, and this machine's appear there. No links to paste, no approval prompts.",
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (sharing) "This machine is shared with your account over an encrypted Cloudflare tunnel while you are signed in. Manage it under Share > Auto-share to your account."
+            else "Auto-share to your account is off, so this machine will not show up elsewhere. Turn it on under Share > Auto-share to your account.",
+            color = TextMuted, fontSize = 11.sp,
+        )
+    }
+}
+
+@Composable
+private fun AnywhereCard(icon: String, title: String, body: String, extra: (@Composable () -> Unit)? = null) {
+    Surface(color = SurfaceColor, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(icon, fontSize = 16.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(title, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(body, color = TextSecondary, fontSize = 12.sp)
+            if (extra != null) {
+                Spacer(Modifier.height(8.dp))
+                extra()
             }
         }
     }

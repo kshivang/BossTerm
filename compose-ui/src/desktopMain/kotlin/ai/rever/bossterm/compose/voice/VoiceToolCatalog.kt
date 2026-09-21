@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.voice
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
@@ -148,14 +149,106 @@ object VoiceToolCatalog {
             .getOrNull().orEmpty()
 
     /** Render [defs] as the OpenAI Realtime session `tools` array (`[{type:"function",…}]`). */
-    fun openAiToolsJson(defs: List<VoiceToolDef>): JsonArray = buildJsonArray {
+    @JvmOverloads
+    fun openAiToolsJson(defs: List<VoiceToolDef>, lean: Boolean = false): JsonArray = buildJsonArray {
         for (d in defs) {
             add(buildJsonObject {
                 put("type", "function")
                 put("name", d.name)
                 put("description", d.description)
-                put("parameters", d.parameters)
+                put("parameters", requiredFirst(d.parameters).let { if (lean) withoutArgumentDocs(it) else it })
             })
+        }
+    }
+
+    /**
+     * Drop the per-argument `description` text from OPTIONAL arguments only.
+     *
+     * For a local model the tool prompt is paid for in latency on every turn, and argument docs
+     * are the single largest part of it. Upstream's own note on `to_code_prompt` puts it at 906
+     * tokens without argument docs versus 3,434 with, for their default tool profile - close to a
+     * 4x difference, and BossTerm's MCP descriptions are wordier than theirs.
+     *
+     * REQUIRED arguments keep their prose as a conservative default: getting an optional argument
+     * wrong degrades a call, while losing a required one voids it, and optional arguments are also
+     * the bulk of the text since tools tend to have one or two required parameters and a long tail
+     * of optional ones.
+     *
+     * Note for anyone tempted to widen this again: a run of missing-`script` failures on
+     * `run_command` was briefly blamed on stripping required descriptions. It was not the cause.
+     * The model was emitting a POSITIONAL call - `run_command("ls")` - which this server drops
+     * ("Dropping positional arguments for 'run_command': {'__arg_0__'}") because it prompts tools
+     * as Python-style signatures but accepts only keyword arguments. The same failure occurred
+     * with full descriptions present. That is addressed in the instructions, not here.
+     *
+     * The TOOL's own description is always kept: that is what the model chooses between. The
+     * OpenAI backend keeps the full schema either way.
+     */
+    internal fun withoutArgumentDocs(parameters: JsonObject): JsonObject {
+        val properties = parameters["properties"] as? JsonObject ?: return parameters
+        if (properties.isEmpty()) return parameters
+        val required = (parameters["required"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?.toSet()
+            .orEmpty()
+        val stripped = buildJsonObject {
+            for ((name, spec) in properties) {
+                val obj = spec as? JsonObject
+                if (obj == null || "description" !in obj || name in required) {
+                    put(name, spec)
+                } else {
+                    putJsonObject(name) {
+                        for ((k, v) in obj) if (k != "description") put(k, v)
+                    }
+                }
+            }
+        }
+        return buildJsonObject {
+            for ((key, value) in parameters) {
+                if (key == "properties") put("properties", stripped) else put(key, value)
+            }
+        }
+    }
+
+    /**
+     * Reorder `properties` so required ones come first, preserving order within each group.
+     *
+     * JSON Schema attaches no meaning to property ORDER - `required` is a separate list - so this
+     * changes nothing semantically and OpenAI Realtime is unaffected. It exists because a
+     * Realtime-compatible server may render each tool as a positional function signature, and
+     * Python cannot express `def f(optional=None, mandatory)`.
+     *
+     * Measured against huggingface/speech-to-speech 1.0.0: `signature_from_schema` walks
+     * `properties` in declaration order, gives every non-required property `default=None`, and
+     * hands the result to `inspect.Signature`, which raises
+     * `ValueError: non-default argument follows default argument`. That escapes through
+     * `build_tool_system_prompt`, so ONE badly ordered tool takes down the tool prompt for EVERY
+     * tool - the agent then transcribes perfectly and answers nothing, on every turn, with the
+     * cause visible only in the server's own log.
+     *
+     * Applied at the single point every tool reaches, curated and MCP-derived alike, because tool
+     * schemas arrive from the MCP server and from embedders and this file cannot police their
+     * authoring order.
+     */
+    internal fun requiredFirst(parameters: JsonObject): JsonObject {
+        val properties = parameters["properties"] as? JsonObject ?: return parameters
+        val required = (parameters["required"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?.toSet()
+            .orEmpty()
+        // Nothing to do when the declared order already satisfies the constraint; skipping the
+        // rebuild keeps the common case allocation-free and the emitted JSON byte-identical.
+        if (required.isEmpty()) return parameters
+        val ordered = properties.keys.sortedByDescending { it in required }
+        if (ordered == properties.keys.toList()) return parameters
+        return buildJsonObject {
+            for ((key, value) in parameters) {
+                if (key == "properties") {
+                    putJsonObject("properties") { ordered.forEach { put(it, properties.getValue(it)) } }
+                } else {
+                    put(key, value)
+                }
+            }
         }
     }
 

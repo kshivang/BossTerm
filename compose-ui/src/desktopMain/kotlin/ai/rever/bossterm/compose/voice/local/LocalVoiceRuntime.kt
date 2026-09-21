@@ -152,6 +152,17 @@ internal class LocalVoiceRuntime(
      */
     suspend fun ensureRunning(port: Int): String? {
         (_state.value as? LocalVoiceRuntimeState.Running)?.let { return it.url }
+        // Adopt a server that is ALREADY answering on this port rather than spawning a second one.
+        // Runtime state lives in this process, so after an app restart the state says Stopped (or
+        // Failed, if the previous instance's child was reaped) while a perfectly good server still
+        // holds the port. Spawning then loses the bind, the child dies, and the call reports "the
+        // server exited" with a working server sitting right there. One loopback GET removes that.
+        if (probe(LocalVoiceInstall.probeUrl(port))) {
+            val url = LocalVoiceInstall.realtimeUrl(port)
+            log.info("Local voice server already serving on {}; adopting it", url)
+            _state.value = LocalVoiceRuntimeState.Running(url)
+            return url
+        }
         if (!LocalVoiceInstall.installed(home, windows)) {
             _state.value = LocalVoiceRuntimeState.NotInstalled
             return null
@@ -186,6 +197,7 @@ internal class LocalVoiceRuntime(
             return false
         }
         synchronized(lock) { process = started }
+        log.info("Local voice server starting: {}", command.joinToString(" "))
         _state.value = LocalVoiceRuntimeState.Starting
         job = scope.launch {
             // Surfacing an exit is the whole point of holding this handle: without it a server that
@@ -196,8 +208,9 @@ internal class LocalVoiceRuntime(
                 process = null
             }
             if (_state.value !is LocalVoiceRuntimeState.Stopped) {
+                log.warn("Local voice server exited (code {}); see {}", code, LocalVoiceInstall.serverLog(home))
                 _state.value = LocalVoiceRuntimeState.Failed(
-                    "The local voice server exited (code $code)."
+                    "The local voice server exited (code $code). See ${LocalVoiceInstall.serverLog(home)}."
                 )
             }
         }
@@ -343,6 +356,10 @@ internal interface ProcessRunner {
     ): Process
 }
 
+/** Where a spawned server's output goes, created if missing so ProcessBuilder can open it. */
+private fun logFileFor(workingDir: File): File =
+    File(workingDir, "server.log").also { runCatching { it.parentFile?.mkdirs() } }
+
 internal object SystemProcessRunner : ProcessRunner {
     /**
      * Output kept from a finished command.
@@ -395,9 +412,11 @@ internal object SystemProcessRunner : ProcessRunner {
         val builder = ProcessBuilder(command)
             .directory(workingDir.takeIf { it.isDirectory })
             .redirectErrorStream(true)
-            // Discard rather than pipe: nothing drains a long-running server's output, and a full
-            // pipe buffer would wedge the server itself once it had logged enough.
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            // To a FILE, not a pipe and not DISCARD. Nothing here drains a long-running server's
+            // output, so a pipe wedges the server once its buffer fills; DISCARD avoided that but
+            // threw away the only explanation a crashed server ever gives. This file is the first
+            // thing to read when a local call will not start, and the Failed message cites it.
+            .redirectOutput(ProcessBuilder.Redirect.to(logFileFor(workingDir)))
         builder.environment().putAll(environment)
         return builder.start()
     }

@@ -194,9 +194,31 @@ internal class GuiVoiceToolExecutor(
         // with applyDisabledSet and with up to four in-flight tool calls.
         val (wrapper, disabled) = surface()
         // The whole surface, when the owner asked for it. A share never takes this path.
-        if (mayUseFocusedPane && settings().voiceExposeAllTools) return allRegisteredTools(disabled)
+        if (mayAdvertiseWholeSurface()) return allRegisteredTools(disabled)
         return curatedForVoice(disabled, wrapper.toolNames())
     }
+
+    /**
+     * Whether the FULL MCP surface may be advertised on this call.
+     *
+     * [TerminalSettings.voiceExposeAllTools] is the user's preference and stays honoured on the
+     * OpenAI backend, where prefilling a few thousand extra tokens is fast and effectively free.
+     * A LOCAL backend pays for that prompt on every single turn, out of its own latency budget.
+     *
+     * Measured on this machine against Qwen3-4B on MPS with all fourteen MCP tools advertised:
+     * ~4,300 input tokens per turn to produce 2-23 output tokens, with the LLM holding the MLX
+     * lock for 3.9-5.1s and last-speech-to-first-sound at 4.4-5.2s. STT was 0.03-0.06s and TTS
+     * first audio 0.10s, so essentially all of it was prefill of the tool prompt.
+     *
+     * The curated set is not a downgrade of the feature so much as the only sane default for a
+     * local model: the same nine tools the share surface has always used.
+     */
+    private fun mayAdvertiseWholeSurface(): Boolean {
+        val s = settings()
+        if (!mayUseFocusedPane || !s.voiceExposeAllTools) return false
+        return VoiceBackend.parse(s.voiceBackend) != VoiceBackend.LOCAL
+    }
+
 
     /**
      * The advertised NAMES, without materialising a [VoiceToolDef] for each.
@@ -212,7 +234,7 @@ internal class GuiVoiceToolExecutor(
      */
     override fun toolNames(): Set<String> {
         val (wrapper, disabled) = surface()
-        if (mayUseFocusedPane && settings().voiceExposeAllTools) {
+        if (mayAdvertiseWholeSurface()) {
             return registeredForVoice(disabled).mapTo(mutableSetOf()) { it.name }
         }
         return curatedForVoice(disabled, wrapper.toolNames()).mapTo(mutableSetOf()) { it.name }

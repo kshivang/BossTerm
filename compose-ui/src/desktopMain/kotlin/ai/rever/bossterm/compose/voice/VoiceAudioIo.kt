@@ -381,9 +381,30 @@ internal class JavaSoundVoiceAudioIo(
                 synchronized(playedLog) {
                     playedLog.addLast(PlayedChunk(framesWritten, framesWritten + frames, pcm16Rms(chunk)))
                     framesWritten += frames
-                    // Bounded regardless of how long a call runs. audiblePlaybackLevel prunes by frame
-                    // position, but only while something is asking — nothing does between replies.
-                    while (playedLog.size > PLAYED_LOG_MAX) playedLog.removeFirst()
+                    // Bounded regardless of how long a call runs, but NEVER at the cost of the
+                    // window that is currently audible.
+                    //
+                    // This used to drop the oldest entry purely on count. That holds while audio
+                    // arrives at roughly the speed it is played, which is what OpenAI Realtime
+                    // does. A local server generates far faster than realtime (measured: Qwen3-TTS
+                    // at RTF 3.1-3.35, and one reply produced 36s of audio), so the write cursor
+                    // runs far ahead of the device and the chunks describing what the speakers are
+                    // emitting RIGHT NOW are the oldest ones in the deque - exactly the ones this
+                    // line evicted. audiblePlaybackLevel then found nothing around the play cursor
+                    // and reported a reference of 0.000 while the agent was plainly talking, the
+                    // duplex bar collapsed to its floor, and room noise read as a barge-in on
+                    // frame after frame. Each one flushes playback, so a long word came out as
+                    // "develop-p-p-p-p".
+                    //
+                    // Evict only what the device has already played past the look-back window; the
+                    // count stays as a backstop for a line that never reports progress.
+                    val playedTo = runCatching { line.longFramePosition }.getOrDefault(framesWritten)
+                    val audibleFrom = playedTo - ECHO_REFERENCE_WINDOW_MS.toLong() * SAMPLE_RATE / 1000
+                    while (playedLog.size > PLAYED_LOG_MAX &&
+                        (playedLog.firstOrNull()?.endFrame ?: Long.MAX_VALUE) < audibleFrom
+                    ) {
+                        playedLog.removeFirst()
+                    }
                 }
                 runCatching { line.write(chunk, 0, chunk.size) }
             }

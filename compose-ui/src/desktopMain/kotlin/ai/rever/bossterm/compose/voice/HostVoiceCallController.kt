@@ -530,6 +530,11 @@ internal class HostVoiceCallController(
      * because the overwhelming majority of failures have no remedy behind a button.
      */
     private fun fail(message: String, needsLocalSetup: Boolean = false) {
+        // Log the reason. Until this line existed, a failed call left exactly one trace - the
+        // "in-app call ended" at the bottom of end() - and the actual cause lived only in a label
+        // on screen. Diagnosing a user's "it did not work" then meant asking them to read the UI
+        // back, which is a poor trade for one log line on a path that is already failing.
+        log.warn("Boss Calling: call failed: {}", message)
         // Cancel the ceiling watcher, exactly as end() does. Relying on its `while (active)` check
         // was not enough: that runs AFTER delay(LIMIT_TICK_MS), so one more tick fires against a call
         // that already failed — and since startLimits() is only reached again when a redial goes
@@ -890,7 +895,16 @@ internal class HostVoiceCallController(
                     }
                 }
                 put("instructions", hostInstructions(tools))
-                put("tools", VoiceToolCatalog.openAiToolsJson(tools))
+                // Lean schemas on the local backend only: argument docs are the largest part of a
+                // tool prompt that a local model re-reads on every turn, and the share surface
+                // (VoiceCallService) never takes this path.
+                put(
+                    "tools",
+                    VoiceToolCatalog.openAiToolsJson(
+                        tools,
+                        lean = VoiceBackend.parse(s.voiceBackend) == VoiceBackend.LOCAL,
+                    ),
+                )
                 put("tool_choice", "auto")
             }
         }
@@ -914,6 +928,16 @@ internal class HostVoiceCallController(
             appendLine("Session snapshot (may be stale - use tools for fresh data):")
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default tool calls to the tab they are viewing (omit tab_id).")
+            if (VoiceBackend.parse(settings().voiceBackend) == VoiceBackend.LOCAL) {
+                // A local Realtime server may prompt tools as Python-style signatures, which invites
+                // a positional call - and then drop positional arguments on arrival. Measured
+                // against speech-to-speech 1.0.0: `run_command("ls")` produced "Dropping positional
+                // arguments for 'run_command': {'__arg_0__'}" followed by "Missing required
+                // parameters", so the command silently never ran. Hosted OpenAI Realtime emits
+                // named arguments already, so this line is spent only where it buys something.
+                appendLine("Always call tools with NAMED arguments, never positional ones: " +
+                    "run_command(script=\"ls\"), not run_command(\"ls\").")
+            }
             appendLine()
             append(voiceAgentRules(names, "spoken", userExtra = extra))
         }

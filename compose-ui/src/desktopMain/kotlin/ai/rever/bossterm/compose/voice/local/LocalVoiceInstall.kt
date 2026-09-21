@@ -141,6 +141,9 @@ internal object LocalVoiceInstall {
      */
     fun probeUrl(port: Int): String = "http://$LOOPBACK:$port/v1/pool"
 
+    /** Where the managed server's own output is written. Named here so the failure message can cite it. */
+    fun serverLog(home: File): File = File(home, "server.log")
+
     /** The Realtime WebSocket a call connects to. */
     fun realtimeUrl(port: Int): String = "ws://$LOOPBACK:$port/v1/realtime"
 
@@ -209,8 +212,29 @@ internal object LocalVoiceInstall {
 
     const val LOOPBACK = "127.0.0.1"
 
-    /** Fully local instruction model selected explicitly so upstream cloud defaults cannot leak in. */
-    const val LOCAL_LLM_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+    /**
+     * Fully local instruction model, selected explicitly so upstream cloud defaults cannot leak in.
+     *
+     * Apple Silicon gets the MLX 4-bit build, not the raw bf16 repo. The rest of this pipeline is
+     * already quantised MLX - the server loads `mlx-community/parakeet-tdt-0.6b-v3` for STT and a
+     * 6-bit Qwen3-TTS - and pointing the LLM at `Qwen/Qwen3-4B-Instruct-2507` left roughly 8 GB of
+     * bf16 weights being prefilled on every turn. That value came from upstream's CUDA example,
+     * where `--llm_torch_dtype float16` is the right answer and MLX is not involved.
+     *
+     * Same weights and the same tool-calling ability, at about a quarter of the memory. The
+     * parameter count deliberately does NOT drop: measured on this machine, the 4B already
+     * under-calls tools (it describes `run_command` instead of invoking it on most turns), and
+     * tool use is among the first things to degrade with size. Latency is bought with
+     * quantisation here, never with a smaller model.
+     */
+    val LOCAL_LLM_MODEL: String
+        get() = if (ShellCustomizationUtils.isMacOS()) MAC_LLM_MODEL else PORTABLE_LLM_MODEL
+
+    /** MLX 4-bit build, matching the quantised STT/TTS models the same server loads. */
+    const val MAC_LLM_MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+
+    /** Transformers on other platforms, where the dtype flag rather than the repo does the work. */
+    const val PORTABLE_LLM_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
     const val MAC_LLM_BACKEND = "mlx-lm"
     const val PORTABLE_LLM_BACKEND = "transformers"
 }

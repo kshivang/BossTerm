@@ -216,6 +216,14 @@ jobs:
           path: .gradleBuild/bossterm-app/compose/binaries/main/dmg/*.dmg
           retention-days: 30
 
+  build-windows:
+    needs: prepare-version
+    if: ${{ github.event.inputs.publish_only != 'true' }}
+    uses: ./.github/workflows/windows-msi.yml
+    with:
+      version: ${{ needs.prepare-version.outputs.version }}
+    secrets: inherit
+
   build-linux-amd64:
     needs: prepare-version
     if: ${{ github.event.inputs.publish_only != 'true' }}
@@ -407,12 +415,13 @@ jobs:
           release: edge
 
   create-release:
-    needs: [prepare-version, build-macos, build-linux-amd64, build-linux-arm64, build-snap]
+    needs: [prepare-version, build-macos, build-windows, build-linux-amd64, build-linux-arm64, build-snap]
     # Continue even if ARM64/snap builds fail or are skipped
     # Skip entirely if publish_only is true
     if: |
       always() &&
       github.event.inputs.publish_only != 'true' &&
+      needs.build-windows.result == 'success' &&
       (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
       (needs.build-linux-amd64.result == 'success' || needs.build-linux-amd64.result == 'skipped') &&
       !(needs.build-macos.result == 'skipped' && needs.build-linux-amd64.result == 'skipped')
@@ -442,6 +451,10 @@ jobs:
           # Linux ARM64 (if available)
           find ./artifacts -name "*.deb" -path "*arm64*" -exec cp {} ./release-assets/bossterm_${VERSION}_arm64.deb \; 2>/dev/null || true
           find ./artifacts -name "*.rpm" -path "*arm64*" -exec cp {} ./release-assets/bossterm-${VERSION}.aarch64.rpm \; 2>/dev/null || true
+
+          # Windows is required and its signature was verified before artifact upload.
+          find ./artifacts -name "*.msi" -exec cp {} ./release-assets/BossTerm-${VERSION}.msi \;
+          test -s "./release-assets/BossTerm-${VERSION}.msi"
 
           # Snap (only present when dispatched with build_snap=true). Intentional
           # asymmetry: the release-notes body below does NOT mention the snap — it is
@@ -489,6 +502,7 @@ jobs:
             | **Ubuntu/Debian** | ARM64 | `bossterm_${{ needs.prepare-version.outputs.version }}_arm64.deb` |
             | **Fedora/RHEL** | AMD64 | `bossterm-${{ needs.prepare-version.outputs.version }}.x86_64.rpm` |
             | **Fedora/RHEL** | ARM64 | `bossterm-${{ needs.prepare-version.outputs.version }}.aarch64.rpm` |
+            | **Windows** | x64 | `BossTerm-${{ needs.prepare-version.outputs.version }}.msi` |
             | **Any (JAR)** | Any | `bossterm-${{ needs.prepare-version.outputs.version }}.jar` |
 
             ### Installation
@@ -510,6 +524,10 @@ jobs:
             sudo dnf install bossterm-${{ needs.prepare-version.outputs.version }}.x86_64.rpm
             ```
 
+            **Windows:**
+            Run `BossTerm-${{ needs.prepare-version.outputs.version }}.msi` and follow the installer.
+            The installer is signed by Risa Labs, Inc. using DigiCert KeyLocker and timestamped.
+
             **JAR (requires Java 17+):**
             ```bash
             java -jar bossterm-${{ needs.prepare-version.outputs.version }}.jar
@@ -518,6 +536,7 @@ jobs:
             ### System Requirements
             - **macOS**: 11.0+ (Big Sur or later), Apple Silicon or Intel
             - **Linux**: X11 or Wayland, glibc 2.31+
+            - **Windows**: 10 or later, x64
             - **JAR**: Java 17+ runtime
           files: ./release-assets/*
           draft: false

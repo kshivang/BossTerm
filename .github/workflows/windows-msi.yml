@@ -1,0 +1,149 @@
+name: Signed Windows MSI
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        type: string
+    secrets:
+      CODE_SIGNING_CERT_HOST:
+        required: true
+      CODE_SIGNING_CERT_HOST_API_KEY:
+        required: true
+      CODE_SIGNING_CLIENT_CERT:
+        required: true
+      CODE_SIGNING_CLIENT_CERT_PASSWORD:
+        required: true
+      CODE_SIGNING_KEYPAIR_ALIAS:
+        required: true
+      SUPABASE_ANON_KEY:
+        required: false
+      SUPABASE_URL:
+        required: false
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/windows-msi.yml'
+      - '.github/workflows/release.yml'
+      - 'bossterm-app/build.gradle.kts'
+      - 'BossTerm.ico'
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-sign:
+    # Fork PRs cannot access signing credentials. Normal compile/test CI still runs.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Require DigiCert credentials
+        shell: pwsh
+        env:
+          CODE_SIGNING_CERT_HOST: ${{ secrets.CODE_SIGNING_CERT_HOST }}
+          CODE_SIGNING_CERT_HOST_API_KEY: ${{ secrets.CODE_SIGNING_CERT_HOST_API_KEY }}
+          CODE_SIGNING_CLIENT_CERT: ${{ secrets.CODE_SIGNING_CLIENT_CERT }}
+          CODE_SIGNING_CLIENT_CERT_PASSWORD: ${{ secrets.CODE_SIGNING_CLIENT_CERT_PASSWORD }}
+          CODE_SIGNING_KEYPAIR_ALIAS: ${{ secrets.CODE_SIGNING_KEYPAIR_ALIAS }}
+        run: |
+          $required = @('CODE_SIGNING_CERT_HOST', 'CODE_SIGNING_CERT_HOST_API_KEY',
+            'CODE_SIGNING_CLIENT_CERT', 'CODE_SIGNING_CLIENT_CERT_PASSWORD', 'CODE_SIGNING_KEYPAIR_ALIAS')
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing required signing secret: $name"
+            }
+          }
+
+      - name: Select package version
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          $version = $env:RELEASE_VERSION
+          if (!$version) { $version = "$(Get-Content VERSION -Raw)".Trim() + '.0' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Package Windows MSI
+        run: ./gradlew :bossterm-app:packageMsi --no-daemon
+        env:
+          RELEASE_BUILD: 'true'
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+
+      - name: Find MSI
+        id: msi
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem '.gradleBuild/bossterm-app/compose/binaries/main/msi/*.msi')
+          if ($files.Count -ne 1) { throw "Expected one MSI, found $($files.Count)" }
+          "path=$($files[0].FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Sign MSI with DigiCert KeyLocker
+        # Pin the reviewed shared action; BossConsole uses main, not master.
+        uses: risa-labs-inc/BossConsole/.github/actions/sign-windows-msi@5dd0b064f95fe6b6d088930568fc79996feb063d
+        with:
+          msi-path: ${{ steps.msi.outputs.path }}
+          cert-host: ${{ secrets.CODE_SIGNING_CERT_HOST }}
+          api-key: ${{ secrets.CODE_SIGNING_CERT_HOST_API_KEY }}
+          client-cert: ${{ secrets.CODE_SIGNING_CLIENT_CERT }}
+          client-cert-password: ${{ secrets.CODE_SIGNING_CLIENT_CERT_PASSWORD }}
+          keypair-alias: ${{ secrets.CODE_SIGNING_KEYPAIR_ALIAS }}
+          allow-unsigned: 'false'
+          label: BossTerm Windows x64
+
+      - name: Require a valid timestamped Authenticode signature
+        shell: pwsh
+        env:
+          MSI_PATH: ${{ steps.msi.outputs.path }}
+        run: |
+          # The shared action warns for some trust failures. BossTerm requires Valid.
+          $sig = Get-AuthenticodeSignature -FilePath $env:MSI_PATH
+          if ($sig.Status -ne 'Valid') { throw "MSI signature is $($sig.Status), expected Valid" }
+          if (!$sig.TimeStamperCertificate) { throw 'MSI signature has no trusted timestamp' }
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $env:MSI_PATH).Hash
+          $report = @(
+            "File: $(Split-Path $env:MSI_PATH -Leaf)",
+            "Authenticode: $($sig.Status)",
+            "Signer: $($sig.SignerCertificate.Subject)",
+            "Signer thumbprint: $($sig.SignerCertificate.Thumbprint)",
+            "Certificate expires: $($sig.SignerCertificate.NotAfter.ToUniversalTime().ToString('o'))",
+            "Timestamp authority: $($sig.TimeStamperCertificate.Subject)",
+            "SHA256: $hash"
+          )
+          $report | Tee-Object -FilePath signing-verification.txt
+          $report >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload signed MSI and verification report
+        uses: actions/upload-artifact@v7
+        with:
+          name: bossterm-windows-${{ steps.version.outputs.version }}
+          path: |
+            .gradleBuild/bossterm-app/compose/binaries/main/msi/*.msi
+            signing-verification.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary client certificate
+        if: always()
+        shell: pwsh
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP 'Certificate_pkcs12.p12'
+          if (Test-Path $certPath) { Remove-Item -LiteralPath $certPath -Force }

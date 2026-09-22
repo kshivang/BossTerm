@@ -219,70 +219,10 @@ jobs:
   build-windows:
     needs: prepare-version
     if: ${{ github.event.inputs.publish_only != 'true' }}
-    runs-on: windows-latest
-    # First Windows packaging attempt for this project (jpackage + WiX have never run on this
-    # repo's CI before). Non-blocking like linux-arm64/snap: a problem here must not hold back
-    # the macOS/Linux release everyone already depends on. Tighten this once it's proven.
-    continue-on-error: true
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v7
-
-      - name: Setup JDK
-        uses: actions/setup-java@v6
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-read-only: false
-
-      - name: Package Windows MSI
-        run: ./gradlew :bossterm-app:packageMsi
-        env:
-          RELEASE_BUILD: true
-          APP_VERSION: ${{ needs.prepare-version.outputs.version }}
-
-      - name: Find MSI File
-        id: find-msi
-        shell: pwsh
-        run: |
-          $msiFiles = Get-ChildItem ".gradleBuild/bossterm-app/compose/binaries/main/msi/*.msi" -ErrorAction SilentlyContinue
-          if ($msiFiles) {
-            Write-Host "Found MSI: $($msiFiles[0].FullName)"
-            echo "msi-path=$($msiFiles[0].FullName)" >> $env:GITHUB_OUTPUT
-          } else {
-            Write-Host "MSI file not found!"
-            exit 1
-          }
-
-      # Same action BossConsole's release.yml uses (risa-labs-inc/BossConsole is public, so it's
-      # referenceable cross-repo). No-ops with a warning — producing an unsigned MSI rather than
-      # failing the job — until CODE_SIGNING_CERT_HOST and friends are added as secrets on this
-      # repo; see risa-labs-inc/BossConsole's DigiCert KeyLocker setup for what those five values
-      # are and where they come from.
-      - name: Sign and verify the Windows MSI
-        id: sign-msi
-        uses: risa-labs-inc/BossConsole/.github/actions/sign-windows-msi@master
-        with:
-          msi-path: ${{ steps.find-msi.outputs.msi-path }}
-          cert-host: ${{ secrets.CODE_SIGNING_CERT_HOST }}
-          api-key: ${{ secrets.CODE_SIGNING_CERT_HOST_API_KEY }}
-          client-cert: ${{ secrets.CODE_SIGNING_CLIENT_CERT }}
-          client-cert-password: ${{ secrets.CODE_SIGNING_CLIENT_CERT_PASSWORD }}
-          keypair-alias: ${{ secrets.CODE_SIGNING_KEYPAIR_ALIAS }}
-          allow-unsigned: 'true' # No signing secrets configured on this repo yet
-          label: Windows x64
-
-      - name: Upload Windows MSI
-        uses: actions/upload-artifact@v7
-        with:
-          name: bossterm-windows-${{ needs.prepare-version.outputs.version }}
-          path: .gradleBuild/bossterm-app/compose/binaries/main/msi/*.msi
-          retention-days: 30
+    uses: ./.github/workflows/windows-msi.yml
+    with:
+      version: ${{ needs.prepare-version.outputs.version }}
+    secrets: inherit
 
   build-linux-amd64:
     needs: prepare-version
@@ -481,6 +421,7 @@ jobs:
     if: |
       always() &&
       github.event.inputs.publish_only != 'true' &&
+      needs.build-windows.result == 'success' &&
       (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
       (needs.build-linux-amd64.result == 'success' || needs.build-linux-amd64.result == 'skipped') &&
       !(needs.build-macos.result == 'skipped' && needs.build-linux-amd64.result == 'skipped')
@@ -511,8 +452,9 @@ jobs:
           find ./artifacts -name "*.deb" -path "*arm64*" -exec cp {} ./release-assets/bossterm_${VERSION}_arm64.deb \; 2>/dev/null || true
           find ./artifacts -name "*.rpm" -path "*arm64*" -exec cp {} ./release-assets/bossterm-${VERSION}.aarch64.rpm \; 2>/dev/null || true
 
-          # Windows (best-effort: build-windows is non-blocking, see its job comment)
-          find ./artifacts -name "*.msi" -exec cp {} ./release-assets/BossTerm-${VERSION}.msi \; 2>/dev/null || true
+          # Windows is required and its signature was verified before artifact upload.
+          find ./artifacts -name "*.msi" -exec cp {} ./release-assets/BossTerm-${VERSION}.msi \;
+          test -s "./release-assets/BossTerm-${VERSION}.msi"
 
           # Snap (only present when dispatched with build_snap=true). Intentional
           # asymmetry: the release-notes body below does NOT mention the snap — it is
@@ -584,8 +526,7 @@ jobs:
 
             **Windows:**
             Run `BossTerm-${{ needs.prepare-version.outputs.version }}.msi` and follow the installer.
-            The installer is unsigned until code-signing credentials are configured for this repo,
-            so Windows SmartScreen will warn on first run ("More info" → "Run anyway").
+            The installer is signed by Risa Labs, Inc. using DigiCert KeyLocker and timestamped.
 
             **JAR (requires Java 17+):**
             ```bash

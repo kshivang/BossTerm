@@ -24,6 +24,7 @@ object KeyMappingUtils {
             Key.Backspace -> JavaKeyEvent.VK_BACK_SPACE
             Key.Tab -> JavaKeyEvent.VK_TAB
             Key.Escape -> JavaKeyEvent.VK_ESCAPE
+            Key.Slash -> JavaKeyEvent.VK_SLASH
             Key.DirectionUp -> JavaKeyEvent.VK_UP
             Key.DirectionDown -> JavaKeyEvent.VK_DOWN
             Key.DirectionLeft -> JavaKeyEvent.VK_LEFT

@@ -54,6 +54,8 @@ class TerminalKeyEncoder @JvmOverloads constructor(private val myPlatform: Platf
         putCode(KeyCodeAndModifier(VK_ENTER, InputEvent.SHIFT_MASK), Ascii.LF.code)
 
         putCode(KeyCodeAndModifier(VK_BACK_SPACE, InputEvent.CTRL_MASK), VK_BACK_SPACE)
+        // Ctrl+/ is the traditional alias for Ctrl+_ (US), not a printable slash.
+        putCode(KeyCodeAndModifier(VK_SLASH, InputEvent.CTRL_MASK), 0x1F)
         if (isMacOS) {
             putCode(KeyCodeAndModifier(VK_LEFT, InputEvent.META_MASK), Ascii.SOH.code)
             putCode(KeyCodeAndModifier(VK_RIGHT, InputEvent.META_MASK), Ascii.ENQ.code)

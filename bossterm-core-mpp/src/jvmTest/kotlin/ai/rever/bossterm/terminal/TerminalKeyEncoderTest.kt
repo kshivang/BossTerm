@@ -5,8 +5,20 @@ import ai.rever.bossterm.core.input.InputEvent
 import java.awt.event.KeyEvent.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class TerminalKeyEncoderTest {
+    @Test
+    fun ctrlSlashSendsUnitSeparatorOnEveryPlatform() {
+        for (platform in Platform.entries) {
+            val encoder = TerminalKeyEncoder(platform)
+            assertEquals("\u001f", encoder.getCode(VK_SLASH, InputEvent.CTRL_MASK)?.decodeToString())
+            // Ordinary slash and question mark must still use the printable-character path.
+            assertNull(encoder.getCode(VK_SLASH, 0))
+            assertNull(encoder.getCode(VK_SLASH, InputEvent.SHIFT_MASK))
+        }
+    }
+
     @Test
     fun altArrowsCarryModifiersInBothCursorModes() {
         for (platform in Platform.entries) {

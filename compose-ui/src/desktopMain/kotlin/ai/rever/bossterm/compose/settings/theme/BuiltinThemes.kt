@@ -619,8 +619,14 @@ object BuiltinThemes {
      * hand-authored chrome tokens off theme id (not off this constant), and
      * `TerminalSettings`' fresh-install color defaults must equal this theme's
      * — `ThemeDefaultsTest` fails if they drift.
+     *
+     * Platform-dependent: Liquid Glass Dark on macOS, where the custom title bar
+     * and native glass are available, and BOSS Blueprint on Windows and Linux,
+     * which default to the native title bar (no glass). The two share every
+     * colour, so the fresh-install colour defaults hold on every platform.
      */
-    const val DEFAULT_THEME_ID = "liquid-glass-dark"
+    val DEFAULT_THEME_ID: String =
+        if (ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS()) "liquid-glass-dark" else "boss-blueprint"
 
     /**
      * The theme [DEFAULT_THEME_ID] names, for callers that need the object and
@@ -628,5 +634,6 @@ object BuiltinThemes {
      * stark black-on-white XTerm theme, which is a *named* theme and not the
      * product default. `ThemeDefaultsTest` pins the two to agree.
      */
-    val PRODUCT_DEFAULT: Theme = LIQUID_GLASS_DARK
+    val PRODUCT_DEFAULT: Theme =
+        if (ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS()) LIQUID_GLASS_DARK else BOSS_BLUEPRINT
 }

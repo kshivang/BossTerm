@@ -360,6 +360,14 @@ fun main(args: Array<String>) {
                             styleApplied = applyFullWindowContent(this@Window.window)
                         }
                     }
+                    // Windows draws the native title bar in the system app mode (usually light);
+                    // match it to the terminal instead. No-op elsewhere.
+                    ai.rever.bossterm.compose.window.WindowsTitleBarColorEffect(
+                        this@Window.window,
+                        background = windowSettings.defaultBackgroundColor,
+                        foreground = windowSettings.defaultForegroundColor,
+                        enabled = useNativeTitleBar,
+                    )
 
                     var nativeWindowFrameReady by remember { mutableStateOf(false) }
                     var sidebarResizePreview by remember { mutableStateOf<Float?>(null) }

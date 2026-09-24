@@ -162,6 +162,9 @@ private fun AuxiliaryGlassSurface(
         window.addComponentListener(listener)
         onDispose { window.removeComponentListener(listener); glass?.close() }
     }
+    // Decorated on Windows, so the system title bar would otherwise follow the Windows app mode.
+    // Skipped while acrylic is installed: that path owns the frame's appearance.
+    WindowsTitleBarColorEffect(window, SettingsTheme.BackgroundColor, SettingsTheme.TextPrimary, enabled = !installed)
     CompositionLocalProvider(
         LocalAuxiliaryGlassWindow provides window,
         LocalNativeWindowGlass provides installed,

@@ -27,7 +27,8 @@ class SettingsSearchTest {
     }
 
     @Test fun opacityPointsToTheActiveThemesSection() {
-        assertEquals("Glass", search("background opacity").first().group)
+        val glassTheme = TerminalSettings(activeThemeId = "liquid-glass-dark")
+        assertEquals("Glass", search("background opacity", glassTheme).first().group)
         val opaqueTheme = TerminalSettings(activeThemeId = "boss-blueprint")
         assertEquals("Transparency", search("background opacity", opaqueTheme).first().group)
         assertTrue(search("glass tint", opaqueTheme).isEmpty())

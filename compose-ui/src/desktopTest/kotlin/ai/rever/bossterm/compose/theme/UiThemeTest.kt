@@ -252,7 +252,10 @@ class UiThemeTest {
         // cannot be asserted here — sibling tests call update() and test order is not
         // guaranteed — so assert the expression instead. A wrong seed shows up as a
         // flash of the other identity in chrome composed before ThemeManager loads.
-        assertEquals(UiTheme.fromTheme(BuiltinThemes.LIQUID_GLASS_DARK), UiTheme.fromTheme(BuiltinThemes.PRODUCT_DEFAULT))
+        // The default is platform-dependent (Liquid Glass Dark on macOS, BOSS Blueprint
+        // elsewhere), so resolve it by id rather than naming one identity.
+        val defaultIdentity = BuiltinThemes.getById(BuiltinThemes.DEFAULT_THEME_ID)!!
+        assertEquals(UiTheme.fromTheme(defaultIdentity), UiTheme.fromTheme(BuiltinThemes.PRODUCT_DEFAULT))
     }
 
     @Test

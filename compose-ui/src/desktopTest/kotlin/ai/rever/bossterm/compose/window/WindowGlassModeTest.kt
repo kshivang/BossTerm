@@ -77,7 +77,8 @@ class WindowGlassModeTest {
     @Test
     fun `unavailable glass stays opaque without overwriting saved opacity`() {
         for (mode in WindowGlassMode.entries) {
-            val settings = TerminalSettings(windowGlassMode = mode.setting, windowGlassOpacity = 0f)
+            // Pin a glass theme: the default is BOSS Blueprint (opaque) off macOS.
+            val settings = TerminalSettings(activeThemeId = "liquid-glass-dark", windowGlassMode = mode.setting, windowGlassOpacity = 0f)
             assertEquals(1f, settings.surfaceOpacity(false))
             assertEquals(if (mode == WindowGlassMode.BARS) 1f else 0f, settings.surfaceOpacity(true))
             assertEquals(0f, settings.windowGlassOpacity)

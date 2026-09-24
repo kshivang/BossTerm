@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings
 
+import ai.rever.bossterm.compose.settings.theme.BuiltinThemes
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -137,8 +138,9 @@ data class TerminalSettings(
      * Active theme ID.
      * References a theme from BuiltinThemes or a custom theme.
      * When a theme is applied, the color settings above are updated to match.
+     * Default is platform-dependent: see [BuiltinThemes.DEFAULT_THEME_ID].
      */
-    val activeThemeId: String = "liquid-glass-dark",
+    val activeThemeId: String = BuiltinThemes.DEFAULT_THEME_ID,
     /** Resolve Liquid Glass Light/Dark from the system appearance. */
     val followSystemTheme: Boolean = false,
 
@@ -206,8 +208,11 @@ data class TerminalSettings(
      * translucent and refuses that for decorated frames, and forcing the NSWindow non-opaque
      * underneath does not help because the surface has no alpha channel. Do not spend an
      * afternoon rediscovering it.
+     *
+     * Default: off on macOS (custom title bar + Liquid Glass), on for Windows and Linux,
+     * where the OS frame gives native snapping, resizing and window controls.
      */
-    val useNativeTitleBar: Boolean = false,
+    val useNativeTitleBar: Boolean = !ShellCustomizationUtils.isMacOS(),
 
     /**
      * Show semi-transparent overlay when window loses focus.

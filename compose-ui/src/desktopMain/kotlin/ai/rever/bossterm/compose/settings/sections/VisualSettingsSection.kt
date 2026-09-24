@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings.sections
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.window.GlassAlertDialog as AlertDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -157,8 +158,12 @@ fun VisualSettingsSection(
                     }
                 },
                 description = if (settings.useNativeTitleBar) {
-                    "Native macOS title bar and traffic lights over the terminal background, " +
-                        "with proper fullscreen. Transparency is not available with it."
+                    if (ShellCustomizationUtils.isMacOS()) {
+                        "Native macOS title bar and traffic lights over the terminal background, " +
+                            "with proper fullscreen. Transparency is not available with it."
+                    } else {
+                        "System title bar and window controls. Transparency is not available with it."
+                    }
                 } else {
                     "Custom title bar with transparency support"
                 }

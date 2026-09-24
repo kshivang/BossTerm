@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.theme.BuiltinColorPalettes
 import ai.rever.bossterm.compose.settings.theme.BuiltinThemes
 import ai.rever.bossterm.compose.settings.theme.withThemeColors
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.settings.theme.ColorPalette
 import ai.rever.bossterm.compose.settings.theme.Theme
 import kotlin.test.Test
@@ -22,10 +23,15 @@ import kotlin.test.assertNotNull
  */
 class ThemeDefaultsTest {
     @Test
-    fun `fresh settings enable whole window liquid glass`() {
+    fun `fresh settings use liquid glass on macOS and native title bar with blueprint elsewhere`() {
         val settings = TerminalSettings()
-        assertEquals("liquid-glass-dark", settings.activeThemeId)
-        assertEquals(false, settings.useNativeTitleBar)
+        if (ShellCustomizationUtils.isMacOS()) {
+            assertEquals("liquid-glass-dark", settings.activeThemeId)
+            assertEquals(false, settings.useNativeTitleBar)
+        } else {
+            assertEquals("boss-blueprint", settings.activeThemeId)
+            assertEquals(true, settings.useNativeTitleBar)
+        }
         assertEquals("window", settings.windowGlassMode)
         assertEquals("regular", settings.windowGlassStyle)
         assertEquals(0.5f, settings.windowGlassTint)
@@ -51,8 +57,9 @@ class ThemeDefaultsTest {
     }
 
     @Test
-    fun `liquid glass dark is the default and leads both builtin lists`() {
-        assertEquals("liquid-glass-dark", BuiltinThemes.DEFAULT_THEME_ID)
+    fun `default theme is platform specific and liquid glass leads both builtin lists`() {
+        val expected = if (ShellCustomizationUtils.isMacOS()) "liquid-glass-dark" else "boss-blueprint"
+        assertEquals(expected, BuiltinThemes.DEFAULT_THEME_ID)
         assertEquals("liquid-glass-dark", BuiltinThemes.ALL.first().id)
         assertEquals("liquid-glass-dark", BuiltinColorPalettes.ALL.first().id)
     }

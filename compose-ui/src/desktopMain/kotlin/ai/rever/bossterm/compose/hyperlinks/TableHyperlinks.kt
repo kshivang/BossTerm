@@ -20,7 +20,10 @@ internal object TableHyperlinks {
         return rule.findAll(text).map { it.range }.toList().takeIf { it.size >= 2 }
     }
 
-    fun detect(snapshot: VersionedBufferSnapshot, row: Int, registry: HyperlinkRegistry): List<Hyperlink> {
+    fun detect(snapshot: VersionedBufferSnapshot, row: Int, registry: HyperlinkRegistry): List<Hyperlink> =
+        detectColumns(snapshot, row, registry) + StackedTableHyperlinks.detect(snapshot, row, registry)
+
+    private fun detectColumns(snapshot: VersionedBufferSnapshot, row: Int, registry: HyperlinkRegistry): List<Hyperlink> {
         val bounds = rows(snapshot, row)
         val top = (row - 1 downTo bounds.first).firstOrNull {
             columns(snapshot.getLine(it).text) != null

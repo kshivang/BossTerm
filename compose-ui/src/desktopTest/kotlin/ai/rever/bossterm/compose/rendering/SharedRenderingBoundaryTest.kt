@@ -57,8 +57,15 @@ class SharedRenderingBoundaryTest {
             val categories = fonts.getMethod("getCategorizedFonts").invoke(null) as Map<String, List<String>>
             val names = categories.getValue("Fixed Pitch") + categories.getValue("Variable Pitch")
             assertTrue(names.isNotEmpty())
-            val family = fonts.getMethod("loadTerminalFont", String::class.java).invoke(null, names.first()) as FontFamily
-            assertNotNull(createFontFamilyResolver().resolve(family).value)
+            val logicalNames = listOf("Dialog", "DialogInput", "Monospaced", "Serif", "SansSerif")
+            assertTrue(names.none { font -> logicalNames.any { it.equals(font, true) } })
+            val physicalName = listOf("Menlo", "DejaVu Sans Mono", "Liberation Mono", "Consolas")
+                .firstOrNull { it in names } ?: names.first()
+            val family = fonts.getMethod("loadTerminalFont", String::class.java).invoke(null, physicalName) as FontFamily
+            val result = createFontFamilyResolver().resolve(family).value
+            // Inspect the host-side result; the production utility remains in the restricted loader.
+            val typeface = result.javaClass.getMethod("getTypeface").invoke(result) as org.jetbrains.skia.Typeface
+            assertEquals(physicalName, typeface.familyName)
         }
     }
 }

@@ -99,8 +99,11 @@ fun loadTerminalFont(fontName: String? = null): FontFamily {
 
 // AWT owns desktop font discovery; Compose owns rendering and its Skia typefaces.
 // Keep the inventory lazy so the default bundled-font path does no desktop font scan.
+private val javaLogicalFamilies = setOf("dialog", "dialoginput", "monospaced", "serif", "sansserif")
+// Inventory is cached for this process; newly installed fonts appear after restart.
 private val systemFontFamilies: List<String> by lazy {
-    GraphicsEnvironment.getLocalGraphicsEnvironment().availableFontFamilyNames.toList()
+    GraphicsEnvironment.getLocalGraphicsEnvironment().availableFontFamilyNames
+        .filterNot { it.lowercase(java.util.Locale.ROOT) in javaLogicalFamilies }
 }
 
 @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)

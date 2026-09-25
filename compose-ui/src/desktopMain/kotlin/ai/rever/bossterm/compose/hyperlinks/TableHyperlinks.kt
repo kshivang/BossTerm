@@ -9,14 +9,14 @@ import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
  */
 internal object TableHyperlinks {
     const val MAX_ROWS = 16
-    private val rule = Regex("─{3,}")
+    private val rule = Regex("[─━]{3,}")
     private val start = Regex("\\(https?://")
 
     fun rows(snapshot: VersionedBufferSnapshot, row: Int): IntRange =
         maxOf(-snapshot.historyLinesCount, row - MAX_ROWS)..minOf(snapshot.height - 1, row + MAX_ROWS)
 
     private fun columns(text: String): List<IntRange>? {
-        if (text.any { it != '─' && it != ' ' }) return null
+        if (text.any { it != '─' && it != '━' && it != ' ' }) return null
         return rule.findAll(text).map { it.range }.toList().takeIf { it.size >= 2 }
     }
 
@@ -50,8 +50,11 @@ internal object TableHyperlinks {
                     for (nextRow in firstRow + 1 until bottom) {
                         val continuation = snapshot.getLine(nextRow).text.drop(column.first).take(column.count())
                         val indent = continuation.indexOfFirst { it != ' ' }
-                        if (indent !in 0..1) break
+                        if (indent < 0) break
                         val fragment = continuation.substring(indent).trimEnd()
+                        // Numeric table columns can right-align every wrapped fragment. Accept
+                        // either cell-left alignment or the same right edge as the first fragment.
+                        if (indent > 1 && indent + fragment.length < column.count() - 1) break
                         if (fragment.isEmpty() || fragment.any { it.isWhitespace() } || fragment.contains("(") || fragment.contains("://")) break
                         val closed = fragment.endsWith(')')
                         val part = if (closed) fragment.dropLast(1) else fragment

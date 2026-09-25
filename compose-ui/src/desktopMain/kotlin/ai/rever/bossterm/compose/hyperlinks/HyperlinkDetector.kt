@@ -647,10 +647,18 @@ object HyperlinkDetector {
         val rowLinks = detectHyperlinks(
             snapshot.getLine(bufferRow).text, bufferRow, workingDirectory, detectFilePaths, registry
         )
-        tableLinks + rowLinks.filterNot { candidate ->
-            tableLinks.any { link ->
-                val span = link.rowSpans[bufferRow]
-                span != null && candidate.startCol < span.second && candidate.endCol > span.first
+        if (tableLinks.isEmpty()) {
+            rowLinks
+        } else {
+            val line = snapshot.getLine(bufferRow)
+            val textLength = line.text.length
+            tableLinks + rowLinks.filterNot { candidate ->
+                val start = ColumnConversionUtils.bufferColToVisualCol(line, candidate.startCol, textLength)
+                val end = ColumnConversionUtils.bufferColToVisualCol(line, candidate.endCol, textLength)
+                tableLinks.any { link ->
+                    val span = link.rowSpans[bufferRow]
+                    span != null && start < span.second && end > span.first
+                }
             }
         }
     }

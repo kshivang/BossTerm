@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.hyperlinks
 
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 
 /**
  * At narrow widths Codex stacks a table record as aligned label/value fields, with a single
@@ -39,7 +40,7 @@ internal object StackedTableHyperlinks {
         if ((top until bottom).any { r ->
             val line = snapshot.getLine(r)
             val text = line.text.trimEnd()
-            line.isWrapped || text.length > right || text.isEmpty() ||
+            line.isWrapped || ColumnConversionUtils.bufferColToVisualCol(line, text.length, text.length) > right || text.isEmpty() ||
                 (r !in fieldRows && text.indexOfFirst { it != ' ' } != valueCol)
         }) return emptyList()
 
@@ -50,13 +51,16 @@ internal object StackedTableHyperlinks {
             for (start in opening.findAll(text.substring(valueCol))) {
                 val firstCol = valueCol + start.range.first + 1
                 val first = text.substring(firstCol)
-                if (first.any { it.isWhitespace() || it == ')' }) continue
+                if (first.length > 8192 || first.any { it.code !in 33..126 || it == ')' }) continue
                 val joined = StringBuilder(first)
-                val spans = linkedMapOf(firstRow to (firstCol to text.length))
+                val line = snapshot.getLine(firstRow)
+                val visualStart = ColumnConversionUtils.bufferColToVisualCol(line, firstCol, text.length)
+                val visualEnd = ColumnConversionUtils.bufferColToVisualCol(line, text.length, text.length)
+                val spans = linkedMapOf(firstRow to (visualStart to visualEnd))
                 for (next in firstRow + 1 until bottom) {
                     if (next in fieldRows) break
                     val fragment = snapshot.getLine(next).text.substring(valueCol).trimEnd()
-                    if (fragment.any { it.isWhitespace() || it == '(' } || fragment.contains("://")) break
+                    if (fragment.any { it.code !in 33..126 || it == '(' } || fragment.contains("://")) break
                     val closed = fragment.endsWith(')')
                     val part = if (closed) fragment.dropLast(1) else fragment
                     if (part.isEmpty() || ')' in part) break
@@ -69,7 +73,7 @@ internal object StackedTableHyperlinks {
                             .singleOrNull { it.startCol == 0 && it.endCol == url.length && it.url == url }
                         if (detected != null && row in spans) {
                             result += detected.copy(
-                                startCol = firstCol,
+                                startCol = visualStart,
                                 endCol = spans.getValue(next).second,
                                 startRow = firstRow,
                                 endRow = next,

@@ -76,6 +76,7 @@ class AccountAutoRemote(
     /** Tokens the user disconnected by hand; skipped until sign-out/toggle-off. */
     private val dismissed = LinkedHashSet<String>()
     private var lastWindowKey: Any? = null
+    private var lastUserId: String? = null
 
     /** Test/inspection view of what this component attached. */
     val attachedTokens: Set<String> get() = synchronized(attached) { attached.toSet() }
@@ -86,7 +87,7 @@ class AccountAutoRemote(
         if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         job = scope.launch {
             val trigger = combine(accountState, settings, directory) { acct, s, dir ->
-                Triple(acct is AccountState.SignedIn, s.autoConnectAccountSessions, dir.map { it.controlUrl })
+                Triple((acct as? AccountState.SignedIn)?.userId, s.autoConnectAccountSessions, dir.map { it.controlUrl })
             }.distinctUntilChanged()
             launch { trigger.collect { reconcile() } }
             while (isActive) {
@@ -102,8 +103,23 @@ class AccountAutoRemote(
         scope.cancel()
     }
 
+    /** Await account-owned connection cleanup before accepting a new host identity. */
+    suspend fun resetAccount() = mutex.withLock {
+        for (token in attached.toList()) disconnect(token)
+        synchronized(attached) { attached.clear() }
+        dismissed.clear()
+        lastUserId = null
+    }
+
     private suspend fun reconcile() = mutex.withLock {
-        val wanted = accountState.value is AccountState.SignedIn && settings.value.autoConnectAccountSessions
+        val userId = (accountState.value as? AccountState.SignedIn)?.userId
+        if (lastUserId != userId) {
+            for (t in attached.toList()) disconnect(t)
+            synchronized(attached) { attached.clear() }
+            dismissed.clear()
+            lastUserId = userId
+        }
+        val wanted = userId != null && settings.value.autoConnectAccountSessions
         val connected = connectedTokens()
         if (!wanted) {
             if (attached.isNotEmpty()) {
@@ -152,7 +168,7 @@ class AccountAutoRemote(
 
         val Default: AccountAutoRemote by lazy {
             AccountAutoRemote(
-                accountState = BossAccountManager.state,
+                accountState = AccountSessionSource.state,
                 settings = SettingsManager.instance.settings,
                 directory = AccountSessionDirectory.Default.sessions,
                 connectedTokens = {

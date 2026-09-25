@@ -873,6 +873,13 @@ object SessionShareManager {
         publishSharedTabIds()
     }
 
+    /** Account links are bearer capabilities. On host sign-out/account switch, stop the old
+     * shares and their viewers before publishing any links for a new identity. */
+    suspend fun revokeAccountShares() = mutex.withLock {
+        accountSharingWanted.value = false
+        sharesByTab.toMap().forEach { (tabId, share) -> unregisterShareLocked(tabId, share) }
+    }
+
     /** "Enable Session Sharing" was switched off: drop the user's shares, keep an account share. */
     private fun stopUserShares() {
         if (shuttingDown) return

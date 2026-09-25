@@ -1024,6 +1024,7 @@ fun TabbedTerminal(
     // its own effect, keyed on the toast value, so each new toast restarts the timer.
     var signInToast by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
+        if (ai.rever.bossterm.compose.share.AccountSessionSource.host != null) return@LaunchedEffect
         // Drain a cold-start sign-in (a deep link that launched the app and verified before any
         // window was listening) so its toast isn't lost; then stream live interactive sign-ins.
         ai.rever.bossterm.compose.auth.BossAccountManager.consumePendingSignInToast()?.let { signInToast = it }
@@ -1225,7 +1226,7 @@ fun TabbedTerminal(
     // "Sign In…" (clicking still opens the window, which then offers "Sign out"). The account
     // glyph is drawn as a Swing Icon in ContextMenuController — NOT an emoji in the label,
     // which corrupts AWT menu text metrics.
-    val accountState by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+    val accountState by ai.rever.bossterm.compose.share.AccountSessionSource.state.collectAsState()
     val signInLabel = (accountState as? ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn)
         ?.email ?: "Sign In…"
     val openSignIn: () -> Unit = { showSignInWindow = true; signInFocusTick++ }

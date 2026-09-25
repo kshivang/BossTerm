@@ -60,6 +60,7 @@ object AccountSessionSource {
     /** Never restore a standalone login after an embedded host is disposed. */
     @Synchronized
     fun disconnect() {
+        embedded = true
         identityJob?.cancel()
         identityJob = null
         delegate = null

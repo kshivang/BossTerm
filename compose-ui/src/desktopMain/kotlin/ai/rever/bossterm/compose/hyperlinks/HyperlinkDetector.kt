@@ -592,22 +592,16 @@ object HyperlinkDetector {
     /**
      * The line instances [bufferRow]'s detection result depends on.
      *
-     * One line for an ordinary row; the whole logical run for a wrapped one, since the rejoin
-     * walks to the run's start and end. Callers memoizing detection must key on all of them, or
-     * an edit to a sibling row goes unnoticed. Just the wrap-flag walk - no rejoin, no regex.
+     * The whole logical run for a soft-wrapped row; a bounded neighbourhood for a hard row,
+     * whose table rules or continuation text can change independently. Callers memoizing
+     * detection must key on all of these lines so edits to sibling rows invalidate the result.
      */
     fun runLinesAt(snapshot: VersionedBufferSnapshot, bufferRow: Int): List<TerminalLine> {
         val oldest = maxOf(-snapshot.historyLinesCount, bufferRow - MAX_WRAPPED_RUN_ROWS)
         if (!isPartOfWrappedRun(snapshot, bufferRow)) {
-            // The predecessor's wrap flag is what decided this row is NOT a continuation, so it
-            // is part of the answer and has to be in the key: a TUI rewriting row R-1 so it now
-            // wraps into R would otherwise hit this memo on R's unchanged line and keep
-            // returning the single-row result forever.
-            return if (bufferRow - 1 >= oldest) {
-                listOf(snapshot.getLine(bufferRow), snapshot.getLine(bufferRow - 1))
-            } else {
-                listOf(snapshot.getLine(bufferRow))
-            }
+            // Hard-wrapped table links also depend on nearby rules and continuation rows.
+            // Include the bounded search window even on misses: a TUI may add a rule later.
+            return TableHyperlinks.rows(snapshot, bufferRow).map { snapshot.getLine(it) }
         }
         var start = bufferRow
         while (start > oldest) {
@@ -649,9 +643,16 @@ object HyperlinkDetector {
             snapshot, bufferRow, terminalWidth, workingDirectory, detectFilePaths, registry
         )
     } else {
-        detectHyperlinks(
+        val tableLinks = TableHyperlinks.detect(snapshot, bufferRow, registry)
+        val rowLinks = detectHyperlinks(
             snapshot.getLine(bufferRow).text, bufferRow, workingDirectory, detectFilePaths, registry
         )
+        tableLinks + rowLinks.filterNot { candidate ->
+            tableLinks.any { link ->
+                val span = link.rowSpans[bufferRow]
+                span != null && candidate.startCol < span.second && candidate.endCol > span.first
+            }
+        }
     }
 
     /**

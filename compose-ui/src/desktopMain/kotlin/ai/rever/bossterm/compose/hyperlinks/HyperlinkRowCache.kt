@@ -12,7 +12,8 @@ import ai.rever.bossterm.terminal.model.TerminalLine
   * offset into its hash, so every wheel tick missed and re-ran detection over the whole viewport.
   *
   * A wrapped row's answer depends on its whole logical run, so the key for those rows is every
-  * line in the run. Bypassing the memo instead would re-run `collectWrappedLines` (a rejoin of
+  * line in the run. Hard rows also include the bounded table-rule/continuation search window.
+  * Bypassing the memo instead would re-run `collectWrappedLines` (a rejoin of
   * the entire logical line) plus the full registry sweep on every pointer-move event - and in a
   * long-output session wrapped rows are the common case, not the exception.
   *
@@ -42,8 +43,8 @@ internal class HyperlinkRowCache {
     /**
       * Hyperlinks on [bufferRow], detecting only when something the answer depends on changed.
       *
-      * @param runLines the line instances the answer depends on: just this row's line for an
-      *   ordinary row, every line of the logical run for a wrapped one.
+      * @param runLines the line instances the answer depends on: the bounded table-search
+      *   neighbourhood for a hard row, every line of the logical run for a soft-wrapped one.
       */
     fun linksAt(
         bufferRow: Int,

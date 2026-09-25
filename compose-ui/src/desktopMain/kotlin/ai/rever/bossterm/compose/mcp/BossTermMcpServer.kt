@@ -1340,7 +1340,7 @@ class BossTermMcpServer(
             // --- 2. Ensure the bytes can be PLACED. The emulator's OSC 1337 handler
             //        reads intrinsic dimensions via ImageIO, which has no WebP reader in
             //        a stock JDK. Gate on ImageIO; if it can't read the bytes, fall back
-            //        to Skia (the renderer's own decoder, which does handle WebP) and
+            //        to Compose (the renderer's own decoder, which does handle WebP) and
             //        transcode to PNG so placement and rendering stay on one decoder —
             //        this is why a valid .webp still works even though ImageIO can't read it.
             var bytesToSend = imageBytes
@@ -1351,9 +1351,7 @@ class BossTermMcpServer(
             }
             if (!imageIoReadable) {
                 val transcoded = try {
-                    org.jetbrains.skia.Image.makeFromEncoded(imageBytes).use { img ->
-                        img.encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)?.use { it.bytes }
-                    }
+                    transcodeImageToPng(imageBytes)
                 } catch (e: Throwable) {
                     null
                 }

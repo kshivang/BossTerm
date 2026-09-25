@@ -17,6 +17,13 @@ class HostAccountSessionsTest {
         override suspend fun list(userId: String, since: String) = rows()
     }
 
+    @Test fun `failed host initialization can disable standalone auth before install`() {
+        AccountSessionSource.disconnect()
+        assertNotNull(AccountSessionSource.host)
+        assertEquals(AccountState.SignedOut, AccountSessionSource.state.value)
+        assertEquals("Sign in to BossConsole", AccountSessionSource.signInHint)
+    }
+
     @Test fun `host publishing and cleanup never read standalone tokens`() = runBlocking {
         val host = Host()
         val tabs = MutableStateFlow(setOf("tab"))

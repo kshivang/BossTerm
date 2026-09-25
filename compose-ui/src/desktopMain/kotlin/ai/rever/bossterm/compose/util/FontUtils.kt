@@ -4,9 +4,11 @@ import ai.rever.bossterm.compose.daemon.BossTermPaths
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.platform.Typeface
-import org.jetbrains.skia.FontMgr
-import org.jetbrains.skia.FontStyle
+import androidx.compose.ui.text.platform.SystemFont
+import java.awt.Font
+import java.awt.GraphicsEnvironment
+import java.awt.font.FontRenderContext
+import java.awt.geom.AffineTransform
 
 /**
  * Special value indicating the bundled MesloLGS Nerd Font should be used.
@@ -25,33 +27,23 @@ const val FONT_SECTION_VARIABLE_PITCH = "Variable Pitch"
  * Returns a map with sections: "Bundled", "Fixed Pitch", "Variable Pitch"
  */
 fun getCategorizedFonts(): Map<String, List<String>> {
-    val fontMgr = FontMgr.default
-    val familyCount = fontMgr.familiesCount
-
-    val allFamilies = (0 until familyCount)
-        .map { fontMgr.getFamilyName(it) }
-        .filter { it.isNotEmpty() }
-
+    val allFamilies = systemFontFamilies
+    val metrics = FontRenderContext(AffineTransform(), true, true)
     val fixedPitch = mutableListOf<String>()
     val variablePitch = mutableListOf<String>()
 
     for (familyName in allFamilies) {
         try {
-            val typeface = fontMgr.matchFamilyStyle(familyName, FontStyle.NORMAL)
-            if (typeface != null) {
-                // Check if font is monospace by comparing glyph widths
-                val font = org.jetbrains.skia.Font(typeface, 12f)
-                val widthW = font.measureTextWidth("W")
-                val widthI = font.measureTextWidth("i")
-                // Allow small tolerance for floating point comparison
-                if (kotlin.math.abs(widthW - widthI) < 0.1f) {
-                    fixedPitch.add(familyName)
-                } else {
-                    variablePitch.add(familyName)
-                }
+            val font = Font(familyName, Font.PLAIN, 12)
+            val widthW = font.getStringBounds("W", metrics).width
+            val widthI = font.getStringBounds("i", metrics).width
+            if (kotlin.math.abs(widthW - widthI) < 0.1) {
+                fixedPitch.add(familyName)
+            } else {
+                variablePitch.add(familyName)
             }
         } catch (e: Exception) {
-            // Skip fonts that fail to load
+            // Skip fonts that fail to load.
         }
     }
 
@@ -63,7 +55,7 @@ fun getCategorizedFonts(): Map<String, List<String>> {
 }
 
 /**
- * Get list of available fonts on the system using Skia's FontMgr.
+ * Get list of available fonts on the system using the desktop font inventory.
  * @param monospaceOnly If true, only returns monospace fonts. If false, returns all fonts.
  * Includes the bundled font as the first option.
  * @deprecated Use getCategorizedFonts() for sectioned display
@@ -97,21 +89,24 @@ fun loadTerminalFont(fontName: String? = null): FontFamily {
         return loadBundledFont()
     }
 
-    // Try to load system font by name using Skia FontMgr
     return try {
-        // Use Skia's FontMgr to load system font by family name
-        val skiaTypeface = FontMgr.default.matchFamilyStyle(fontName, FontStyle.NORMAL)
-        if (skiaTypeface != null) {
-            FontFamily(Typeface(skiaTypeface))
-        } else {
-            System.err.println("Font '$fontName' not found, falling back to bundled font")
-            loadBundledFont()
-        }
+        systemFontFamily(fontName) ?: loadBundledFont()
     } catch (e: Exception) {
         System.err.println("Failed to load font '$fontName': ${e.message}")
         loadBundledFont()
     }
 }
+
+// AWT owns desktop font discovery; Compose owns rendering and its Skia typefaces.
+// Keep the inventory lazy so the default bundled-font path does no desktop font scan.
+private val systemFontFamilies: List<String> by lazy {
+    GraphicsEnvironment.getLocalGraphicsEnvironment().availableFontFamilyNames.toList()
+}
+
+@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+private fun systemFontFamily(name: String): FontFamily? =
+    systemFontFamilies.firstOrNull { it.equals(name, ignoreCase = true) }
+        ?.let { FontFamily(SystemFont(it)) }
 
 /**
  * Lazily loaded bundled symbol font (Noto Sans Symbols 2).
@@ -131,8 +126,7 @@ val cachedAppleColorEmojiFont: FontFamily? by lazy {
         null
     } else {
         runCatching {
-            FontMgr.default.matchFamilyStyle("Apple Color Emoji", FontStyle.NORMAL)
-                ?.let { FontFamily(Typeface(it)) }
+            systemFontFamily("Apple Color Emoji")
         }.getOrNull()
     }
 }
@@ -144,8 +138,7 @@ val cachedAppleColorEmojiFont: FontFamily? by lazy {
  */
 val cachedSTIXMathFont: FontFamily? by lazy {
     runCatching {
-        FontMgr.default.matchFamilyStyle("STIX Two Math", FontStyle.NORMAL)
-            ?.let { FontFamily(Typeface(it)) }
+        systemFontFamily("STIX Two Math")
     }.getOrNull()
 }
 

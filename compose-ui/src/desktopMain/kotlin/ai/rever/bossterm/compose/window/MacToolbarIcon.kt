@@ -6,9 +6,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.res.loadImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import org.jetbrains.skia.Image
 import java.util.concurrent.ConcurrentHashMap
 
 private val symbolImages = ConcurrentHashMap<String, ImageBitmap>()
@@ -45,7 +44,10 @@ internal fun MacToolbarIcon(
         if (bitmap == null && ShellCustomizationUtils.isMacOS()) {
             MacOSWindowGlass.loadSystemSymbol(symbol) { bytes ->
                 val decoded = bytes?.let {
-                    runCatching { Image.makeFromEncoded(it).toComposeImageBitmap() }.getOrNull()
+                    runCatching {
+                        @Suppress("DEPRECATION")
+                        it.inputStream().use { input -> loadImageBitmap(input) }
+                    }.getOrNull()
                 }
                 if (decoded != null) {
                     val cached = symbolImages.putIfAbsent(symbol, decoded) ?: decoded

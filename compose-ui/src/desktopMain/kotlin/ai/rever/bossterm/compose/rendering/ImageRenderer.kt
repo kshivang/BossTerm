@@ -1,15 +1,11 @@
 package ai.rever.bossterm.compose.rendering
 
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.toComposeImageBitmap
-import ai.rever.bossterm.terminal.model.image.DimensionSpec
+import androidx.compose.ui.res.loadImageBitmap
 import ai.rever.bossterm.terminal.model.image.ImageDimensionCalculator
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.image.TerminalImagePlacement
-import org.jetbrains.skia.Image
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 
@@ -37,8 +33,9 @@ object ImageRenderer {
     fun getOrDecodeImage(image: TerminalImage): ImageBitmap? {
         return imageCache.getOrPut(image.id) {
             try {
-                val skiaImage = Image.makeFromEncoded(image.data)
-                skiaImage.toComposeImageBitmap()
+                // Decode inside host Compose, whose loader owns Skia on BOSS 9.5.25.
+                @Suppress("DEPRECATION")
+                image.data.inputStream().use { loadImageBitmap(it) }
             } catch (e: Exception) {
                 LOG.warn("Failed to decode image {}: {}", image.id, e.message)
                 return null

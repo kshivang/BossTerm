@@ -344,7 +344,7 @@ private fun hostOf(link: String): String = runCatching {
  */
 @Composable
 private fun AccountDevicesSection(onConnect: (String) -> Unit) {
-    val account by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+    val account by ai.rever.bossterm.compose.share.AccountSessionSource.state.collectAsState()
     val directory = ai.rever.bossterm.compose.share.AccountSessionDirectory.Default
     val sessions by directory.sessions.collectAsState()
     val lastError by directory.lastError.collectAsState()
@@ -355,7 +355,7 @@ private fun AccountDevicesSection(onConnect: (String) -> Unit) {
         when {
             account !is ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn ->
                 Text(
-                    "Sign in (menu > Sign In...) to see terminals shared from your other devices.",
+                    "${ai.rever.bossterm.compose.share.AccountSessionSource.signInHint} to see terminals shared from your other devices.",
                     color = TextMuted, fontSize = 12.sp
                 )
             sessions.isEmpty() ->

@@ -88,13 +88,13 @@ fun SessionSharingSettingsSection(
                         "public reach (Funnel or a custom URL); all = every device incl. LAN; off = the " +
                         "link alone grants access. Approved devices get a 24h key so they aren't re-prompted."
             )
-            val account by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+            val account by ai.rever.bossterm.compose.share.AccountSessionSource.state.collectAsState()
             val signedIn = account is ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn
             SettingsToggle(
                 label = "Publish live sessions to my BOSS account",
                 checked = settings.publishSessionsToAccount,
                 onCheckedChange = { onSettingsChange(settings.copy(publishSessionsToAccount = it)) },
-                description = (if (signedIn) "" else "Sign in (menu > Sign In) to enable. ") +
+                description = (if (signedIn) "" else "${ai.rever.bossterm.compose.share.AccountSessionSource.signInHint} to enable. ") +
                         "Each active share is listed under your account so you can open it from any browser at " +
                         AccountSessionPublisher.LIVE_SESSIONS_PAGE + " after a magic-link sign-in. Only the link, " +
                         "device and session names leave this machine, never terminal content. Devices opening a " +

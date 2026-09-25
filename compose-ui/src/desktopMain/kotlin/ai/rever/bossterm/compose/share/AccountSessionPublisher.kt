@@ -79,6 +79,7 @@ class AccountSessionPublisher(
     private val appVersion: String,
     private val heartbeatMs: Long = DEFAULT_HEARTBEAT_MS,
     private val http: HttpClient = defaultHttp(),
+    private val host: HostAccountSessions? = null,
 ) {
     private val log = LoggerFactory.getLogger(AccountSessionPublisher::class.java)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -130,7 +131,7 @@ class AccountSessionPublisher(
         // than being cancelled after the server accepted it and before we recorded it. Cancelling the
         // loop first was measured to leave exactly that row behind.
         // cachedAccessToken: a refresh round-trip cannot fit in the hook's budget.
-        runBlocking { withTimeoutOrNull(STOP_TIMEOUT_MS) { deleteAll(tokenOverride = cachedAccessToken()) } }
+        runBlocking { withTimeoutOrNull(STOP_TIMEOUT_MS) { deleteAll(tokenOverride = if (host == null) cachedAccessToken() else null) } }
         job?.cancel(); job = null
         scope.cancel()
     }
@@ -144,6 +145,13 @@ class AccountSessionPublisher(
 
     private suspend fun deleteTrackedLocked(tokenOverride: String? = null) {
         if (published.isEmpty()) return
+        if (host != null) {
+            for (tabId in published.keys.toList()) {
+                val (userId, shareId) = published.getValue(tabId)
+                if (host.delete(userId, shareId)) published.remove(tabId)
+            }
+            return
+        }
         var token = tokenOverride ?: accessToken(false) ?: return
         for (tabId in published.keys.toList()) {
             val (userId, shareId) = published[tabId]!!
@@ -158,6 +166,8 @@ class AccountSessionPublisher(
         Snapshot(sharedTabIds.value, remoteUrl.value, accountState.value as? AccountState.SignedIn, enabled.value)
 
     private suspend fun reconcile(s: Snapshot) = mutex.withLock {
+        // A queued trigger may belong to the account that just signed out.
+        if (s.account != (accountState.value as? AccountState.SignedIn)) return@withLock
         val account = s.account
         log.debug("Live-session reconcile: shares={} account={} enabled={} tracked={}", s.tabs.size, account?.userId?.take(8), s.enabled, published.size)
         if (account == null) {
@@ -168,17 +178,21 @@ class AccountSessionPublisher(
         }
         if (!s.enabled) {
             deleteTrackedLocked() // opted out with a live token: take our rows down now
-            published.clear()
             return@withLock
         }
-        var token = accessToken(false)
-        if (token == null) { log.warn("Live-session reconcile: no access token available; skipping"); return@withLock }
+        var token = if (host == null) accessToken(false) else null
+        if (host == null && token == null) { log.warn("Live-session reconcile: no access token available; skipping"); return@withLock }
         // Rows for shares that ended.
         for (tabId in published.keys.toList()) {
-            if (tabId in s.tabs) continue
+            if (tabId in s.tabs && published[tabId]?.first == account.userId) continue
             val (userId, shareId) = published[tabId]!!
-            val used = request(token!!) { b -> del("$restBaseUrl/terminal_sessions?user_id=eq.$userId&share_id=eq.$shareId", b) }
-            if (used != null) { token = used; published.remove(tabId) }
+            if (host != null) {
+                // A former account's rows expire; its links have already been revoked locally.
+                if (userId != account.userId || host.delete(userId, shareId)) published.remove(tabId)
+            } else {
+                val used = request(token!!) { b -> del("$restBaseUrl/terminal_sessions?user_id=eq.$userId&share_id=eq.$shareId", b) }
+                if (used != null) { token = used; published.remove(tabId) }
+            }
         }
         // Upsert (create or heartbeat) every current share.
         for (tabId in s.tabs) {
@@ -202,9 +216,14 @@ class AccountSessionPublisher(
                 app_version = appVersion.take(40),
             )
             val wasTracked = tabId in published
-            val used = request(token!!) { b -> upsert(json.encodeToString(Row.serializer(), row), b) }
-            val ok = used != null
-            if (used != null) { token = used; published[tabId] = account.userId to shareId }
+            if (account != (accountState.value as? AccountState.SignedIn)) return@withLock
+            val body = json.encodeToString(Row.serializer(), row)
+            val ok = if (host != null) host.upsert(account.userId, body) else {
+                val used = request(token!!) { b -> upsert(body, b) }
+                if (used != null) token = used
+                used != null
+            }
+            if (ok) published[tabId] = account.userId to shareId
             if (ok && !wasTracked) log.info("Live-session published: tab {} share {}", tabId, shareId)
         }
     }
@@ -293,20 +312,23 @@ class AccountSessionPublisher(
             AccountSessionPublisher(
                 sharedTabIds = SessionShareManager.allSharedTabIds,
                 remoteUrl = SessionShareManager.remoteUrlFlow,
-                accountState = BossAccountManager.state,
+                accountState = AccountSessionSource.state,
                 enabled = SettingsManager.instance.settings.map { it.publishSessionsToAccount }
                     .stateIn(CoroutineScope(SupervisorJob() + Dispatchers.Default), SharingStarted.Eagerly, SettingsManager.instance.settings.value.publishSessionsToAccount),
                 infoFor = SessionShareManager::infoFor,
                 sessionNameFor = SessionShareManager::sessionNameFor,
                 deviceName = SessionShareManager::defaultSessionName,
                 accessToken = { force -> BossAccountManager.accessToken(force) },
-                cachedAccessToken = BossAccountManager::cachedAccessToken,
+                cachedAccessToken = { BossAccountManager.cachedAccessToken() },
+                host = AccountSessionSource.host,
                 restBaseUrl = "${SupabaseAuthConfig.url}/rest/v1",
                 anonKey = SupabaseAuthConfig.anonKey,
                 appVersion = Version.CURRENT.toString(),
             ).also { publisher ->
                 // Delete our rows while the token is still valid; signOut() revokes it right after.
-                BossAccountManager.addSignOutListener { stored -> publisher.deleteAll(tokenOverride = stored.accessToken) }
+                if (AccountSessionSource.host == null) {
+                    BossAccountManager.addSignOutListener { stored -> publisher.deleteAll(tokenOverride = stored.accessToken) }
+                }
             }
         }
     }

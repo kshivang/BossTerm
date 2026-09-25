@@ -707,7 +707,7 @@ private fun qrImageBitmap(text: String, target: Int = 512): ImageBitmap? = runCa
 @Composable
 private fun AccountAutoShareSection() {
     var expanded by remember { mutableStateOf(false) }
-    val account by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+    val account by ai.rever.bossterm.compose.share.AccountSessionSource.state.collectAsState()
     val settings by ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.collectAsState()
     val allShared by SessionShareManager.allSharedTabIds.collectAsState()
     val userShared by SessionShareManager.sharedTabIds.collectAsState()
@@ -753,7 +753,7 @@ private fun AccountAutoShareSection() {
             )
             if (signedIn == null) {
                 Spacer(Modifier.height(6.dp))
-                Text("Sign in (menu > Sign In...) to use it.", color = TextMuted, fontSize = 12.sp)
+                Text("${ai.rever.bossterm.compose.share.AccountSessionSource.signInHint} to use it.", color = TextMuted, fontSize = 12.sp)
             }
             Spacer(Modifier.height(6.dp))
             ai.rever.bossterm.compose.settings.components.SettingsToggle(

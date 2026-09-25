@@ -69,12 +69,14 @@ class AccountSessionDirectory(
     private val pollMs: Long = DEFAULT_POLL_MS,
     private val liveWindowSeconds: Long = LIVE_WINDOW_SECONDS,
     private val http: HttpClient = defaultHttp(),
+    private val host: HostAccountSessions? = null,
 ) {
     private val log = LoggerFactory.getLogger(AccountSessionDirectory::class.java)
     private val json = Json { ignoreUnknownKeys = true }
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private val mutex = Mutex()
+    private var listedUserId: String? = null
 
     private val _sessions = MutableStateFlow<List<AccountSession>>(emptyList())
     /** Other devices' live sessions, newest heartbeat first. Empty while signed out. */
@@ -113,40 +115,60 @@ class AccountSessionDirectory(
     fun stop() {
         job?.cancel(); job = null
         scope.cancel()
+        _sessions.value = emptyList()
+        _lastError.value = null
+    }
+
+    suspend fun resetAccount() = mutex.withLock {
+        _sessions.value = emptyList()
+        _lastError.value = null
+        listedUserId = null
     }
 
     /** Fetch now. Safe to call from the UI (suspends on IO); serialised so bursts coalesce. */
     suspend fun refresh() = mutex.withLock {
-        if (accountState.value !is AccountState.SignedIn) {
+        val account = accountState.value as? AccountState.SignedIn
+        if (listedUserId != account?.userId) {
+            _sessions.value = emptyList()
+            _lastError.value = null
+            listedUserId = account?.userId
+        }
+        if (account == null) {
             _sessions.value = emptyList()
             _lastError.value = null
             return@withLock
         }
-        val token = accessToken() ?: run {
-            _sessions.value = emptyList()
-            return@withLock
-        }
         val since = Instant.now().minusSeconds(liveWindowSeconds).toString()
         try {
-            val resp = http.get(
-                "$restBaseUrl/terminal_sessions?select=share_id,device_name,session_name,scope,control_url,secure,e2e_code,app_version,last_seen_at" +
-                    "&last_seen_at=gt.$since&order=last_seen_at.desc&limit=100",
-            ) {
-                header("apikey", anonKey)
-                header("Authorization", "Bearer $token")
-                header("Accept", "application/json")
+            val body = if (host != null) host.list(account.userId, since) else {
+                val token = accessToken() ?: run {
+                    _sessions.value = emptyList()
+                    return@withLock
+                }
+                val resp = http.get(
+                    "$restBaseUrl/terminal_sessions?select=share_id,device_name,session_name,scope,control_url,secure,e2e_code,app_version,last_seen_at" +
+                        "&last_seen_at=gt.$since&order=last_seen_at.desc&limit=100",
+                ) {
+                    header("apikey", anonKey)
+                    header("Authorization", "Bearer $token")
+                    header("Accept", "application/json")
+                }
+                if (resp.status.value !in 200..299) {
+                    _lastError.value = "Registry answered HTTP ${resp.status.value}"
+                    log.warn("Account session directory refresh rejected: HTTP {}", resp.status.value)
+                    return@withLock
+                }
+                resp.bodyAsText()
             }
-            if (resp.status.value !in 200..299) {
-                _lastError.value = "Registry answered HTTP ${resp.status.value}"
-                log.warn("Account session directory refresh rejected: HTTP {}", resp.status.value)
-                return@withLock
-            }
-            val rows = json.decodeFromString<List<Row>>(resp.bodyAsText())
+            if (account != accountState.value) return@withLock
+            val rows = json.decodeFromString<List<Row>>(body)
             _sessions.value = rows
                 .filter { row -> tokenOf(row.control_url)?.let(ownsToken) != true }
                 .map { it.toSession() }
             _lastError.value = null
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            if (account != accountState.value) return@withLock
             _lastError.value = "Registry unreachable"
             log.warn("Account session directory refresh failed: {}", e.message)
         }
@@ -185,8 +207,9 @@ class AccountSessionDirectory(
 
         val Default: AccountSessionDirectory by lazy {
             AccountSessionDirectory(
-                accountState = BossAccountManager.state,
+                accountState = AccountSessionSource.state,
                 accessToken = { BossAccountManager.accessToken() },
+                host = AccountSessionSource.host,
                 ownsToken = SessionShareManager::ownsToken,
                 restBaseUrl = "${SupabaseAuthConfig.url}/rest/v1",
                 anonKey = SupabaseAuthConfig.anonKey,

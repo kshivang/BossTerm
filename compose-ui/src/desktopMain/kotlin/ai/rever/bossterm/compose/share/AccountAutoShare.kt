@@ -63,7 +63,7 @@ class AccountAutoShare(
         if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         job = scope.launch {
             val trigger = combine(accountState, settings, sharedTabIds) { acct, s, shared ->
-                Triple(acct is AccountState.SignedIn, s.publishSessionsToAccount && s.autoShareToAccount, shared)
+                Triple((acct as? AccountState.SignedIn)?.userId, s.publishSessionsToAccount && s.autoShareToAccount, shared)
             }.distinctUntilChanged()
             launch { trigger.collect { reconcile() } }
             while (isActive) {
@@ -76,6 +76,12 @@ class AccountAutoShare(
     fun stop() {
         job?.cancel(); job = null
         scope.cancel()
+    }
+
+    /** Drain any in-flight share creation before the host revokes the previous account's links. */
+    suspend fun resetAccount() = mutex.withLock {
+        setWanted(false)
+        autoSharedTabId = null
     }
 
     private suspend fun reconcile() = mutex.withLock {
@@ -112,7 +118,7 @@ class AccountAutoShare(
 
         val Default: AccountAutoShare by lazy {
             AccountAutoShare(
-                accountState = BossAccountManager.state,
+                accountState = AccountSessionSource.state,
                 settings = SettingsManager.instance.settings,
                 sharedTabIds = SessionShareManager.allSharedTabIds,
                 tabIds = { McpTerminalRegistry.allTabs().map { it.id } },

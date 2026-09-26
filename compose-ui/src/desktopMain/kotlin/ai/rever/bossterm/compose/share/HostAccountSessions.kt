@@ -21,6 +21,17 @@ interface HostAccountSessions {
     suspend fun list(userId: String, since: String): String
 }
 
+/** Optional relay admission. A ticket is room-scoped and single-use, never a host login token. */
+interface HostTerminalRelay {
+    suspend fun relayTicket(userId: String, roomId: String, role: String): String
+}
+
+/** Optional account settings capability. Host access tokens never leave the provider. */
+interface HostTerminalPreferences {
+    suspend fun preferences(userId: String): String
+    suspend fun settingsHandoff(userId: String): String
+}
+
 /** Shared by account services and UI, while standalone BossTerm retains its own login. */
 object AccountSessionSource {
     private val hostState = MutableStateFlow<AccountState>(AccountState.SignedOut)
@@ -29,8 +40,14 @@ object AccountSessionSource {
     @Volatile private var embedded = false
 
     // Stable facade: default services can survive a plugin disable/re-register in one classloader.
-    private val facade = object : HostAccountSessions {
+    private val facade = object : HostAccountSessions, HostTerminalPreferences, HostTerminalRelay {
         override val state = hostState.asStateFlow()
+        override suspend fun relayTicket(userId: String, roomId: String, role: String) =
+            checkNotNull(delegate as? HostTerminalRelay) { "Host relay unavailable" }.relayTicket(userId, roomId, role)
+        override suspend fun preferences(userId: String) =
+            checkNotNull(delegate as? HostTerminalPreferences) { "Host settings unavailable" }.preferences(userId)
+        override suspend fun settingsHandoff(userId: String) =
+            checkNotNull(delegate as? HostTerminalPreferences) { "Host settings unavailable" }.settingsHandoff(userId)
         override suspend fun upsert(userId: String, rowJson: String) = delegate?.upsert(userId, rowJson) ?: false
         override suspend fun delete(userId: String, shareId: String) = delegate?.delete(userId, shareId) ?: false
         override suspend fun list(userId: String, since: String) =

@@ -205,6 +205,7 @@ fun main(args: Array<String>) {
     // Keeps an all-windows share running while signed in + publishing (setting autoShareToAccount).
     ai.rever.bossterm.compose.share.AccountAutoShare.Default.start()
     // Other devices' live sessions on this account, for the Remote Sessions window.
+    ai.rever.bossterm.compose.share.AccountTerminalPreferences.Default.start()
     ai.rever.bossterm.compose.share.AccountSessionDirectory.Default.start()
     // Attaches the account's other live sessions as remote tabs (setting autoConnectAccountSessions).
     ai.rever.bossterm.compose.share.AccountAutoRemote.Default.start()
@@ -219,6 +220,7 @@ fun main(args: Array<String>) {
         // Before the share manager: deletes this process's registry rows (bounded) while the shares
         // are still ours to describe.
         ai.rever.bossterm.compose.share.AccountAutoRemote.Default.stop()
+        ai.rever.bossterm.compose.share.AccountTerminalPreferences.Default.stop()
         ai.rever.bossterm.compose.share.AccountSessionDirectory.Default.stop()
         ai.rever.bossterm.compose.share.AccountAutoShare.Default.stop()
         ai.rever.bossterm.compose.share.AccountSessionPublisher.Default.stop()

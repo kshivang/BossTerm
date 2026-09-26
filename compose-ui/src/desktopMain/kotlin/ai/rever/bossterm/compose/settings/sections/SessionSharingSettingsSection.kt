@@ -12,6 +12,17 @@ import ai.rever.bossterm.compose.share.AccountSessionPublisher
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
+import ai.rever.bossterm.compose.share.AccountTerminalPreferences
+import androidx.compose.material.Button
+import androidx.compose.material.Text
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalUriHandler
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+
 /**
  * Session sharing / remote control (issue #276): a self-hosted web viewer that
  * mirrors a tab to another device's browser, with optional control and remote
@@ -90,6 +101,26 @@ fun SessionSharingSettingsSection(
             )
             val account by ai.rever.bossterm.compose.share.AccountSessionSource.state.collectAsState()
             val signedIn = account is ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn
+            val accountScope = rememberCoroutineScope()
+            val uriHandler = LocalUriHandler.current
+            var openingSettings by remember { mutableStateOf(false) }
+            var settingsError by remember { mutableStateOf<String?>(null) }
+            Button(enabled = signedIn && !openingSettings, onClick = {
+                openingSettings = true
+                settingsError = null
+                accountScope.launch {
+                    try {
+                        uriHandler.openUri(AccountTerminalPreferences.Default.settingsUrl())
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        settingsError = "Unable to open account settings. Please try again."
+                    } finally {
+                        openingSettings = false
+                    }
+                }
+            }) { Text(if (openingSettings) "Opening settings…" else "Account terminal settings") }
+            settingsError?.let { Text(it) }
             SettingsToggle(
                 label = "Publish live sessions to my BOSS account",
                 checked = settings.publishSessionsToAccount,

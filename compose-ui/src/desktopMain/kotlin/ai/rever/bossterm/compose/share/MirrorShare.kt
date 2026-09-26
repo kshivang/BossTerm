@@ -335,10 +335,11 @@ class MirrorShare(
         supportsPaneGraphics: Boolean = false,
         confidential: Boolean = false,
         supportsFiles: Boolean = false,
+        relayOutput: Boolean = false,
     ): ViewerConnection {
         val vc = ViewerConnection(
             viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics, confidential,
-        )
+        ).also { it.relayOutput = relayOutput }
         if (stopped) {
             vc.sharingEnded = true
             vc.outbox.close(discardPending = true)
@@ -348,7 +349,7 @@ class MirrorShare(
             vc.outbox.sendControl(ShareProtocol.encodeServer(it))
         })
         viewers.add(vc)
-        if (supportsPaneGraphics) {
+        if (supportsPaneGraphics && !relayOutput) {
             // A graphics mutation may have landed after this viewer's initial full frames were
             // captured but before admission. Poll every pane once after registration so even a
             // quiet pane closes that window without registering early and replaying text twice.
@@ -388,18 +389,21 @@ class MirrorShare(
 
     fun broadcast(msg: ServerMessage) {
         val text = ShareProtocol.encodeServer(msg)
-        for (v in viewers) v.outbox.trySend(text)
+        for (v in viewers) {
+            if (v.relayOutput && (msg is ServerMessage.PaneOutput || msg is ServerMessage.PaneSnapshot)) continue
+            v.outbox.trySend(text)
+        }
     }
 
     private fun broadcastGraphics(msg: ServerMessage) {
         if (msg is ServerMessage.PaneGraphics) {
             for (viewer in viewers) {
-                if (viewer.supportsPaneGraphics) enqueueGraphics(viewer, msg)
+                if (viewer.supportsPaneGraphics && !viewer.relayOutput) enqueueGraphics(viewer, msg)
             }
         } else {
             val text = ShareProtocol.encodeServer(msg)
             for (viewer in viewers) {
-                if (viewer.supportsPaneGraphics) viewer.outbox.trySend(text)
+                if (viewer.supportsPaneGraphics && !viewer.relayOutput) viewer.outbox.trySend(text)
             }
         }
     }
@@ -421,6 +425,7 @@ class MirrorShare(
         var rawFrame: String? = null
         var filteredFrame: String? = null
         for (viewer in viewers) {
+            if (viewer.relayOutput) continue
             val data = if (viewer.supportsPaneGraphics) filtered else raw
             if (data.isEmpty()) continue
             val frame = if (viewer.supportsPaneGraphics) {
@@ -476,6 +481,73 @@ class MirrorShare(
             }
         }
         return out
+    }
+
+    internal fun relayPaneIds(): Set<String> = synchronized(taps) { taps.keys.toSet() }
+
+    internal fun relayInitialMessages(canControl: Boolean): List<ServerMessage> {
+        val sig = computeSignature()
+        return listOf(themeMessage(), mcpStatusMessage(), voiceService.status(withReason = canControl, confidential = true),
+            ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName,
+                filesAvailable = ai.rever.bossterm.compose.remote.files.RemoteFileStore.available))
+    }
+
+    /** New relay path only. Legacy viewers continue using their existing raw-output outboxes. */
+    internal suspend fun openRelayPane(
+        roomId: String,
+        paneId: String,
+        identity: java.security.KeyPair,
+        publish: (ai.rever.bossterm.compose.relay.RelayOutput) -> Boolean,
+        failed: (Exception) -> Unit,
+        publishGraphics: (ServerMessage.PaneGraphics, kind: String) -> Unit = { _, _ -> },
+    ): ai.rever.bossterm.compose.relay.RelayPanePublisher {
+        val tab = checkNotNull(tappedTab(paneId)) { "Pane is no longer shared" }
+        var graphicsHistory = minOf(500, webViewerScrollbackLines(tab.textBuffer))
+        var graphics = PaneGraphicsTracker(paneId, tab.textBuffer, tab.terminal.getImageDataCache(), graphicsHistory, tab.display)
+        return ai.rever.bossterm.compose.relay.RelayPanePublisher(
+            roomId, paneId, tab.dataStream, identity,
+            capture = { history ->
+                tab.display.captureStableRenderFrame {
+                    tab.textBuffer.lock()
+                    try {
+                        val size = tab.display.termSize.value
+                        var lines = if (history) minOf(500, webViewerScrollbackLines(tab.textBuffer)) else 0
+                        val snapshot = tab.textBuffer.createSnapshot()
+                        var encoded: String
+                        do {
+                            val text = TerminalSnapshotEncoder.encode(
+                                snapshot, tab.terminal.cursorX, tab.terminal.cursorY,
+                                maxHistoryLines = lines,
+                                cursorVisible = tab.display.cursorVisibleSnapshot,
+                                cursorShape = tab.display.cursorShapeSnapshot,
+                            )
+                            encoded = ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(paneId, text, size.columns, size.rows, lines))
+                            if (encoded.toByteArray(Charsets.UTF_8).size <= 256 * 1024) break
+                            check(lines > 0) { "Terminal screen exceeds relay snapshot limit" }
+                            lines /= 2
+                        } while (true)
+                        // The graphics anchor must use exactly the history window in the text
+                        // snapshot, including unusually wide panes whose snapshot was bounded.
+                        if (history && graphicsHistory != lines) {
+                            graphicsHistory = lines
+                            graphics = PaneGraphicsTracker(paneId, tab.textBuffer, tab.terminal.getImageDataCache(), lines, tab.display)
+                        }
+                        encoded
+                    } finally { tab.textBuffer.unlock() }
+                }
+            }, publish, failed,
+            captureGraphics = { full ->
+                if (full) ai.rever.bossterm.compose.relay.RelayGraphicsCapture(graphics.fullMessage(commit = false))
+                else graphics.pollUpdate()?.let { update ->
+                    val repaint = if (update.requiresTextSnapshot) TerminalSnapshotEncoder.encodeScreenRepaint(
+                        snapshot = tab.textBuffer.createSnapshot(), cursorX = tab.terminal.cursorX, cursorY = tab.terminal.cursorY,
+                        cursorVisible = tab.display.cursorVisibleSnapshot, cursorShape = tab.display.cursorShapeSnapshot,
+                    ) else null
+                    ai.rever.bossterm.compose.relay.RelayGraphicsCapture(update.message, repaint)
+                }
+            },
+            publishGraphics = publishGraphics,
+        ).also { it.start() }
     }
 
     /** Current host MCP state as a [ServerMessage.McpStatus] (snapshot for a new viewer). */
@@ -1254,6 +1326,8 @@ class ViewerConnection(
     val confidential: Boolean = false,
 ) {
     @Volatile internal var sharingEnded = false
+    @Volatile internal var relayOutput = false
+    @Volatile internal var relayVisiblePanes: Set<String> = emptySet()
     internal var fileAccess: ai.rever.bossterm.compose.remote.files.HostFileAccess? = null
     internal val outbox = BoundedViewerOutbox()
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()

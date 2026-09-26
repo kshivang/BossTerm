@@ -22,7 +22,8 @@ internal fun drainTerminalEmulator(
     try {
         while (shouldContinue()) {
             try {
-                emulator.processChar(dataStream.char, terminal)
+                emulator.processChar(dataStream.readInstructionStart(), terminal)
+                dataStream.instructionComplete()
             } catch (_: EOFException) {
                 break
             } catch (e: Exception) {

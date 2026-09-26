@@ -67,6 +67,15 @@
   // plain-LAN http link (no #k, no subtle) stays on the legacy plaintext path unchanged.
   var hashParams = new URLSearchParams((location.hash || "").replace(/^#/, ""));
   var secretB64 = hashParams.get("k");
+  var relayPreferences = {unfocused_mode: "batch", unfocused_fps: 4, revision: 0};
+  window.addEventListener("message", function (event) {
+    if (event.source !== window.parent || LIVE_SESSIONS_ORIGINS.indexOf(event.origin) < 0) return;
+    var message = event.data, value = message && message.preferences;
+    if (!message || message.type !== "bossterm-terminal-preferences" || !value ||
+        ["batch", "preview"].indexOf(value.unfocused_mode) < 0 || !Number.isInteger(value.unfocused_fps) ||
+        value.unfocused_fps < 1 || value.unfocused_fps > 30 || !Number.isSafeInteger(value.revision) || value.revision < 0) return;
+    relayPreferences = value;
+  });
   var canE2E = !!(secretB64 && window.isSecureContext && window.crypto && crypto.subtle);
   // Secure context + crypto, but the link lost its #k → a truncated link. A current host always
   // mints #k for https, so this isn't an old-host case (the host serves this very script). Refuse
@@ -853,7 +862,7 @@
     var socket = ws;
     if (canE2E) {
       var state = crypState;
-      sendChain = sendChain.then(function () { return encryptFrame(JSON.stringify(o), state); })
+      sendChain = sendChain.then(function () { return encryptFrame(socket.relayWrap ? socket.relayWrap(o) : JSON.stringify(o), state); })
         .then(function (buf) {
           if (ws === socket && socket.readyState === WebSocket.OPEN) socket.send(buf);
         })
@@ -3016,7 +3025,9 @@
 
   // ---- websocket ----
   var wsProto = location.protocol === "https:" ? "wss" : "ws";
-  function connectWebSocket() {
+  var connectionGeneration = 0;
+  async function connectWebSocket() {
+    var generation = ++connectionGeneration;
     // Every reconnect gets fresh ordered queues and E2E keys/salts. Pending work from the old
     // socket captures that socket/state below and is ignored once [ws] points elsewhere.
     crypState = { ready: false, kc2s: null, ks2c: null };
@@ -3025,7 +3036,29 @@
     saltC = null;
     var socket;
     try {
-      socket = new WebSocket(wsProto + "://" + location.host + "/ws/" + encodeURIComponent(token));
+      if (hashParams.get("relay_v")) {
+        var relayMeta = document.querySelector('meta[name="bossterm-relay-origin"]');
+        var relayEndpoint = relayMeta && relayMeta.content;
+        if (!canE2E || hashParams.get("relay_v") !== "1" || !relayEndpoint ||
+            hashParams.get("relay").replace(/\/$/, "") !== relayEndpoint.replace(/\/$/, "")) throw Error("Relay unavailable");
+        var relayModule = await import("./relay-transport.mjs");
+        if (generation !== connectionGeneration || sessionEnded) return;
+        socket = new relayModule.RelayTransport({
+          endpoint: relayEndpoint, room: hashParams.get("room"), token: token,
+          decrypt: function (data) { return decryptFrame(data, state); },
+          apply: function (message) { if (ws === socket) return dispatch(message); },
+          requestGraphics: function (pane, sequence) { sendMsg({t:"graphicsResync", paneId:pane, relaySequence:sequence}); },
+          visibility: function () {
+            var visible = {};
+            if (!document.hidden && layout) {
+              var tab = layout.tabs.filter(function (t) { return t.id === activeTabId; })[0];
+              if (tab) collectPaneIds(tab.tree, visible);
+              if (splitsAsTabs) Object.keys(visible).forEach(function (id) { if (id !== currentPaneId) delete visible[id]; });
+            }
+            return {visible: new Set(Object.keys(visible)), focused: currentPaneId, mode: relayPreferences.unfocused_mode, fps: relayPreferences.unfocused_fps};
+          }
+        });
+      } else socket = new WebSocket(wsProto + "://" + location.host + "/ws/" + encodeURIComponent(token));
     } catch (e) {
       ws = null;
       handleConnectionLost(null);
@@ -3076,7 +3109,7 @@
           try { socket.close(); } catch (e) {}
           return;
         }
-        deriveSessionKeys(secretBytes, connectionSalt, b64urlToBytes(k.salt)).then(function (keys) {
+        return deriveSessionKeys(secretBytes, connectionSalt, b64urlToBytes(k.salt)).then(function (keys) {
           if (ws !== socket) return;
           if (!constantTimeEq(keys.confirmB64, k.confirm)) { onCryptoFailure(socket); return; }
           state.kc2s = keys.kc2s; state.ks2c = keys.ks2c; state.ready = true;
@@ -3091,7 +3124,7 @@
           .then(function (text) {
             if (ws !== socket) return;
             var m; try { m = JSON.parse(text); } catch (e) { return; }
-            dispatch(m);
+            return dispatch(m);
           })
           // A decrypt failure ends the session (onCryptoFailure closes the socket, so no further
           // frames arrive); don't rethrow — that would leave a dangling unhandled rejection.
@@ -3162,32 +3195,36 @@
         }
         if (m.cols && m.rows) p.term.resize(m.cols, m.rows);
         p.term.reset();
-        if (m.data) p.term.write(m.data, function () { scheduleGraphicsDraw(p); });
-        else scheduleGraphicsDraw(p);
+        var snapshotApplied = new Promise(function (resolve) {
+          if (m.data) p.term.write(m.data, function () { scheduleGraphicsDraw(p); resolve(); });
+          else { scheduleGraphicsDraw(p); resolve(); }
+        });
         relayoutSinglePane();
         updateDims();
         autoFitPending = true;
         maybeAutoFit();
-        break;
+        return snapshotApplied;
       }
       case "paneOutput":
         if (m.data) {
           var outputPane = getPane(m.paneId);
-          outputPane.term.write(m.data, function () {
-            scheduleGraphicsDraw(outputPane);
+          return new Promise(function (resolve) {
+            outputPane.term.write(m.data, function () { scheduleGraphicsDraw(outputPane); resolve(); });
           });
         }
         break;
       case "paneRepaint":
         if (m.data) {
           var repaintPane = getPane(m.paneId);
-          viewerLogic.queuePaneRepaint(
-            function (data, callback) { repaintPane.term.write(data, callback); },
-            function () { return repaintPane.term.buffer.active; },
-            function (line) { repaintPane.term.scrollToLine(line); },
-            m.data,
-            function () { scheduleGraphicsDraw(repaintPane); }
-          );
+          return new Promise(function (resolve) {
+            viewerLogic.queuePaneRepaint(
+              function (data, callback) { repaintPane.term.write(data, callback); },
+              function () { return repaintPane.term.buffer.active; },
+              function (line) { repaintPane.term.scrollToLine(line); },
+              m.data,
+              function () { scheduleGraphicsDraw(repaintPane); resolve(); }
+            );
+          });
         }
         break;
       case "paneGraphics": applyPaneGraphics(m); break;

@@ -68,6 +68,8 @@ class RemoteSessionConnection(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = HttpClient(CIO) { install(WebSockets) }
 
+    internal val relayVisibility = MutableStateFlow(ai.rever.bossterm.compose.relay.RelayViewDemand())
+    internal var relayMessageHandler: (suspend (ServerMessage) -> Unit)? = null
     @Volatile private var session: DefaultClientWebSocketSession? = null
     @Volatile private var closedByUser = false
     @Volatile private var sawData = false // a Layout arrived this connection → it was healthy
@@ -130,6 +132,19 @@ class RemoteSessionConnection(
     }
 
     private suspend fun connectOnce() {
+        val relay = ai.rever.bossterm.compose.relay.RelayConfig.current()?.offer(link)
+        if (relay != null) {
+            val box = kotlinx.coroutines.channels.Channel<ClientMessage>(kotlinx.coroutines.channels.Channel.BUFFERED)
+            val connection = ai.rever.bossterm.compose.relay.RelayRemoteConnection(relay.endpoint, relay.room, relay.token,
+                requireNotNull(sessionSecret), ClientMessage.Hello(name = deviceName, clientId = clientId,
+                    key = keyProvider(), capabilities = listOf(ai.rever.bossterm.compose.share.FILES_CAPABILITY)), { message ->
+                    updateStatus(message)
+                    relayMessageHandler?.invoke(message) ?: onServerMessage(message)
+                }, relayVisibility, ai.rever.bossterm.compose.share.AccountTerminalPreferences.Default.preferences)
+            outbox = box
+            try { connection.run(box) } finally { outbox = null; box.cancel(); connection.close() }
+            return
+        }
         client.webSocket(wsUrl) {
             session = this
             // Per-connection outbox + single writer → strict send ordering. Fresh each connection
@@ -216,7 +231,7 @@ class RemoteSessionConnection(
         }
     }
 
-    private fun handle(msg: ServerMessage) {
+    private fun updateStatus(msg: ServerMessage) {
         when (msg) {
             is ServerMessage.Pending -> _status.value = RemoteStatus.Pending
             // Defensive: mark Connected on Grant too, not just the Control that the host sends
@@ -227,6 +242,10 @@ class RemoteSessionConnection(
             is ServerMessage.Layout -> sawData = true // session is up and rendering
             else -> {}
         }
+    }
+
+    private fun handle(msg: ServerMessage) {
+        updateStatus(msg)
         onServerMessage(msg)
     }
 

@@ -451,6 +451,7 @@ object SessionShareManager {
         shuttingDown = false
         if (!lifecycle.isActive) lifecycle = SupervisorJob() // re-arm after a shutdown
         if (watcherJob?.isActive == true) return
+        ai.rever.bossterm.compose.relay.HostRelayController.start()
         watcherJob = scope.launch {
             // supervisorScope so the launches below are children of THIS watcher — cancelled with
             // it, and never adopted by a re-armed lifecycle — without a failure in one of them
@@ -948,6 +949,7 @@ object SessionShareManager {
         //    epoch so a binder that started before this call can tell it has been superseded even
         //    if a re-init clears the latch under it.
         shuttingDown = true
+        ai.rever.bossterm.compose.relay.HostRelayController.stop()
         shutdownEpoch.incrementAndGet()
         // 2. Supersede any in-flight remote establish. Cancellation cannot do this job:
         //    cloudflared's awaitUrl/awaitReady are plain blocking calls, so an establish
@@ -1210,9 +1212,22 @@ object SessionShareManager {
         activeRemoteMode = "off"
     }
 
-    /** Handle one viewer WebSocket: handshake/approval, snapshot, then drain its outbox. */
-    private suspend fun serveViewer(ws: io.ktor.server.websocket.DefaultWebSocketServerSession) {
-        val token = ws.call.parameters["token"]
+    /** The shipped direct socket keeps its existing protocol and URL shape. */
+    private suspend fun serveViewer(socket: io.ktor.server.websocket.DefaultWebSocketServerSession) {
+        val transport = object : ShareViewerTransport, CoroutineScope by socket {
+            override val incoming get() = socket.incoming
+            override suspend fun send(frame: Frame) { socket.send(frame) }
+            override suspend fun close(reason: CloseReason) { socket.close(reason) }
+        }
+        serveViewer(socket.call.parameters["token"], transport, null)
+    }
+
+    internal suspend fun serveRelayViewer(token: String, transport: ShareViewerTransport, lifecycle: RelayViewerLifecycle) {
+        try { serveViewer(token, transport, lifecycle) } finally { lifecycle.disconnected() }
+    }
+
+    /** Handshake/approval/role enforcement is shared; relay output uses its separate pane streams. */
+    private suspend fun serveViewer(token: String?, ws: ShareViewerTransport, relay: RelayViewerLifecycle?) {
         val ref = token?.let { sharesByToken[it] }
         if (ref == null) {
             ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Unknown or expired share token"))
@@ -1261,7 +1276,7 @@ object SessionShareManager {
             // public tunnel/Funnel share — there it'd stream unencrypted through the relay, so an
             // old/keyless client must update rather than silently downgrade. Send a plaintext
             // Denied first (old clients render its reason; a bare WS close shows nothing), then close.
-            if (requireE2E()) {
+            if (relay != null || requireE2E()) {
                 runCatching {
                     ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Denied(
                         "This shared session is end-to-end encrypted. Update BossTerm to a version that supports it."))))
@@ -1274,20 +1289,41 @@ object SessionShareManager {
             } as? ClientMessage.Hello
         }
 
-        // Send/receive helpers: encrypted binary frames when a cipher was negotiated, else
-        // plaintext text frames (legacy). All the handshake/admit/stream code below funnels
-        // through these so the encryption seam lives in one place.
+        if (relay != null && (serverCipher == null || hello?.capabilities?.contains("relay-v1") != true)) {
+            ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Relay v1 encryption capability required"))
+            return
+        }
+        val sendLock = kotlinx.coroutines.sync.Mutex()
+        var sentSequence = 0L
+        var receivedSequence = 0L
+        suspend fun sendText(text: String, snapshot: RelaySnapshotBoundary? = null) {
+            sendLock.withLock {
+                val payload = if (relay == null) text else ShareProtocol.json.encodeToString(
+                    RelayPrivateEnvelope.serializer(), RelayPrivateEnvelope(++sentSequence, text),
+                )
+                val frame = serverCipher?.let { Frame.Binary(true, it.encrypt(payload)) } ?: Frame.Text(payload)
+                if (snapshot == null) ws.send(frame)
+                else ws.snapshot(frame, snapshot.pane, snapshot.epoch, snapshot.sequence)
+            }
+        }
         suspend fun send(m: ServerMessage) {
-            val text = ShareProtocol.encodeServer(m)
-            serverCipher?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
+            sendText(ShareProtocol.encodeServer(m))
+            if (m is ServerMessage.Layout) relay?.layoutChanged(share)
         }
-        fun decodeIncoming(frame: Frame): ClientMessage? = when {
-            clientCipher != null && frame is Frame.Binary ->
-                runCatching { ShareProtocol.decodeClient(clientCipher.decrypt(frame.data)) }.getOrNull()
-            clientCipher == null && frame is Frame.Text ->
-                runCatching { ShareProtocol.decodeClient(frame.readText()) }.getOrNull()
-            else -> null
-        }
+        fun decodeIncoming(frame: Frame): ClientMessage? = runCatching {
+            var text = when {
+                clientCipher != null && frame is Frame.Binary -> clientCipher.decrypt(frame.data)
+                clientCipher == null && frame is Frame.Text -> frame.readText()
+                else -> return@runCatching null
+            }
+            if (relay != null) {
+                val envelope = ShareProtocol.json.decodeFromString(RelayPrivateEnvelope.serializer(), text)
+                require(envelope.sequence == receivedSequence + 1) { "Replayed or missing relay input" }
+                receivedSequence = envelope.sequence
+                text = envelope.payload
+            }
+            ShareProtocol.decodeClient(text)
+        }.getOrNull()
 
         val clientId = hello?.clientId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         var canControl = ref.canControl
@@ -1300,7 +1336,7 @@ object SessionShareManager {
         // that token gets the ordinary approval path.
         val autoAdmit = ref.autoAdmit && serverCipher != null
         if (autoAdmit) log.info("Account link viewer admitted without approval for share {}", share.tabId)
-        if (requiresApproval() && !autoAdmit) {
+        if ((relay != null || requiresApproval()) && !autoAdmit) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
             if (existing != null && existing.shareId == shareId && existing.expiresAtMs > now) {
@@ -1342,7 +1378,7 @@ object SessionShareManager {
         // snapshot may already contain, deterministically replaying it below the snapshot. Once
         // registered, addViewer schedules a graphics poll for every pane to close the graphics
         // admission window even when the pane goes quiet.
-        val initialMessages = share.initialMessages(
+        val initialMessages = if (relay != null) share.relayInitialMessages(canControl) else share.initialMessages(
             includePaneGraphics = supportsPaneGraphics,
             canControl = canControl,
             confidential = serverCipher != null,
@@ -1355,22 +1391,30 @@ object SessionShareManager {
             // host hand this connection an ephemeral OpenAI secret. See ViewerConnection.confidential.
             confidential = serverCipher != null,
             supportsFiles = hello?.capabilities?.contains(FILES_CAPABILITY) == true,
+            relayOutput = relay != null,
         )
+        vc.relayOutput = relay != null
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         try {
             initialMessages.forEach { send(it) }
             send(ServerMessage.Control(granted = canControl))
-            val sc = serverCipher
+            relay?.admitted(share, vc, ::sendText)
             val writer = ws.launch {
                 vc.outbox.drainTo { text ->
-                    sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
+                    if (relay == null) sendText(text) else {
+                        val message = ShareProtocol.decodeServer(text)
+                        if (message is ServerMessage.PaneGraphics && message.paneId !in vc.relayVisiblePanes) return@drainTo
+                        if (message !is ServerMessage.PaneOutput && message !is ServerMessage.PaneSnapshot &&
+                            message !is ServerMessage.PaneRepaint) send(message)
+                    }
                 }
                 if (vc.sharingEnded) ws.close(CloseReason(ShareProtocol.SHARE_ENDED_CLOSE_CODE, "Sharing ended"))
             }
             try {
                 for (frame in ws.incoming) {
                     val msg = decodeIncoming(frame)
-                    if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
+                    if (msg is ClientMessage.GraphicsResync && relay != null) relay.graphicsResync(msg.paneId, msg.relaySequence)
+                    else if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
                 }
             } catch (_: Throwable) {
                 // client gone
@@ -1401,7 +1445,8 @@ object SessionShareManager {
         // The native client uses #k whenever present, regardless of transport.
         if (e2eCapable(base)) {
             sharesByToken[token]?.let { ref ->
-                return "$base#k=${if (ref.autoAdmit) ref.share.accountSecretB64 else ref.share.sessionSecretB64}"
+                return "$base#k=${if (ref.autoAdmit) ref.share.accountSecretB64 else ref.share.sessionSecretB64}" +
+                    ai.rever.bossterm.compose.relay.HostRelayController.fragment()
             }
         }
         return base

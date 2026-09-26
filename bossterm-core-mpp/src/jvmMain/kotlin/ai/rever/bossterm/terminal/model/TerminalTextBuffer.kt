@@ -624,6 +624,22 @@ class TerminalTextBuffer internal constructor(
     }
   }
 
+  /** Replace authoritative remote image placements without changing terminal text or cursor. */
+  fun replaceImageCells(rows: Map<Int, Map<Int, ImageCell>>) {
+    myLock.lock()
+    try {
+      clearImageCells()
+      for ((row, cells) in rows) {
+        if (row !in -historyLinesCount until height) continue
+        val line = getLine(row)
+        for ((col, cell) in cells) if (col in 0 until width) line.setImageCell(col, cell)
+      }
+      imageCellRowsChanged(-historyLinesCount)
+    } finally {
+      myLock.unlock()
+    }
+  }
+
   /**
    * Remove image cells from both scrollback and the visible screen.
    *

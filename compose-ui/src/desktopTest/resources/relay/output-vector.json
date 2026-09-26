@@ -1,0 +1,17 @@
+{
+  "grant": {
+    "epoch": "test-epoch",
+    "key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "hostPublicKey": "MCowBQYDK2VwAyEA_JHMYnAQ0SBq0HZnIcLSRVrgpI0qAtbGWlNUbvwfy1E"
+  },
+  "frame": {
+    "room": "test-room",
+    "pane": "test-pane",
+    "epoch": "test-epoch",
+    "kind": "live",
+    "seq": 1,
+    "payload": "0LTflrdFt4PAqAG4BKngw4gCSectffyTIbAD_YAquuSO97UdYbI6oFvVQUa8FMYyQQ0mKEsM",
+    "signature": "nLcr7K5iWd0MbFqNOKS644rNVzbIbAMzmf0TYI50nK1F_e_u74y_W6MxRcFUuyBn2VKoyHZ0jiunUub9AGFJDQ"
+  },
+  "plaintext": "shared terminal: \u001b[32mhello 世界\u001b[0m"
+}

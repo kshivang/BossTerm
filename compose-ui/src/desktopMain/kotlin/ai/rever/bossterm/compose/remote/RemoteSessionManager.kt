@@ -322,6 +322,9 @@ class RemoteSession internal constructor(
     // (including a tab's first) can never orphan a survivor's output. Read on the WS IO thread
     // (PaneOutput hot path) and host threads, hence concurrent.
     private val sessionByPane = java.util.concurrent.ConcurrentHashMap<String, TerminalTab>()
+    private val graphicsByPane = mutableMapOf<String, RemotePaneGraphics>()
+    private val graphicsResyncAttempts = mutableMapOf<String, Int>()
+    private val graphicsResyncRetryPending = mutableSetOf<String>()
 
     // Inbound server messages are drained by ONE coroutine on Main, in wire order — so reconcile's
     // tab-list/splitState mutation and the snapshot-after-layout ordering both run on the UI thread,
@@ -330,6 +333,27 @@ class RemoteSession internal constructor(
     private val inbox = kotlinx.coroutines.channels.Channel<ServerMessage>(kotlinx.coroutines.channels.Channel.UNLIMITED)
 
     fun start() {
+        conn.relayMessageHandler = { message ->
+            // Apply on Main before granting relay credit, and bound the emulator backlog.
+            // Do not wait for an instruction checkpoint: a split CSI may need the next frame.
+            kotlinx.coroutines.withTimeout(5_000) {
+                while (sessionByPane.values.sumOf { it.dataStream.queuedOutputChars } > 2 * 1024 * 1024L) {
+                    kotlinx.coroutines.delay(5)
+                }
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    if (message is ServerMessage.FilesReply) files.receive(message) else handleMessage(message)
+                }
+            }
+        }
+        uiScope.launch {
+            androidx.compose.runtime.snapshotFlow {
+                val active = state.activeTabId
+                val split = active?.let { state.splitStates[it] }
+                val visible = if (localTabByRemote.values.any { it.id == active })
+                    split?.getAllPanes()?.map { it.id }?.toSet().orEmpty() else emptySet()
+                ai.rever.bossterm.compose.relay.RelayViewDemand(visible, split?.focusedPaneId)
+            }.collect { conn.relayVisibility.value = it }
+        }
         uiScope.launch {
             // Mirror the connection's status into Compose state (read in composition).
             conn.status.collect {
@@ -563,6 +587,9 @@ class RemoteSession internal constructor(
         localTabByRemote.values.toList().forEach { removeMirrorTab(it) }
         localTabByRemote.clear()
         sessionByPane.clear()
+        graphicsByPane.clear()
+        graphicsResyncAttempts.clear()
+        graphicsResyncRetryPending.clear()
         upstreamByTab.clear()
         windowByTab.clear()
     }
@@ -574,7 +601,7 @@ class RemoteSession internal constructor(
     }
 
     // Runs on Main, in wire order.
-    private fun handleMessage(msg: ServerMessage) {
+    private suspend fun handleMessage(msg: ServerMessage) {
         when (msg) {
             is ServerMessage.Layout -> {
                 filesAvailable.value = msg.filesAvailable && conn.hasEncryptionSecret
@@ -590,6 +617,30 @@ class RemoteSession internal constructor(
                 // buffer race) before painting the snapshot — so a reconnect's re-sent snapshot
                 // replaces the old content instead of duplicating it.
                 s.dataStream.append("[3J[2J[H" + msg.data)
+            }
+            is ServerMessage.PaneGraphics -> {
+                val session = sessionByPane[msg.paneId] ?: return
+                val graphics = graphicsByPane.getOrPut(msg.paneId) { RemotePaneGraphics() }
+                val applied = session.dataStream.atQueuedCheckpoint {
+                    graphics.apply(msg, session.terminal, session.textBuffer)
+                }
+                if (applied) graphicsResyncAttempts.remove(msg.paneId)
+                else {
+                    val attempt = (graphicsResyncAttempts[msg.paneId] ?: 0) + 1
+                    graphicsResyncAttempts[msg.paneId] = attempt
+                    if (attempt <= 3) conn.send(ClientMessage.GraphicsResync(msg.paneId))
+                }
+            }
+            is ServerMessage.GraphicsResyncDenied -> {
+                if ((graphicsResyncAttempts[msg.paneId] ?: 0) in 1..3 && graphicsResyncRetryPending.add(msg.paneId)) {
+                    uiScope.launch {
+                        try {
+                            kotlinx.coroutines.delay(msg.retryAfterMs.coerceIn(100L, 10_000L))
+                            if (sessionByPane.containsKey(msg.paneId) && (graphicsResyncAttempts[msg.paneId] ?: 0) in 1..3)
+                                conn.send(ClientMessage.GraphicsResync(msg.paneId))
+                        } finally { graphicsResyncRetryPending.remove(msg.paneId) }
+                    }
+                }
             }
             is ServerMessage.PaneOutput -> sessionByPane[msg.paneId]?.dataStream?.append(msg.data)
             is ServerMessage.PaneRepaint -> sessionByPane[msg.paneId]?.dataStream?.append(msg.data)
@@ -695,6 +746,8 @@ class RemoteSession internal constructor(
         }
         // Drop pane mirrors whose remote paneId vanished (host closed a split pane).
         val livePaneIds = tabs.flatMap { paneIds(it.tree) }.toSet()
+        graphicsByPane.keys.retainAll(livePaneIds)
+        graphicsResyncAttempts.keys.retainAll(livePaneIds)
         (sessionByPane.keys - livePaneIds).toList().forEach { gone ->
             sessionByPane.remove(gone)?.let { disposeSession(it) }
         }

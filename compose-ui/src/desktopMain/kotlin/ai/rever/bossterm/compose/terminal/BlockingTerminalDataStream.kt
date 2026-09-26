@@ -4,7 +4,11 @@ import ai.rever.bossterm.compose.rendering.FrameLatencyProbe
 import ai.rever.bossterm.terminal.TerminalDataStream
 import ai.rever.bossterm.terminal.util.GraphemeUtils
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeout
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.BlockingQueue
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.LinkedBlockingQueue
@@ -58,9 +62,195 @@ class BlockingTerminalDataStream(
         private const val CLOSE_SENTINEL = "\u0000CLOSE_SENTINEL\u0000"
     }
 
+    // Requests run on the emulator thread between complete instructions. A marker wakes a
+    // quiet terminal without injecting a terminal character or interrupting a partial CSI/OSC.
+    private val checkpointMarker = String(charArrayOf('\u0000', 'C', 'P', '\u0000'))
+    private data class CheckpointRequest(val run: () -> Unit, val fail: () -> Unit)
+    private val checkpoints = ConcurrentLinkedQueue<CheckpointRequest>()
+    private val queuedCheckpoints = java.util.Collections.synchronizedMap(java.util.IdentityHashMap<String, CheckpointRequest>())
+    private val queuedCheckpointMarkers = java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(java.util.IdentityHashMap<String, Boolean>()))
+    private val checkpointCount = AtomicInteger()
+    private data class ProcessedListener(val output: (String) -> Unit, val failed: (Exception) -> Unit, val filtered: Boolean)
+    private val processedListeners = CopyOnWriteArrayList<ProcessedListener>()
+    private val processedChars = StringBuilder()
+    private var graphicsFilter = ai.rever.bossterm.compose.share.GraphicsOutputFilter()
+    private val filteredPending = StringBuilder()
+    private val filteredInstruction = StringBuilder()
+    private var readingInstructionStart = false
+
+    internal suspend fun <T> atCheckpoint(capture: () -> T): T {
+        check(!closed) { "Terminal closed" }
+        val result = CompletableDeferred<T>()
+        if (checkpointCount.incrementAndGet() > 32) {
+            checkpointCount.decrementAndGet()
+            error("Too many pending terminal snapshots")
+        }
+        checkpoints.add(CheckpointRequest({
+            if (result.isActive) try { result.complete(capture()) }
+            catch (t: Throwable) { result.completeExceptionally(t) }
+        }, { result.completeExceptionally(IOException("Terminal closed")) }))
+        dataQueue.offer(checkpointMarker)
+        if (closed) failCheckpoints()
+        return try { withTimeout(5_000) { result.await() } } finally { result.cancel() }
+    }
+
+    /** Run after all earlier queued text, at its next complete instruction boundary. */
+    internal suspend fun <T> atQueuedCheckpoint(capture: () -> T): T {
+        check(!closed) { "Terminal closed" }
+        val result = CompletableDeferred<T>()
+        if (checkpointCount.incrementAndGet() > 32) {
+            checkpointCount.decrementAndGet()
+            error("Too many pending terminal actions")
+        }
+        val marker = String(charArrayOf('\u0000', 'Q', 'P', '\u0000'))
+        queuedCheckpointMarkers.add(marker)
+        queuedCheckpoints[marker] = CheckpointRequest({
+            if (result.isActive) try { result.complete(capture()) }
+            catch (t: Throwable) { result.completeExceptionally(t) }
+        }, { result.completeExceptionally(IOException("Terminal closed")) })
+        dataQueue.offer(marker)
+        if (closed) failCheckpoints()
+        return try { withTimeout(5_000) { result.await() } } finally { result.cancel() }
+    }
+
+    private fun consumeQueuedCheckpoint(chunk: String?): Boolean {
+        if (!queuedCheckpointMarkers.remove(chunk)) return false
+        val request = queuedCheckpoints.remove(chunk) ?: return true
+        checkpoints.add(request)
+        if (readingInstructionStart) runCheckpoints()
+        return true
+    }
+
+    internal data class ProcessedSubscription<T>(val snapshot: T, val close: () -> Unit)
+
+    /** Atomically capture the initial screen and start receiving only subsequently applied output. */
+    internal suspend fun <T> observeProcessedOutput(
+        listener: (String) -> Unit,
+        onFailure: (Exception) -> Unit = {},
+        graphicsFiltered: Boolean = false,
+        capture: () -> T,
+    ): ProcessedSubscription<T> {
+        val observer = ProcessedListener(listener, onFailure, graphicsFiltered)
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean()
+        try {
+            val snapshot = atCheckpoint {
+                val result = capture()
+                if (processedListeners.isEmpty()) {
+                    processedChars.setLength(0)
+                    pushBackStack.asReversed().forEach { processedChars.append(it) }
+                }
+                if (graphicsFiltered && processedListeners.none { it.filtered }) {
+                    graphicsFilter = ai.rever.bossterm.compose.share.GraphicsOutputFilter()
+                    filteredPending.setLength(0)
+                    filteredInstruction.setLength(0)
+                    pushBackStack.asReversed().forEach { filteredPending.append(it) }
+                }
+                processedListeners.add(observer)
+                if (cancelled.get()) processedListeners.remove(observer)
+                result
+            }
+            return ProcessedSubscription(snapshot) { processedListeners.remove(observer) }
+        } catch (t: Throwable) {
+            cancelled.set(true)
+            processedListeners.remove(observer)
+            throw t
+        }
+    }
+
+    internal fun readInstructionStart(): Char {
+        runCheckpoints()
+        readingInstructionStart = true
+        return try { char } finally { readingInstructionStart = false }
+    }
+
+    internal fun instructionComplete() {
+        if (processedListeners.isNotEmpty()) {
+            val applied = processedChars.length - pushBackStack.size
+            if (applied > 0) {
+                val output = processedChars.substring(0, applied)
+                processedChars.delete(0, applied)
+                for (listener in processedListeners.filter { !it.filtered }) {
+                    // Sharing must never break execution of a local terminal.
+                    try { listener.output(output) } catch (e: Exception) {
+                        processedListeners.remove(listener)
+                        runCatching { listener.failed(e) }
+                    }
+                }
+            }
+        } else processedChars.setLength(0)
+        if (processedListeners.any { it.filtered }) {
+            val applied = filteredPending.length - pushBackStack.size
+            if (applied > 0) {
+                filteredInstruction.append(graphicsFilter.filter(filteredPending.substring(0, applied)).output)
+                filteredPending.delete(0, applied)
+            }
+            val output = filteredInstruction.toString()
+            filteredInstruction.setLength(0)
+            for (listener in processedListeners.filter { it.filtered }) {
+                try { listener.output(output) } catch (e: Exception) {
+                    processedListeners.remove(listener)
+                    runCatching { listener.failed(e) }
+                }
+            }
+        } else {
+            filteredPending.setLength(0)
+            filteredInstruction.setLength(0)
+        }
+        runCheckpoints()
+    }
+
+    private fun runCheckpoints() {
+        while (true) {
+            val request = checkpoints.poll() ?: return
+            checkpointCount.decrementAndGet()
+            request.run()
+        }
+    }
+
+    private fun failCheckpoints() {
+        synchronized(queuedCheckpoints) {
+            queuedCheckpoints.values.forEach { checkpointCount.decrementAndGet(); it.fail() }
+            queuedCheckpoints.clear()
+        }
+        while (true) {
+            val request = checkpoints.poll() ?: return
+            checkpointCount.decrementAndGet()
+            request.fail()
+        }
+    }
+
+    private fun recordProcessedChar(c: Char) {
+        if (processedListeners.isEmpty()) return
+        if (processedListeners.any { !it.filtered } && processedChars.length >= 1024 * 1024) {
+            val observers = processedListeners.filter { !it.filtered }
+            processedListeners.removeAll(observers.toSet())
+            processedChars.setLength(0)
+            observers.forEach { runCatching { it.failed(IOException("Terminal relay instruction exceeded buffer limit")) } }
+        } else if (processedListeners.any { !it.filtered }) processedChars.append(c)
+        if (processedListeners.any { it.filtered }) {
+            filteredPending.append(c)
+            // Keep look-ahead characters unfiltered until processChar completes. Large graphics
+            // strings are discarded incrementally rather than retained until their terminator.
+            if (filteredPending.length >= 16_384) {
+                val count = filteredPending.length - 16
+                filteredInstruction.append(graphicsFilter.filter(filteredPending.substring(0, count)).output)
+                filteredPending.delete(0, count)
+                if (filteredInstruction.length > 1024 * 1024) {
+                    val observers = processedListeners.filter { it.filtered }
+                    processedListeners.removeAll(observers.toSet())
+                    filteredPending.setLength(0); filteredInstruction.setLength(0)
+                    observers.forEach { runCatching { it.failed(IOException("Terminal relay instruction exceeded buffer limit")) } }
+                }
+            }
+        }
+    }
+
     private val buffer = StringBuilder()
     private var position = 0
     private val dataQueue: BlockingQueue<String> = LinkedBlockingQueue()
+    private val queuedChars = java.util.concurrent.atomic.AtomicLong()
+    /** Pending chunks only; the emulator may additionally hold one bounded remote frame. */
+    internal val queuedOutputChars: Long get() = queuedChars.get().coerceAtLeast(0)
 
     /**
      * Arrival timestamps for the chunks in [dataQueue], one per entry, in the same order.
@@ -75,13 +265,15 @@ class BlockingTerminalDataStream(
 
     /** Offer a chunk plus, when probing, its arrival time. Keeps the two queues aligned. */
     private fun enqueue(chunk: String) {
+        queuedChars.addAndGet(chunk.length.toLong())
         if (FrameLatencyProbe.enabled) arrivalNanos.offer(System.nanoTime())
         dataQueue.offer(chunk)
     }
 
     /** Pair every successful take from [dataQueue] with its arrival stamp. */
     private fun took(chunk: String?): String? {
-        if (FrameLatencyProbe.enabled && chunk != null && chunk != CLOSE_SENTINEL) {
+        if (chunk != null && chunk != CLOSE_SENTINEL && chunk !== checkpointMarker && !queuedCheckpointMarkers.contains(chunk)) queuedChars.addAndGet(-chunk.length.toLong())
+        if (FrameLatencyProbe.enabled && chunk != null && chunk != CLOSE_SENTINEL && chunk !== checkpointMarker && !queuedCheckpointMarkers.contains(chunk)) {
             arrivalNanos.poll()?.let { stamped ->
                 FrameLatencyProbe.markArrival(stamped)
                 FrameLatencyProbe.markDequeued(stamped, chunk.length)
@@ -223,6 +415,7 @@ class BlockingTerminalDataStream(
      */
     fun close() {
         closed = true
+        failCheckpoints()
         // Wake up any blocking take() call immediately
         dataQueue.offer(CLOSE_SENTINEL)
     }
@@ -268,6 +461,12 @@ class BlockingTerminalDataStream(
                     }
                 })
 
+                if (consumeQueuedCheckpoint(chunk)) continue
+                if (chunk === checkpointMarker) {
+                    if (readingInstructionStart) runCheckpoints()
+                    continue
+                }
+
                 // Check for close sentinel
                 if (chunk == CLOSE_SENTINEL) {
                     throw TerminalDataStream.EOF()
@@ -286,7 +485,7 @@ class BlockingTerminalDataStream(
                 }
             }
 
-            return buffer[position++]
+            return buffer[position++].also(::recordProcessedChar)
         }
 
     override fun pushChar(c: Char) {
@@ -324,6 +523,8 @@ class BlockingTerminalDataStream(
                     // BALANCED: Short wait for moderate batching
                     PerformanceMode.BALANCED -> dataQueue.poll(5, TimeUnit.MILLISECONDS)
                 })
+                if (consumeQueuedCheckpoint(chunk)) break
+                if (chunk === checkpointMarker) continue
                 if (chunk != null && chunk != CLOSE_SENTINEL) {
                     buffer.append(chunk)
                 } else {
@@ -337,6 +538,7 @@ class BlockingTerminalDataStream(
                     break // Stop at control character
                 }
                 readBuilder.append(c)
+                recordProcessedChar(c)
                 position++
                 count++
             } else {

@@ -68,11 +68,12 @@ private suspend fun ApplicationCall.respondShareViewerIndex() {
     // no-cache so a phone re-validates the shell (filenames aren't content-hashed) — a 304 keeps
     // it cheap, and the per-request CSP is never reused across a different Host.
     response.headers.append(HttpHeaders.CacheControl, "no-cache")
+    val relayEndpoint = ai.rever.bossterm.compose.relay.RelayConfig.current()?.endpoint.orEmpty()
     respondText(
         ShareViewerIndex.template.replace(
             WS_ORIGIN_PLACEHOLDER,
-            webSocketCspSources(request.headers[HttpHeaders.Host]),
-        ),
+            webSocketCspSources(request.headers[HttpHeaders.Host]) + " " + relayEndpoint,
+        ).replace("__BOSSTERM_RELAY_ORIGIN__", relayEndpoint),
         ContentType.Text.Html.withCharset(Charsets.UTF_8),
     )
 }

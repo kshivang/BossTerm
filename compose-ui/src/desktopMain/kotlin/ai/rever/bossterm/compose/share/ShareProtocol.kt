@@ -141,6 +141,8 @@ sealed class ServerMessage {
         val cols: Int,
         val rows: Int,
         val scrollbackLines: Int = 10_000,
+        /** Relay-only barrier: apply matching private graphics before subsequent pane text. */
+        val graphicsSequence: Long? = null,
     ) : ServerMessage()
 
     /** Incremental raw PTY output for a pane. */
@@ -154,7 +156,7 @@ sealed class ServerMessage {
      */
     @Serializable
     @SerialName("paneRepaint")
-    data class PaneRepaint(val paneId: String, val data: String) : ServerMessage()
+    data class PaneRepaint(val paneId: String, val data: String, val graphicsSequence: Long? = null) : ServerMessage()
 
     /** A pane's terminal dimensions changed. */
     @Serializable
@@ -184,6 +186,8 @@ sealed class ServerMessage {
          * treating this sentinel as a new graphics revision.
          */
         val resyncRequired: Boolean = false,
+        /** Relay-only join key for the corresponding authenticated group/text barrier. */
+        val relaySequence: Long? = null,
     ) : ServerMessage()
 
     /** A graphics resync was throttled; retrying it after [retryAfterMs] does not spend an attempt. */
@@ -471,7 +475,7 @@ sealed class ClientMessage {
     /** Ask the host for a full image-data + placement snapshot after a missed graphics delta. */
     @Serializable
     @SerialName("graphicsResync")
-    data class GraphicsResync(val paneId: String) : ClientMessage()
+    data class GraphicsResync(val paneId: String, val relaySequence: Long? = null) : ClientMessage()
 
     /** Keystrokes for a specific pane. Honored only with controller role. */
     @Serializable

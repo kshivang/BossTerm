@@ -233,54 +233,25 @@ internal object NativeGlass {
         }
     }
 
-    // AppKit queue only. Retain modified views until exit/disposal so restoration cannot
-    // dereference a view released when AppKit replaces its fullscreen host.
-    private val fullscreenToolbarBackdrops = mutableMapOf<Pointer, MutableList<Pointer>>()
-
-    fun restoreFullscreenToolbarBackdrop(window: Pointer) {
-        fullscreenToolbarBackdrops.remove(window)?.forEach { view ->
-            sendVoid(view, "setHidden:", 0.toByte())
-            sendVoid(view, "release")
+    private val toolbarSurfaceApi = object : MacToolbarSurfaceApi {
+        override fun styleMask(window: Pointer) = message.invokeLong(args(window, "styleMask", emptyArray()))
+        override fun appearance(window: Pointer) = sendPointer(window, "appearance")
+        override fun toolbarWindow(window: Pointer): Pointer? {
+            val button = sendPointer(window, "standardWindowButton:", 0L) ?: return null
+            return sendPointer(button, "window")
+        }
+        override fun setTransparent(window: Pointer, transparent: Boolean) {
+            sendVoid(window, "setTitlebarAppearsTransparent:", if (transparent) 1.toByte() else 0.toByte())
+        }
+        override fun setAppearance(window: Pointer, appearance: Pointer?) {
+            sendVoid(window, "setAppearance:", appearance)
         }
     }
 
-    /** AppKit may host the fullscreen toolbar in a separate window above our content. */
+    /** AppKit may replace/reveal a separate fullscreen toolbar host without resizing AWT. */
     fun preserveUnifiedToolbarSurface(window: Pointer) {
-        sendVoid(window, "setTitlebarAppearsTransparent:", 1.toByte())
+        synchronizeMacToolbarSurface(window, toolbarSurfaceApi)
         sendPointer(window, "toolbar")?.let { sendVoid(it, "setShowsBaselineSeparator:", 0.toByte()) }
-        // Use the public NSView.window relationship rather than private fullscreen classes.
-        val button = sendPointer(window, "standardWindowButton:", 0L) ?: return
-        val toolbarWindow = sendPointer(button, "window") ?: return
-        if (toolbarWindow != window) {
-            sendVoid(toolbarWindow, "setTitlebarAppearsTransparent:", 1.toByte())
-            sendVoid(toolbarWindow, "setOpaque:", 0.toByte())
-            sendVoid(toolbarWindow, "setBackgroundColor:", sendPointer(getClass("NSColor"), "clearColor"))
-            // On macOS 26, titlebarAppearsTransparent hides the ordinary background,
-            // but leaves a full-width backdrop layer on a plain NSView beside the
-            // toolbar. It obscures both our terminal surface and the sidebar's top.
-            // This is an AppKit implementation detail: match only that exact shape,
-            // and leave native toolbar/button glass descendants completely untouched.
-            val backdropClass = getClass("CABackdropLayer") ?: return
-            val plainViewClass = getClass("NSView") ?: return
-            val titlebar = sendPointer(button, "superview") ?: return
-            val siblings = sendPointer(sendPointer(titlebar, "subviews"), "objectEnumerator") ?: return
-            while (true) {
-                val view = sendPointer(siblings, "nextObject") ?: break
-                if (message.invokeInt(args(view, "isMemberOfClass:", arrayOf(plainViewClass))) == 0) continue
-                val layer = sendPointer(view, "layer") ?: continue
-                if (message.invokeInt(args(layer, "isKindOfClass:", arrayOf(backdropClass))) == 0) continue
-                val retained = fullscreenToolbarBackdrops.getOrPut(window) { mutableListOf() }
-                if (view !in retained) {
-                    // Already-hidden views belong to AppKit; do not later reveal them.
-                    if (message.invokeInt(args(view, "isHidden", emptyArray())) != 0) continue
-                    sendVoid(view, "retain")
-                    retained.add(view)
-                }
-                sendVoid(view, "setHidden:", 1.toByte())
-            }
-        } else {
-            restoreFullscreenToolbarBackdrop(window)
-        }
     }
 
     fun enableWindowShadow(window: Pointer) {
@@ -363,6 +334,7 @@ internal object NativeGlass {
         val name = sendPointer(getClass("NSString"), "stringWithUTF8String:",
             if (dark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua")
         sendVoid(window, "setAppearance:", sendPointer(getClass("NSAppearance"), "appearanceNamed:", name))
+        preserveUnifiedToolbarSurface(window)
     }
 
     fun setAppearance(view: Pointer, radius: Double, style: String, dark: Boolean) {

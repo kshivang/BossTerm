@@ -55,6 +55,8 @@ class AccountTerminalPreferences(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val mutex = Mutex()
+    private val stateLock = Any()
+    private var generation = 0L
     private val cache = LinkedHashMap<String, TerminalViewingPreferences>()
     private val mutablePreferences = MutableStateFlow(TerminalViewingPreferences())
     val preferences = mutablePreferences.asStateFlow()
@@ -85,36 +87,59 @@ class AccountTerminalPreferences(
         scope?.cancel()
         scope = null
         job = null
+        resetAccount()
+    }
+
+    /** Clear account-owned state synchronously, even while an old account's RPC is suspended. */
+    fun resetAccount() = synchronized(stateLock) {
+        generation++
+        owner = null
+        cache.clear()
         mutablePreferences.value = TerminalViewingPreferences()
     }
 
-    suspend fun refresh() = mutex.withLock {
-        val identity = account.value as? AccountState.SignedIn
-        if (owner != identity?.userId) {
-            owner = identity?.userId
-            mutablePreferences.value = identity?.let { cache[it.userId] } ?: TerminalViewingPreferences()
+    suspend fun refresh() {
+        // Identity changes must not queue behind network IO. Only refresh requests serialize;
+        // account state and response commits use a separate, short-lived lock.
+        val (identity, requestGeneration) = synchronized(stateLock) {
+            val current = account.value as? AccountState.SignedIn
+            if (owner != current?.userId) {
+                generation++
+                owner = current?.userId
+                mutablePreferences.value = current?.let { cache[it.userId] } ?: TerminalViewingPreferences()
+            }
+            if (current == null) return
+            current to generation
         }
-        if (identity == null) return@withLock
-        try {
-            val next = json.decodeFromString<TerminalViewingPreferences>(transport(identity.userId, "get_user_terminal_preferences"))
-            if (account.value != identity) return@withLock
-            cache[identity.userId] = next
-            while (cache.size > 16) cache.remove(cache.keys.first())
-            mutablePreferences.value = next
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // Old servers and temporarily offline devices retain safe defaults or their own cache.
+        mutex.withLock {
+            if (synchronized(stateLock) { generation != requestGeneration || account.value != identity }) return@withLock
+            try {
+                val next = json.decodeFromString<TerminalViewingPreferences>(transport(identity.userId, "get_user_terminal_preferences"))
+                synchronized(stateLock) {
+                    if (generation != requestGeneration || account.value != identity) return@synchronized
+                    cache[identity.userId] = next
+                    while (cache.size > 16) cache.remove(cache.keys.first())
+                    mutablePreferences.value = next
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Old servers and temporarily offline devices retain safe defaults or their own cache.
+            }
         }
     }
 
     suspend fun settingsUrl(): String {
-        val identity = account.value as? AccountState.SignedIn ?: error("Sign in to open account settings")
+        val (identity, requestGeneration) = synchronized(stateLock) {
+            (account.value as? AccountState.SignedIn ?: error("Sign in to open account settings")) to generation
+        }
         val response = transport(identity.userId, "mint_user_settings_handoff")
-        check(account.value == identity) { "Account changed" }
         val token = json.parseToJsonElement(response).jsonObject["token"]?.jsonPrimitive?.content
         require(token != null && Regex("[A-Za-z0-9_-]{43}").matches(token)) { "Settings unavailable" }
-        return "${settingsBaseUrl.trimEnd('/')}?t=$token"
+        return synchronized(stateLock) {
+            check(generation == requestGeneration && account.value == identity) { "Account changed" }
+            "${settingsBaseUrl.trimEnd('/')}?t=$token"
+        }
     }
 
     companion object {

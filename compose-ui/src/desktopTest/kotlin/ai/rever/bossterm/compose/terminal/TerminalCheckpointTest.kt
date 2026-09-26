@@ -63,16 +63,17 @@ class TerminalCheckpointTest {
         Terminal().use { t ->
             t.stream.append("before")
             withTimeout(2000) { while (!t.screen().contains("before")) delay(5) }
-            val output = CopyOnWriteArrayList<String>()
-            val observedScreens = CopyOnWriteArrayList<String>()
+            // Publish each observed chunk and its screen together: seeing the chunk must
+            // also make the callback's screen capture available to the asserting thread.
+            val observations = CopyOnWriteArrayList<Pair<String, String>>()
             val subscription = t.stream.observeProcessedOutput({ chunk ->
-                output += chunk; observedScreens += t.screen()
+                observations += chunk to t.screen()
             }) { t.screen() }
             assertTrue(subscription.snapshot.contains("before"))
             t.stream.append("after")
-            withTimeout(2000) { while (!output.joinToString("").contains("after")) delay(5) }
-            assertEquals("after", output.joinToString(""))
-            assertTrue(observedScreens.last().contains("beforeafter"), "output must already be applied")
+            withTimeout(2000) { while (!observations.joinToString("") { it.first }.contains("after")) delay(5) }
+            assertEquals("after", observations.joinToString("") { it.first })
+            assertTrue(observations.last().second.contains("beforeafter"), "output must already be applied")
             subscription.close()
         }
     }

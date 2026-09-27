@@ -136,7 +136,7 @@ fun main(args: Array<String>) {
         serverVersion = "1.0",
         defaultEnabled = true,
         autoDiscoverInstalledClis = true
-    )
+    ).apply { appUpdateToolsEnabled = true }
     // MCP server. Normally in-process; when the daemon is enabled the daemon owns it instead. But if
     // the daemon is enabled yet fails to come up, we fall back to hosting MCP in-process so the feature
     // isn't silently lost (a regression vs. non-daemon mode). Guarded so the daemon-connect thread and

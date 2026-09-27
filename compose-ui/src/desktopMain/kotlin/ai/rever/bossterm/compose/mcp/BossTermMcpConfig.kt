@@ -125,7 +125,12 @@ data class BossTermMcpConfig(
      * "no overrides".
      */
     val customToolDescriptions: Map<String, String> = emptyMap()
-)
+) {
+    /** Standalone BossTerm only. Body property preserves the published constructor ABI.
+     * Copies must opt in again; embedders must not update their host through BossTerm's updater.
+     */
+    var appUpdateToolsEnabled: Boolean = false
+}
 
 /**
  * Composition local exposing the embedder's [BossTermMcpConfig] to the

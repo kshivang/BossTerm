@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.update
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,7 +25,8 @@ sealed class UpdateState {
 /**
  * Central update manager that handles periodic update checks and state management.
  */
-class UpdateManager {
+class UpdateManager internal constructor(private val operations: UpdateOperations?) {
+    constructor() : this(null)
 
     internal val updateService = DesktopUpdateService()
 
@@ -35,6 +37,7 @@ class UpdateManager {
     val lastCheckTime: StateFlow<Long?> = _lastCheckTime.asStateFlow()
 
     private val _updateInfo = MutableStateFlow<UpdateInfo?>(null)
+    val updateInfo: StateFlow<UpdateInfo?> = _updateInfo.asStateFlow()
 
     private var periodicCheckJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -110,11 +113,12 @@ class UpdateManager {
     }
 
     private suspend fun runCheck(): UpdateResult {
+        if (updateInProgress()) return UpdateResult.NoUpdateAvailable
         return try {
             _updateState.value = UpdateState.CheckingForUpdates
             _lastCheckTime.value = System.currentTimeMillis()
 
-            val updateInfo = updateService.checkForUpdates()
+            val updateInfo = operations?.check?.invoke() ?: updateService.checkForUpdates()
             _updateInfo.value = updateInfo
 
             when {
@@ -136,11 +140,18 @@ class UpdateManager {
     /**
      * Download the available update.
      */
-    suspend fun downloadUpdate(updateInfo: UpdateInfo): UpdateResult {
+    suspend fun downloadUpdate(updateInfo: UpdateInfo): UpdateResult = checkMutex.withLock {
+        if (updateInProgress()) return@withLock UpdateResult.Error("An update is already in progress")
+        _updateInfo.value = updateInfo
+        downloadAvailableUpdate(updateInfo)
+    }
+
+    private suspend fun downloadAvailableUpdate(updateInfo: UpdateInfo): UpdateResult {
         return try {
             _updateState.value = UpdateState.Downloading(0f)
 
-            val downloadPath = updateService.downloadUpdate(updateInfo) { progress ->
+            val download = operations?.download ?: updateService::downloadUpdate
+            val downloadPath = download(updateInfo) { progress ->
                 _updateState.value = UpdateState.Downloading(progress)
             }
 
@@ -163,10 +174,19 @@ class UpdateManager {
      * Install the downloaded update.
      */
     suspend fun installUpdate(downloadPath: String): Boolean {
-        return try {
-            _updateState.value = UpdateState.Installing
+        val expected = _updateState.value as? UpdateState.ReadyToInstall ?: return false
+        return if (expected.downloadPath == downloadPath) installUpdate(expected) else false
+    }
 
-            val success = updateService.installUpdate(downloadPath)
+    /** An approval belongs to this staged artifact, not merely its possibly reusable filename. */
+    internal suspend fun installUpdate(expected: UpdateState.ReadyToInstall): Boolean = checkMutex.withLock {
+        if (_updateState.value !== expected || !_updateState.compareAndSet(expected, UpdateState.Installing)) false
+        else installStagedUpdate(expected.downloadPath)
+    }
+
+    private suspend fun installStagedUpdate(downloadPath: String): Boolean {
+        return try {
+            val success = operations?.install?.invoke(downloadPath) ?: updateService.installUpdate(downloadPath)
             if (success) {
                 _updateState.value = UpdateState.RestartRequired
             } else {
@@ -199,7 +219,16 @@ class UpdateManager {
      * Reset update state to idle.
      */
     fun resetState() {
-        _updateState.value = UpdateState.Idle
+        val state = _updateState.value
+        if (state !is UpdateState.Downloading && state != UpdateState.Installing && state != UpdateState.RestartRequired) {
+            _updateState.compareAndSet(state, UpdateState.Idle)
+        }
+    }
+
+    private fun updateInProgress(): Boolean = when (_updateState.value) {
+        is UpdateState.Downloading, is UpdateState.ReadyToInstall,
+        UpdateState.Installing, UpdateState.RestartRequired -> true
+        else -> false
     }
 
     /**
@@ -210,3 +239,10 @@ class UpdateManager {
         scope.cancel()
     }
 }
+
+/** Test seam at the actual updater boundary; production always uses DesktopUpdateService. */
+internal class UpdateOperations(
+    val check: suspend () -> UpdateInfo,
+    val download: suspend (UpdateInfo, (Float) -> Unit) -> String?,
+    val install: suspend (String) -> Boolean,
+)

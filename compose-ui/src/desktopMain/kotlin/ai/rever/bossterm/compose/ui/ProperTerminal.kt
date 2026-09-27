@@ -116,6 +116,7 @@ import ai.rever.bossterm.compose.input.toMouseModifierFlags
 import ai.rever.bossterm.compose.input.isShiftPressed
 import ai.rever.bossterm.compose.input.isAltPressed
 import ai.rever.bossterm.compose.input.isCtrlOrMetaPressed
+import ai.rever.bossterm.compose.input.isHyperlinkClick
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import org.jetbrains.skia.FontMgr
 import ai.rever.bossterm.terminal.TextStyle as BossTextStyle
@@ -276,7 +277,7 @@ fun ProperTerminal(
   var userScrollTrigger by remember { mutableStateOf(0) }  // Tracks user-initiated scrolls for scrollbar visibility
   val scope = rememberCoroutineScope()
   var hasPerformedInitialResize by remember { mutableStateOf(false) }  // Track initial resize
-  var isModifierPressed by remember { mutableStateOf(false) }  // Track Ctrl/Cmd for hyperlink clicks
+  var isModifierPressed by remember { mutableStateOf(false) }  // Track Ctrl/Cmd for hyperlink hover feedback
   // Remember whether the last press was forwarded to the TUI so Release can
   // mirror that exact decision (instead of re-reading the modifier on release,
   // which would mishandle the case where the user toggles Cmd/Ctrl between
@@ -1196,6 +1197,7 @@ fun ProperTerminal(
             // canvas-focus-gated isModifierPressed flag.
             val shiftPressed = event.isShiftPressed()
             val cmdOrCtrlHeld = event.isCtrlOrMetaPressed()
+            isModifierPressed = cmdOrCtrlHeld
             // Reset eagerly; flip true below only if we actually forward this press.
             // Ensures Release pairs with the correct Press decision.
             lastPressForwardedToTui = false
@@ -1446,7 +1448,7 @@ fun ProperTerminal(
 
             // Check for hyperlink click with Ctrl/Cmd modifier
             // Standard terminal behavior: Ctrl+Click (Windows/Linux) or Cmd+Click (macOS)
-            if (hoveredHyperlink != null && isModifierPressed) {
+            if (hoveredHyperlink != null && event.isHyperlinkClick()) {
               val link = hoveredHyperlink!!
               val info = link.toHyperlinkInfo()
               val handled = onLinkClick?.invoke(info) ?: false
@@ -1552,6 +1554,9 @@ fun ProperTerminal(
           if (change.isConsumed) return@onPointerEvent
           val pos = change.position
           val startPos = dragStartPos
+          // Recover hover feedback after a modifier release outside this canvas.
+          // Synthetic layout moves have no native keyboard state.
+          if (event.nativeEvent != null) isModifierPressed = event.isCtrlOrMetaPressed()
 
           // Check if mouse event should be forwarded to terminal application.
           // When the user is holding Cmd/Ctrl for hyperlink interaction, bypass
@@ -1866,7 +1871,7 @@ fun ProperTerminal(
           change.consume()
         }
         .onPreviewKeyEvent { keyEvent ->
-          // Track Ctrl/Cmd key state for hyperlink clicks and hover effects
+          // Track Ctrl/Cmd key state for hover feedback while the pointer is stationary
           when (keyEvent.key) {
             Key.CtrlLeft, Key.CtrlRight, Key.MetaLeft, Key.MetaRight -> {
               val wasPressed = isModifierPressed
@@ -2007,6 +2012,10 @@ fun ProperTerminal(
         .focusable()
         .onFocusChanged { focusState ->
           isFocused = focusState.isFocused
+          if (!isFocused && isModifierPressed) {
+            isModifierPressed = false
+            display.requestImmediateRedraw()
+          }
         }
     ) {
       // Show loading/error screen before connection is established. Remote mirror tabs have

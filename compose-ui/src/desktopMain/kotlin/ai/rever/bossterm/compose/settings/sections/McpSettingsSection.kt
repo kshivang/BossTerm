@@ -228,6 +228,7 @@ private fun ExposedToolsSection(
     onSettingsChange: (TerminalSettings) -> Unit,
     allowWriteTools: Boolean
 ) {
+    val updatesEnabled = LocalBossTermMcpConfig.current?.appUpdateToolsEnabled == true
     val disabled = settings.disabledMcpTools
 
     fun setEnabled(toolName: String, enable: Boolean) {
@@ -249,7 +250,7 @@ private fun ExposedToolsSection(
         )
 
         ToolGroupLabel("Read tools")
-        BossTermMcpServer.BUILT_IN_READ_TOOLS.forEach { name ->
+        BossTermMcpServer.BUILT_IN_READ_TOOLS.filter { updatesEnabled || !it.startsWith("app_update_") }.forEach { name ->
             SettingsToggle(
                 label = name,
                 checked = name !in disabled,
@@ -262,7 +263,7 @@ private fun ExposedToolsSection(
         if (allowWriteTools) {
             Spacer(modifier = Modifier.height(8.dp))
             ToolGroupLabel("Write tools")
-            BossTermMcpServer.BUILT_IN_WRITE_TOOLS.forEach { name ->
+            BossTermMcpServer.BUILT_IN_WRITE_TOOLS.filter { updatesEnabled || !it.startsWith("app_update_") }.forEach { name ->
                 // Reserved tools (only manage_tools today) can never be disabled;
                 // it isn't in this list, so every write tool is togglable.
                 val reserved = name in BossTermMcpServer.UNDISABLABLE_TOOLS
@@ -310,6 +311,10 @@ private fun ToolGroupLabel(text: String) {
 /** Short, user-facing one-liner for each tool. Kept terse — the MCP tool descriptions
  *  in BossTermMcpServer carry the full schema details for clients. */
 private fun toolDescription(name: String): String = when (name) {
+    "app_update_status" -> "Report application update state and progress."
+    "app_update_check" -> "Check the configured release source for an update."
+    "app_update_download" -> "Download the available application update."
+    "app_update_install" -> "Install the staged version; the app may quit and relaunch."
     "list_tabs" -> "Enumerate every open terminal tab across all windows."
     "get_active_tab" -> "Return the active tab of the primary window."
     "read_scrollback" -> "Read the last N lines from a tab/pane's buffer."

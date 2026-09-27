@@ -126,6 +126,11 @@ out-of-band - no per-project config required for it to take effect.
 The full string is the `BOSSTERM_MCP_INSTRUCTIONS` constant in
 [`BossTermMcpServer.kt`](../compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/mcp/BossTermMcpServer.kt).
 
+## Application updates
+
+Standalone desktop MCP also exposes [application update tools](app-update-mcp.md):
+`app_update_status`, `app_update_check`, `app_update_download`, and `app_update_install`.
+
 ## Built-in tools
 
 Tool names are unprefixed below. If the embedder sets

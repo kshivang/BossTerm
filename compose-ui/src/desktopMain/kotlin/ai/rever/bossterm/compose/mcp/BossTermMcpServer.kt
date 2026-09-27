@@ -128,7 +128,7 @@ class BossTermMcpServer(
         "search_output" to ::registerSearchOutput,
         "get_last_command" to ::registerGetLastCommand,
         "read_debug_console" to ::registerReadDebugConsole
-    )
+    ) + updateRegistrations(listOf("status"))
     private val writeToolRegistrations: Map<String, (Server) -> Unit> = mapOf(
         "send_input" to ::registerSendInput,
         "send_signal" to ::registerSendSignal,
@@ -136,7 +136,15 @@ class BossTermMcpServer(
         "close_panel" to ::registerClosePanel,
         "run_command" to ::registerRunCommand,
         "show_image" to ::registerShowImage
-    )
+    ) + updateRegistrations(listOf("check", "download", "install"))
+
+    private fun updateRegistrations(actions: List<String>): Map<String, (Server) -> Unit> =
+        if (!config.appUpdateToolsEnabled) emptyMap() else actions.associate { action ->
+            val name = "app_update_$action"
+            name to { server: Server ->
+                ai.rever.bossterm.compose.mcp.update.AppUpdateToolRegistration.register(server, action, toolName(name))
+            }
+        }
 
     /** Reserved tools that callers cannot disable. */
     private val undisablableTools: Set<String> = UNDISABLABLE_TOOLS
@@ -2765,7 +2773,8 @@ class BossTermMcpServer(
             "read_scrollback",
             "search_output",
             "get_last_command",
-            "read_debug_console"
+            "read_debug_console",
+            "app_update_status"
         )
 
         /**
@@ -2794,7 +2803,10 @@ class BossTermMcpServer(
             "run_in_panel",
             "close_panel",
             "run_command",
-            "show_image"
+            "show_image",
+            "app_update_check",
+            "app_update_download",
+            "app_update_install"
         )
 
         /**

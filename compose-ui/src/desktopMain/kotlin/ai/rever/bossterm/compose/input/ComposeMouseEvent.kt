@@ -94,6 +94,15 @@ fun PointerEvent.isCtrlOrMetaPressed(): Boolean {
 }
 
 /**
+ * Link activation must use the current press, never cached keyboard/hover state:
+ * a modifier's KeyUp can be delivered to another window after focus changes.
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+internal fun PointerEvent.isHyperlinkClick(): Boolean =
+    type == androidx.compose.ui.input.pointer.PointerEventType.Press &&
+        button == PointerButton.Primary && isCtrlOrMetaPressed()
+
+/**
  * Creates a BossTerm MouseEvent from a Compose PointerEvent.
  *
  * @param event The Compose pointer event

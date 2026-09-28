@@ -43,17 +43,20 @@ fun HostedTerminalControls(
     var keyPrompt by remember { mutableStateOf(false) }
     var shareInfo by remember { mutableStateOf<SessionShareManager.ShareInfo?>(null) }
     var shareTick by remember { mutableIntStateOf(0) }
+    var shareUnavailable by remember { mutableStateOf(false) }
+    val sharing = remember { HostedShareController() }
     var attaching by remember { mutableStateOf(false) }
     var attachStatus by remember { mutableStateOf<AttachStatus?>(null) }
     DisposableEffect(menu) { onDispose { menu.hideMenu() } }
     LaunchedEffect(remoteUrl) {
-        shareInfo?.let { shareInfo = SessionShareManager.infoFor(it.tabId) }
+        shareInfo?.let { shareInfo = sharing.existing(it.tabId) }
     }
     fun showSettings(category: SettingsCategory) { settingsCategory = category; settingsTick++ }
     fun openShare(id: String, shareScope: ShareScope) {
         SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
         scope.launch {
-            shareInfo = SessionShareManager.infoFor(id) ?: SessionShareManager.share(id, shareScope)
+            shareInfo = sharing.open(id, shareScope)
+            shareUnavailable = shareInfo == null
             shareTick++
         }
     }
@@ -86,12 +89,12 @@ fun HostedTerminalControls(
                 },
                 showSharing = true, sharingCount = shared.size, remoteCalls = remoteCalls,
                 onSharingClick = {
-                    val existing = shared.firstOrNull()
+                    val id = activeTabId()
+                    val existing = sharing.existing(id)
                     if (existing != null) {
-                        shareInfo = SessionShareManager.infoFor(existing)
+                        shareInfo = existing
                         shareTick++
                     } else {
-                        val id = activeTabId()
                         menu.showMenu(0f, 0f, listOf(
                             ContextMenuController.MenuItem("share_tab", "Share This Tab", enabled = id != null,
                                 action = { id?.let { openShare(it, ShareScope.TAB) } }),
@@ -120,6 +123,25 @@ fun HostedTerminalControls(
             )
         }
     }
+    if (shareUnavailable) GlassAlertDialog3(
+        onDismissRequest = { shareUnavailable = false },
+        title = { androidx.compose.material3.Text("Unable to share this terminal") },
+        text = { androidx.compose.material3.Text(
+            "A sharing link could not be created. If this terminal is already shared through your account, " +
+                "manage that share in Sharing Settings. Otherwise, check your sharing configuration and try again."
+        ) },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                shareUnavailable = false
+                showSettings(SettingsCategory.SESSION_SHARING)
+            }) { androidx.compose.material3.Text("Sharing Settings") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { shareUnavailable = false }) {
+                androidx.compose.material3.Text("Close")
+            }
+        },
+    )
     if (keyPrompt) VoiceKeyDialog(
         onDismiss = { keyPrompt = false },
         onSaved = {

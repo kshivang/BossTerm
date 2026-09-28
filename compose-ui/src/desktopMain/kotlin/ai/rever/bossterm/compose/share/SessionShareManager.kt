@@ -212,6 +212,9 @@ object SessionShareManager {
      */
     val remoteUrlFlow: StateFlow<String?> = _remoteUrlFlow.asStateFlow()
 
+    /** Refresh share sheets and account directory links when the relay room changes. */
+    val shareLinkRevision: StateFlow<Long> get() = ai.rever.bossterm.compose.relay.HostRelayController.linkRevision
+
     /** Lifecycle of the remote-access link, surfaced in the share dialog. */
     enum class RemoteStatus { Off, Starting, Installing, Verifying, Active, Retrying, FellBack }
 
@@ -451,7 +454,7 @@ object SessionShareManager {
         shuttingDown = false
         if (!lifecycle.isActive) lifecycle = SupervisorJob() // re-arm after a shutdown
         if (watcherJob?.isActive == true) return
-        ai.rever.bossterm.compose.relay.HostRelayController.start()
+        ai.rever.bossterm.compose.relay.HostRelayController.start(settingsManager.settings)
         watcherJob = scope.launch {
             // supervisorScope so the launches below are children of THIS watcher — cancelled with
             // it, and never adopted by a re-armed lifecycle — without a failure in one of them

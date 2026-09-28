@@ -80,6 +80,7 @@ class AccountSessionPublisher(
     private val heartbeatMs: Long = DEFAULT_HEARTBEAT_MS,
     private val http: HttpClient = defaultHttp(),
     private val host: HostAccountSessions? = null,
+    private val linkRevision: StateFlow<Long> = SessionShareManager.shareLinkRevision,
 ) {
     private val log = LoggerFactory.getLogger(AccountSessionPublisher::class.java)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -113,7 +114,7 @@ class AccountSessionPublisher(
         job = scope.launch {
             val trigger = combine(sharedTabIds, remoteUrl, accountState, enabled) { tabs, url, acct, on ->
                 Snapshot(tabs, url, acct as? AccountState.SignedIn, on)
-            }.distinctUntilChanged()
+            }.distinctUntilChanged().combine(linkRevision) { snapshot, _ -> snapshot }
             launch { trigger.collect { reconcile(it) } }
             while (isActive) {
                 delay(heartbeatMs)

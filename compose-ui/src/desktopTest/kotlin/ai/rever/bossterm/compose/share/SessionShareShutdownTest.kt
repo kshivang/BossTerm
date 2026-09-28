@@ -101,7 +101,8 @@ class SessionShareShutdownTest {
         SessionShareManager.settingsManagerOverrideForTest = settings
         settings.updateSettings(
             TerminalSettings.DEFAULT.copy(
-                sessionSharingEnabled = true,
+                // This fixture owns its local transport; never auto-connect the production relay.
+                terminalRelayEnabled = false, sessionSharingEnabled = true,
                 sessionSharingBind = "loopback",
                 sessionSharingPort = basePort,
                 shareTailscaleMode = TEST_REMOTE_MODE,

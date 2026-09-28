@@ -46,7 +46,8 @@ class RelayWorkerEndToEndTest {
                 found
             }
             settings.updateSettings(TerminalSettings.DEFAULT.copy(
-                sessionSharingEnabled = true, sessionSharingBind = "loopback",
+                // This fixture owns its local transport; never auto-connect the production relay.
+                terminalRelayEnabled = false, sessionSharingEnabled = true, sessionSharingBind = "loopback",
                 sessionSharingPort = ServerSocket(0).use { it.localPort }, shareTailscaleMode = "off", mcpEnabled = false,
             ))
             SessionShareManager.settingsManagerOverrideForTest = settings

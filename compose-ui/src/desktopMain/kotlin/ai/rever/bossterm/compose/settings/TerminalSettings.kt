@@ -1139,6 +1139,12 @@ data class TerminalSettings(
      */
     val sessionSharingApprovalScope: String = "funnel",
 
+    /** Use the encrypted broadcast relay for new shares while signed into an account. */
+    val terminalRelayEnabled: Boolean = true,
+
+    /** Trusted WSS origin; share links cannot select a different relay. */
+    val terminalRelayUrl: String = "wss://boss-terminal-relay.risa-boss-debug.workers.dev",
+
     /**
      * Let viewers proving possession of this account's encrypted registry link connect
      * without device approval. Turning this off requires approval even on LAN when

@@ -1153,7 +1153,8 @@ fun TabbedTerminal(
     // thread), so a share dialog opens with the LAN URL first; when the public link becomes
     // available (or is torn down), rebuild the open dialog so it shows the current best URL.
     val shareRemoteUrl by ai.rever.bossterm.compose.share.SessionShareManager.remoteUrlFlow.collectAsState()
-    LaunchedEffect(shareRemoteUrl) {
+    val shareLinkRevision by ai.rever.bossterm.compose.share.SessionShareManager.shareLinkRevision.collectAsState()
+    LaunchedEffect(shareRemoteUrl, shareLinkRevision) {
         val info = shareDialog ?: return@LaunchedEffect
         ai.rever.bossterm.compose.share.SessionShareManager.infoFor(info.tabId)?.let { shareDialog = it }
     }

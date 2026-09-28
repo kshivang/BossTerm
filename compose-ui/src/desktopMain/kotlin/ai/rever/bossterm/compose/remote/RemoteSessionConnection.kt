@@ -132,7 +132,7 @@ class RemoteSessionConnection(
     }
 
     private suspend fun connectOnce() {
-        val relay = ai.rever.bossterm.compose.relay.RelayConfig.current()?.offer(link)
+        val relay = ai.rever.bossterm.compose.relay.RelayConfig.offerFor(link)
         if (relay != null) {
             val box = kotlinx.coroutines.channels.Channel<ClientMessage>(kotlinx.coroutines.channels.Channel.BUFFERED)
             val connection = ai.rever.bossterm.compose.relay.RelayRemoteConnection(relay.endpoint, relay.room, relay.token,

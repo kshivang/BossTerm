@@ -1,10 +1,26 @@
 # Session Sharing
 
-BossTerm can share a live terminal with another device - to **watch** it or to **control** it -
-with **no cloud relay and no account**. Your machine is the server: BossTerm runs a small embedded
-web server, serves an [xterm.js](https://xtermjs.org) viewer over a WebSocket, and other devices
-reach it over your LAN or through a tunnel. The session key never leaves the URL fragment, so even
-a public tunnel relay can't read your session.
+BossTerm shares a live terminal with another device to **watch** or **control** it. Signed-in
+sharing uses an encrypted broadcast relay by default: the host publishes terminal output once,
+and the relay distributes encrypted frames to viewers. Direct LAN and tunnel links still work
+without an account; existing links without relay metadata keep their direct transport.
+
+Under **Settings → Session Sharing → Terminal relay**, both BossTerm and BossConsole's terminal
+settings expose an on/off switch and an advanced trusted WSS endpoint. The default endpoint is
+`wss://boss-terminal-relay.risa-boss-debug.workers.dev`. Only signed-in hosts with active shares
+connect to the relay. A secure share link is required to advertise relay transport; plain LAN
+HTTP links retain their direct transport.
+
+Changes apply immediately to hosted shares. Turning relay off or changing its endpoint disconnects
+relay viewers and refreshes published links. Disconnect and reopen existing native connections
+from the refreshed session list, or copy a new link for browsers. Previously copied relay links
+can contain an expired room; their old endpoint is never silently replaced with a different one.
+
+JVM properties `bossterm.relay.enabled` / `bossterm.relay.url` override environment variables
+`BOSSTERM_RELAY_ENABLED` / `BOSSTERM_RELAY_URL`, which override saved settings. The settings UI
+shows when a launch override is active. Explicit `false` selects direct native transport;
+malformed enabled overrides, invalid endpoints, and mismatched relay origins fail closed.
+
 
 > Session sharing is **off by default**. Turn it on under **Settings → Session Sharing**, then use
 > **Share** from a tab's menu.

@@ -3,6 +3,8 @@ package ai.rever.bossterm.compose.tabs
 import ai.rever.bossterm.compose.ui.HistoryAppendBank
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -312,8 +314,8 @@ data class TerminalTab(
      * The "Fit to host" / "Fit to client" menu actions use it: ask the host to resize to this
      * grid, or resize our own window so the host's current grid renders 1:1. 0 until first layout.
      */
-    var remoteFitCols: Int = 0
-    var remoteFitRows: Int = 0
+    var remoteFitCols: Int by mutableStateOf(0)
+    var remoteFitRows: Int by mutableStateOf(0)
 
     /**
      * For a daemon-attached mirror tab (Phase 4 thin-client): invoked when the GUI canvas's fit

@@ -1,11 +1,13 @@
 package ai.rever.bossterm.compose.relay
 
+import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.settings.TerminalSettings
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.UUID
 
-/** Debug rollout is explicit on each app. Share links cannot choose an arbitrary relay origin. */
+/** Persisted trust configuration. Share links cannot choose an arbitrary relay origin. */
 internal data class RelayConfig(val endpoint: String) {
     init { RelayConnection.validateEndpoint(endpoint) }
 
@@ -28,11 +30,41 @@ internal data class RelayConfig(val endpoint: String) {
     fun fragment(room: String) = "&relay_v=1&relay=${URLEncoder.encode(endpoint, "UTF-8")}&room=${UUID.fromString(room)}"
 
     companion object {
-        fun current(): RelayConfig? {
-            val enabled = System.getProperty("bossterm.relay.enabled") ?: System.getenv("BOSSTERM_RELAY_ENABLED")
-            if (enabled != "true") return null
-            val endpoint = System.getProperty("bossterm.relay.url") ?: System.getenv("BOSSTERM_RELAY_URL") ?: return null
-            return runCatching { RelayConfig(endpoint) }.getOrNull()
+        data class Overrides(val enabled: String?, val endpoint: String?) {
+            val present: Boolean get() = enabled != null || endpoint != null
+        }
+
+        fun overrides(
+            property: (String) -> String? = System::getProperty,
+            environment: (String) -> String? = System::getenv,
+        ) = Overrides(
+            property("bossterm.relay.enabled") ?: environment("BOSSTERM_RELAY_ENABLED"),
+            property("bossterm.relay.url") ?: environment("BOSSTERM_RELAY_URL"),
+        )
+
+        fun enabled(settings: TerminalSettings, overrides: Overrides = overrides()): Boolean =
+            overrides.enabled?.let { it != "false" } ?: settings.terminalRelayEnabled
+
+        fun current(
+            settings: TerminalSettings = SettingsManager.instance.settings.value,
+            overrides: Overrides = overrides(),
+        ): RelayConfig? {
+            if (!enabled(settings, overrides)) return null
+            if (overrides.enabled != null && overrides.enabled != "true") return null
+            val endpoint = overrides.endpoint ?: settings.terminalRelayUrl
+            return runCatching { RelayConfig(endpoint.trimEnd('/')) }.getOrNull()
+        }
+
+        fun offerFor(
+            link: String,
+            settings: TerminalSettings = SettingsManager.instance.settings.value,
+            overrides: Overrides = overrides(),
+        ): RelayOffer? {
+            // Old links remain direct. Explicitly disabling relay also selects direct mode.
+            if (URI(link).rawFragment?.split('&')?.any { it.substringBefore('=') == "relay_v" } != true ||
+                !enabled(settings, overrides)) return null
+            // Invalid enabled configuration must not silently downgrade a relay link.
+            return requireNotNull(current(settings, overrides)) { "Invalid terminal relay configuration" }.offer(link)
         }
     }
 }

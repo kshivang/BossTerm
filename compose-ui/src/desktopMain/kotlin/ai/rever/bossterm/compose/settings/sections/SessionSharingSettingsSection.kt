@@ -13,6 +13,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.relay.RelayConfig
 import ai.rever.bossterm.compose.settings.components.*
 import ai.rever.bossterm.compose.share.AccountSessionPublisher
 import androidx.compose.runtime.collectAsState
@@ -74,6 +75,51 @@ fun SessionSharingSettingsSection(
                 placeholder = "0.0.0.0",
                 description = "Used only when bind scope is 'custom'."
             )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        SettingsSection(title = "Terminal relay") {
+            val overrides = RelayConfig.overrides()
+            val effective = RelayConfig.current(settings, overrides)
+            SettingsToggle(
+                label = "Use encrypted terminal relay",
+                checked = RelayConfig.enabled(settings, overrides),
+                enabled = overrides.enabled == null,
+                onCheckedChange = { onSettingsChange(settings.copy(terminalRelayEnabled = it)) },
+                description = "On by default. While signed in, publish terminal output once so multiple viewers " +
+                        "can receive it. Turn off to use direct connections. Existing direct links remain supported."
+            )
+            if (overrides.present) {
+                Text("Launch configuration overrides " +
+                    listOfNotNull(if (overrides.enabled != null) "relay on/off" else null,
+                        if (overrides.endpoint != null) "the relay endpoint" else null).joinToString(" and ") +
+                    ". Effective relay: " + if (effective != null) "on" else if (RelayConfig.enabled(settings, overrides)) "invalid configuration" else "off",
+                    color = TextMuted, fontSize = 11.sp)
+            }
+            var endpoint by remember(settings.terminalRelayUrl) { mutableStateOf(settings.terminalRelayUrl) }
+            val validEndpoint = runCatching { RelayConfig(endpoint.trim()) }.isSuccess
+            SettingsTextField(
+                label = "Trusted relay endpoint (advanced)",
+                value = if (overrides.endpoint == null) endpoint else runCatching { RelayConfig(overrides.endpoint).endpoint }.getOrDefault("Invalid endpoint override"),
+                onValueChange = { endpoint = it },
+                enabled = overrides.endpoint == null,
+                placeholder = TerminalSettings.DEFAULT.terminalRelayUrl,
+                description = "A trusted wss:// origin only, without a path, credentials, query, or fragment. " +
+                        "Share links cannot redirect you to another relay."
+            )
+            if (overrides.endpoint == null && !validEndpoint) {
+                Text("Enter a valid wss:// relay origin before saving.", color = Danger, fontSize = 11.sp)
+            }
+            Button(
+                onClick = { onSettingsChange(settings.copy(terminalRelayUrl = endpoint.trim().trimEnd('/'))) },
+                enabled = overrides.endpoint == null && validEndpoint && endpoint.trim().trimEnd('/') != settings.terminalRelayUrl,
+                colors = ButtonDefaults.buttonColors(backgroundColor = AccentColor, contentColor = TextOnAccent,
+                    disabledBackgroundColor = BorderColor, disabledContentColor = TextMuted),
+            ) { Text("Save relay endpoint") }
+            Text("Changes apply immediately to hosted shares. Relay viewers disconnect when you turn this off " +
+                "or change the endpoint. Disconnect and reopen remote connections from the refreshed session list, " +
+                "or copy a new share link (including for browsers).", color = TextMuted, fontSize = 11.sp)
         }
 
         Spacer(modifier = Modifier.height(24.dp))

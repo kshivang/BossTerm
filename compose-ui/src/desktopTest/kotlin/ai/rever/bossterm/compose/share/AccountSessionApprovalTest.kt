@@ -118,7 +118,8 @@ class AccountSessionApprovalTest {
         val client = HttpClient(CIO) { install(WebSockets) }
         try {
             settings.updateSettings(configuration.copy(
-                sessionSharingEnabled = true, sessionSharingBind = "loopback",
+                // This fixture owns its local transport; never auto-connect the production relay.
+                terminalRelayEnabled = false, sessionSharingEnabled = true, sessionSharingBind = "loopback",
                 sessionSharingPort = ServerSocket(0).use { it.localPort },
                 sessionSharingPublicUrl = "", shareTailscaleMode = "off", mcpEnabled = false,
             ))

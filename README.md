@@ -500,9 +500,11 @@ fun MyApp() {
 
 ## Session Sharing
 
-Watch - or hand over - a live terminal to any device, with **no cloud relay and no account**.
-BossTerm runs the share server itself; viewers open a link (or scan a QR code) in any browser, or
-connect from another BossTerm as a native client.
+Watch - or hand over - a live terminal to any device. Signed-in sharing uses the **encrypted
+broadcast relay by default**, so the host publishes output once for multiple viewers. Configure
+it in **Settings → Session Sharing → Terminal relay**, in BossTerm or BossConsole's terminal settings.
+Direct LAN/tunnel links still work without an account. Viewers open a link (or scan a QR code)
+in a browser, or connect from another BossTerm as a native client.
 
 - **Scope**: share a single **tab** (with its splits), a whole **window**, or **all windows**
   (viewers see tabs grouped by window).

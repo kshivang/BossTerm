@@ -238,7 +238,7 @@ object SessionShareManager {
     private data class TokenRef(
         val share: MirrorShare,
         val canControl: Boolean,
-        /** Skip the device-approval prompt (the account link; see [MirrorShare.accountToken]). */
+        /** Account link: eligible for approval bypass with encrypted proof and the host setting. */
         val autoAdmit: Boolean = false,
     )
 
@@ -1329,14 +1329,18 @@ object SessionShareManager {
         var canControl = ref.canControl
 
         var accessKey: String? = null // this connection's grant key (for mid-session role upgrades)
-        // The account link skips approval, but ONLY over a negotiated E2E cipher keyed by the account
+        // The account link may skip approval, but ONLY over a negotiated E2E cipher keyed by the account
         // link's OWN secret (MirrorShare.accountSecret): a Kex that completed proves the viewer holds
         // that `#k`, which only the owner's registry ever carried - a relay log has the token but not
         // the fragment, and the view/control links' `#k` is a different secret. A plaintext hello on
         // that token gets the ordinary approval path.
-        val autoAdmit = ref.autoAdmit && serverCipher != null
+        val verifiedAccount = ref.autoAdmit && serverCipher != null
+        val autoAdmit = verifiedAccount && settingsManager.settings.value.autoApproveAccountSessions
         if (autoAdmit) log.info("Account link viewer admitted without approval for share {}", share.tabId)
-        if ((relay != null || requiresApproval()) && !autoAdmit) {
+        // Account-token access without auto-admission always requires approval, even
+        // on LAN with general approval off (including a plaintext account-token hello).
+        // Existing device grants still retain the normal rolling 24-hour approval lifetime.
+        if ((ref.autoAdmit || relay != null || requiresApproval()) && !autoAdmit) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
             if (existing != null && existing.shareId == shareId && existing.expiresAtMs > now) {

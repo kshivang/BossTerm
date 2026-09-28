@@ -84,13 +84,21 @@ jobs:
       - name: Review diff without execution tools
         if: steps.pr.outputs.number != ''
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Subscription OAuth token from `claude setup-token`. --bare would ignore it (API key only);
+          # the flags below keep the same isolation: no tools, settings, MCP or slash commands.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         working-directory: ${{ runner.temp }}
         run: |
-          "$RUNNER_TEMP/claude-cli/node_modules/.bin/claude" --print --bare \
+          "$RUNNER_TEMP/claude-cli/node_modules/.bin/claude" --print \
             --tools "" --disable-slash-commands --strict-mcp-config \
             --setting-sources "" --no-session-persistence --max-budget-usd 5 --output-format json \
-            < "$RUNNER_TEMP/claude-review-prompt.txt" > "$RUNNER_TEMP/claude-review.txt"
+            < "$RUNNER_TEMP/claude-review-prompt.txt" > "$RUNNER_TEMP/claude-review.txt" || {
+            status=$?
+            # The JSON result carries the API error; surface it instead of a bare exit code.
+            jq -c '{is_error, subtype, result, total_cost_usd}' "$RUNNER_TEMP/claude-review.txt" 2>/dev/null \
+              || cat "$RUNNER_TEMP/claude-review.txt"
+            exit "$status"
+          }
           test -s "$RUNNER_TEMP/claude-review.txt"
 
       - name: Publish review only on the reviewed head

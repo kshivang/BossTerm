@@ -6,6 +6,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
+import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
 import ai.rever.bossterm.compose.share.AccountSessionPublisher
@@ -14,6 +20,7 @@ import androidx.compose.runtime.getValue
 
 import ai.rever.bossterm.compose.share.AccountTerminalPreferences
 import androidx.compose.material.Button
+import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -114,22 +121,34 @@ fun SessionSharingSettingsSection(
             val uriHandler = LocalUriHandler.current
             var openingSettings by remember { mutableStateOf(false) }
             var settingsError by remember { mutableStateOf<String?>(null) }
-            Button(enabled = signedIn && !openingSettings, onClick = {
-                openingSettings = true
-                settingsError = null
-                accountScope.launch {
-                    try {
-                        uriHandler.openUri(AccountTerminalPreferences.Default.settingsUrl())
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        settingsError = "Unable to open account settings. Please try again."
-                    } finally {
-                        openingSettings = false
+            Button(
+                enabled = signedIn && !openingSettings,
+                colors = ButtonDefaults.buttonColors(
+                    backgroundColor = AccentColor,
+                    contentColor = TextOnAccent,
+                    disabledBackgroundColor = BorderColor,
+                    disabledContentColor = TextMuted,
+                ),
+                modifier = Modifier.height(36.dp),
+                onClick = {
+                    openingSettings = true
+                    settingsError = null
+                    accountScope.launch {
+                        try {
+                            uriHandler.openUri(AccountTerminalPreferences.Default.settingsUrl())
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            settingsError = "Unable to open account settings. Please try again."
+                        } finally {
+                            openingSettings = false
+                        }
                     }
                 }
-            }) { Text(if (openingSettings) "Opening settings…" else "Account terminal settings") }
-            settingsError?.let { Text(it) }
+            ) {
+                Text(if (openingSettings) "Opening settings…" else "Account terminal settings", fontSize = 12.sp)
+            }
+            settingsError?.let { Text(it, color = Danger, fontSize = 12.sp) }
             SettingsToggle(
                 label = "Publish live sessions to my BOSS account",
                 checked = settings.publishSessionsToAccount,

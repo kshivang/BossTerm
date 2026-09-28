@@ -390,6 +390,11 @@ data class RemoteTabGroup(
     val filesAvailable: Boolean = false,
     val onBrowseFiles: () -> Unit = {},
     val onUploadFiles: () -> Unit = {},
+    val statusConnected: Boolean = false,
+    val actionsAvailable: Boolean = true,
+    val connectionMessage: String? = null,
+    val onReconnect: (() -> Unit)? = null,
+    val resizeNotice: ai.rever.bossterm.compose.remote.RemoteResizeNotice? = null,
 )
 
 /**
@@ -723,7 +728,7 @@ fun TabBar(
         )
         // View-only connections get a control-upgrade request at the top (host approves it
         // via the same toast as join requests).
-        val requestControlItem = if (!rg.canControl) listOf(
+        val requestControlItem = if (!rg.canControl && rg.actionsAvailable) listOf(
             ContextMenuController.MenuItem(id = "rg_request_control", label = "Request Control", enabled = true, action = { rg.onRequestControl() }),
             ContextMenuController.MenuSeparator(id = "rg_sep_control"),
         ) else emptyList()
@@ -1196,9 +1201,8 @@ fun TabBar(
                             paneGroup(group)
                         }
                     }
-                    // Collapsible header for everything below: every tab mirrored in from another
-                    // device signed into this account, one box per device (see remoteByTabIndex
-                    // for the count — tabs, not devices, matching what "available" means here).
+                    // One box per connection, including sessions still connecting or with no
+                    // mirrored tabs. The count is connections, not terminal tabs.
                     // Also the ONLY way to reach remoteDisconnectNotice, so it must render even
                     // when remoteGroups is empty — a Failed session whose frozen tabs were all
                     // closed by hand (self-heal drops its RemoteTabGroup, see
@@ -1221,7 +1225,7 @@ fun TabBar(
                                 modifier = Modifier.size(14.dp).graphicsLayer { rotationZ = chevronRotation }
                             )
                             Text(
-                                "Remote connections (${remoteByTabIndex.size})",
+                                "Remote connections (${remoteGroups.size})",
                                 color = barMuted, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1
                             )
                         }
@@ -1273,7 +1277,7 @@ fun TabBar(
                                     // it may heal, red when it gave up.
                                     Text(
                                         "· $label",
-                                        color = if (rg.statusError) BossUiTheme.current.alert else BossUiTheme.current.warn,
+                                        color = if (rg.statusError) BossUiTheme.current.alert else if (rg.statusConnected) BossUiTheme.current.ok else BossUiTheme.current.warn,
                                         fontSize = 10.sp, maxLines = 1
                                     )
                                 }
@@ -1306,6 +1310,13 @@ fun TabBar(
                                     modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = rg.onDisconnect).padding(2.dp)
                                 ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = BossUiTheme.current.mist, modifier = Modifier.size(13.dp)) }
                             }
+                            ai.rever.bossterm.compose.remote.RemoteConnectionDetails(
+                                message = rg.connectionMessage,
+                                onReconnect = rg.onReconnect,
+                                resize = rg.resizeNotice,
+                                textColor = barMuted,
+                                actionColor = BossUiTheme.current.signalText,
+                            )
                             // Match the local bar: split panes of one tab hug together
                             // (TabChipGap), separate tabs are spaced further apart (groupGap).
                             // A host sharing ALL its windows sections its own tabs per window
@@ -1378,7 +1389,7 @@ fun TabBar(
                                         tint = if (rg.filesAvailable) barMuted else barMuted.copy(alpha = 0.3f),
                                         modifier = Modifier.size(16.dp))
                                 }
-                                if (rg.windowSections.isEmpty()) {
+                                if (rg.windowSections.isEmpty() && rg.actionsAvailable) {
                                     barButton(Icons.Default.VerticalSplit, "Split Left/Right", rg.onSplitVertical)
                                     barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", rg.onSplitHorizontal)
                                     barButton(Icons.Default.Add, "New tab", rg.onNewTab)

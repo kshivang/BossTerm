@@ -62,7 +62,15 @@ private val Danger get() = SettingsTheme.Danger
  * this window, and manage the live connections (status + view-only/control + disconnect).
  */
 @Composable
-fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
+fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) =
+    AddRemoteDialog(manager, emptyMap(), onDismiss)
+
+@Composable
+internal fun AddRemoteDialog(
+    manager: RemoteSessionManager,
+    resizeNotices: Map<String, RemoteResizeNotice>,
+    onDismiss: () -> Unit,
+) {
     var link by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var shareBack by remember { mutableStateOf(false) }
@@ -158,9 +166,9 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
 
                 if (manager.sessions.isNotEmpty()) {
                     Spacer(Modifier.height(20.dp))
-                    SettingsSection("Connected") {
+                    SettingsSection("Remote connections") {
                         manager.sessions.forEach { session ->
-                            RemoteSessionRow(session, onDisconnect = { manager.disconnect(session) })
+                            RemoteSessionRow(session, resizeNotices[session.link], onDisconnect = { manager.disconnect(session) })
                         }
                     }
                 }
@@ -294,37 +302,33 @@ fun RemoteDisconnectedDialog(
 }
 
 @Composable
-private fun RemoteSessionRow(session: RemoteSession, onDisconnect: () -> Unit) {
+private fun RemoteSessionRow(session: RemoteSession, resize: RemoteResizeNotice?, onDisconnect: () -> Unit) {
     val status by session.status.collectAsState()
     Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    session.customName.value ?: session.hostName.value ?: hostOf(session.link),
-                    color = TextPrimary, fontSize = 13.sp, maxLines = 1
-                )
-                Text(statusLabel(status), color = statusColor(status), fontSize = 11.sp, maxLines = 1)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(remoteConnectionName(session.customName.value, session.hostName.value, session.link),
+                        color = TextPrimary, fontSize = 13.sp, maxLines = 1)
+                    Text(remoteConnectionStatus(status, session.hasMirroredTabs), color = statusColor(status), fontSize = 11.sp)
+                }
+                if (status is RemoteStatus.Connected && !(status as RemoteStatus.Connected).canControl) {
+                    TextButton(onClick = { session.requestControl() }) { Text("Request control", color = AccentTextColor) }
+                }
+                TextButton(onClick = onDisconnect) { Text("Disconnect", color = Danger) }
             }
-            val s = status
-            if (s is RemoteStatus.Connected && !s.canControl) {
-                TextButton(onClick = { session.requestControl() }) { Text("Request control", color = AccentTextColor) }
-            }
-            TextButton(onClick = onDisconnect) { Text("Disconnect", color = Danger) }
+            RemoteConnectionDetails(
+                message = when (val current = status) {
+                    is RemoteStatus.Failed -> "Tabs are frozen. ${current.message}"
+                    is RemoteStatus.Denied -> current.reason
+                    else -> null
+                },
+                onReconnect = if (canReconnectRemote(status)) ({ session.reconnect() }) else null,
+                resize = resize,
+                textColor = TextSecondary, actionColor = AccentTextColor,
+            )
         }
     }
-}
-
-private fun statusLabel(s: RemoteStatus): String = when (s) {
-    RemoteStatus.Connecting -> "connecting…"
-    RemoteStatus.Pending -> "waiting for host approval…"
-    is RemoteStatus.Connected -> if (s.canControl) "connected · control" else "connected · view only"
-    is RemoteStatus.Denied -> "denied" + (s.reason?.let { ": $it" } ?: "")
-    is RemoteStatus.Failed -> "disconnected: ${s.message}"
-    RemoteStatus.Closed -> "closed"
 }
 
 private fun statusColor(s: RemoteStatus): Color = when (s) {

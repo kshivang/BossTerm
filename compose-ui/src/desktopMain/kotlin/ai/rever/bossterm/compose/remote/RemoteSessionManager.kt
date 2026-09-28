@@ -429,6 +429,8 @@ class RemoteSession internal constructor(
     }
 
     /** True if [tab] is one of this session's mirror tabs. */
+    internal val hasMirroredTabs: Boolean get() = localTabByRemote.isNotEmpty()
+
     fun containsTab(tab: TerminalTab): Boolean = localTabByRemote.values.any { it === tab }
 
     /** Open a new tab in the remote session (mirrors back as another tab). Control only. */

@@ -1051,51 +1051,92 @@ fun TabbedTerminal(
     // Pending "request control?" confirmation: a view-only group's split/new-tab click stores
     // the actual request here; confirming the dialog runs it, dismissing drops it.
     var requestControlPrompt by remember { mutableStateOf<(() -> Unit)?>(null) }
-    // One-time size-reconcile offer when a remote mirror tab is first viewed and the host's
-    // grid doesn't render 1:1 here: (session, container tab, focused pane mirror).
-    var remoteFitPrompt by remember {
-        mutableStateOf<Triple<ai.rever.bossterm.compose.remote.RemoteSession,
-            ai.rever.bossterm.compose.tabs.TerminalTab,
-            ai.rever.bossterm.compose.tabs.TerminalTab>?>(null)
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+    val remoteOwnerWindow = androidx.compose.ui.awt.LocalAwtWindow.current
+    data class RemoteFitTarget(
+        val session: ai.rever.bossterm.compose.remote.RemoteSession,
+        val container: ai.rever.bossterm.compose.tabs.TerminalTab,
+        val pane: ai.rever.bossterm.compose.tabs.TerminalTab,
+        val cols: Int, val rows: Int, val fitCols: Int, val fitRows: Int,
+    ) {
+        val dismissalKey get() = "${container.id}:${pane.id}:${cols}x${rows}"
     }
-    // session.link → "cols×rows" the dialog was last offered for. Re-offering only when the
-    // HOST's grid changes to a NEW mismatching size means a dismissal isn't nagged again,
-    // but a host-side window resize re-raises the question.
-    val remoteFitPromptShown = remember { mutableMapOf<String, String>() }
-    // Viewing a remote mirror whose host grid doesn't render 1:1 in this window — on first
-    // view AND whenever the host's grid changes — offer to fit OUR window to the host, or
-    // (control) the host to us. Mirrors the web viewer's "fit host to this phone?" offer.
+    val remoteFitTargets = remember { mutableStateMapOf<String, RemoteFitTarget>() }
+    val dismissedRemoteFits = remember { mutableMapOf<String, String>() }
+    // Observe the active pane's host AND local grid, replacing one notice per connection.
     LaunchedEffect(tabController) {
-        data class FitCheck(
-            val session: ai.rever.bossterm.compose.remote.RemoteSession,
-            val container: ai.rever.bossterm.compose.tabs.TerminalTab,
-            val pane: ai.rever.bossterm.compose.tabs.TerminalTab,
-            val cols: Int,
-            val rows: Int,
-        )
         snapshotFlow {
             val active = tabController.activeTab ?: return@snapshotFlow null
             val session = state?.remoteSessions?.sessionForTab(active) ?: return@snapshotFlow null
+            if (session.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected) return@snapshotFlow null
             val pane = splitStates[active.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
                 ?: return@snapshotFlow null
             val grid = pane.display.termSize.value
-            FitCheck(session, active, pane, grid.columns, grid.rows)
-        }.collectLatest { check ->
-            check ?: return@collectLatest
-            // Debounce: a host window drag streams sizes — wait for it to settle, and let
-            // the local canvas measure once (remoteFitCols/Rows) on a fresh tab.
+            RemoteFitTarget(session, active, pane, grid.columns, grid.rows, pane.remoteFitCols, pane.remoteFitRows)
+        }.collectLatest { target ->
+            target ?: return@collectLatest
             kotlinx.coroutines.delay(800)
-            val fitC = check.pane.remoteFitCols
-            val fitR = check.pane.remoteFitRows
-            if (fitC < 2 || fitR < 2 || check.cols < 2 || check.rows < 2) return@collectLatest
-            // Roughly 1:1 already → nothing to offer.
-            if (kotlin.math.abs(check.cols - fitC) <= 2 && kotlin.math.abs(check.rows - fitR) <= 2) return@collectLatest
-            val key = "${check.cols}x${check.rows}"
-            if (remoteFitPromptShown[check.session.link] == key) return@collectLatest // already offered for this grid
-            if (remoteFitPrompt != null) return@collectLatest // a prompt is already up
-            remoteFitPromptShown[check.session.link] = key
-            remoteFitPrompt = Triple(check.session, check.container, check.pane)
+            if (!ai.rever.bossterm.compose.remote.remoteGridMismatch(target.cols, target.rows, target.fitCols, target.fitRows)) {
+                remoteFitTargets.remove(target.session.link)
+            } else if (dismissedRemoteFits[target.session.link] != target.dismissalKey) {
+                remoteFitTargets[target.session.link] = target
+            } else {
+                remoteFitTargets.remove(target.session.link)
+            }
         }
+    }
+    // Disconnected sessions/closed tabs cannot leave stale resize actions behind.
+    LaunchedEffect(tabController, state) {
+        snapshotFlow {
+            val sessions = state?.remoteSessions?.sessions.orEmpty().filter {
+                it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Connected
+            }.toSet()
+            val tabs = tabController.tabs.toSet()
+            remoteFitTargets.mapNotNull { (link, target) ->
+                val focused = splitStates[target.container.id]?.getFocusedSession()
+                if (target.session !in sessions || target.container !in tabs || focused !== target.pane) return@mapNotNull null
+                val grid = target.pane.display.termSize.value
+                val updated = target.copy(cols = grid.columns, rows = grid.rows,
+                    fitCols = target.pane.remoteFitCols, fitRows = target.pane.remoteFitRows)
+                if (!ai.rever.bossterm.compose.remote.remoteGridMismatch(updated.cols, updated.rows, updated.fitCols, updated.fitRows)) null
+                else link to updated
+            }.toMap()
+        }.collect { valid ->
+            remoteFitTargets.keys.retainAll(valid.keys)
+            remoteFitTargets.putAll(valid)
+            val links = state?.remoteSessions?.sessions.orEmpty().map { it.link }.toSet()
+            dismissedRemoteFits.keys.retainAll(links)
+        }
+    }
+    fun remoteResizeNotice(session: ai.rever.bossterm.compose.remote.RemoteSession): ai.rever.bossterm.compose.remote.RemoteResizeNotice? {
+        val target = remoteFitTargets[session.link] ?: return null
+        fun paneNow(): ai.rever.bossterm.compose.tabs.TerminalTab? {
+            if (session.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected ||
+                target.container !in tabController.tabs) return null
+            return (splitStates[target.container.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab)
+                ?.takeIf { it.id == target.pane.id }
+        }
+        fun dismiss() {
+            dismissedRemoteFits[session.link] = target.dismissalKey
+            remoteFitTargets.remove(session.link)
+        }
+        return ai.rever.bossterm.compose.remote.RemoteResizeNotice(
+            paneName = target.container.title.value,
+            hostColumns = target.cols, hostRows = target.rows,
+            localColumns = target.fitCols, localRows = target.fitRows,
+            canResizeHost = session.canControlState.value && session.upstreamFor(target.container.id)?.readOnly != true,
+            onFitMyWindow = { paneNow()?.let { fitClientWindowToHost(it, ownerWindow = remoteOwnerWindow); dismiss() } },
+            onFitHost = {
+                paneNow()?.let { pane ->
+                    if (!session.canControlState.value || session.upstreamFor(target.container.id)?.readOnly == true) session.requestControlFor(target.container.id)
+                    else if (pane.remoteFitCols >= 2 && pane.remoteFitRows >= 2) {
+                        session.resizeHost(target.container.id, pane.remoteFitCols, pane.remoteFitRows)
+                        dismiss()
+                    }
+                }
+            },
+            onDismiss = ::dismiss,
+        )
     }
     // Bumped every time the share window is opened/reopened; ShareWindow brings its OS
     // window to the front when this changes, so clicking the share button while a share
@@ -1679,29 +1720,26 @@ fun TabbedTerminal(
                             windowSections = nestWindowSections,
                         )
                     }
-                if (gs.isEmpty() && nested.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
+                ai.rever.bossterm.compose.tabs.RemoteTabGroup(
                     id = session.link,
                     // Group label precedence: local rename → the host's session name (its
                     // username by default) → the link's host.
-                    header = session.customName.value
-                        ?: session.hostName.value
-                        ?: runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
+                    header = ai.rever.bossterm.compose.remote.remoteConnectionName(session.customName.value, session.hostName.value, session.link),
                     colorHex = session.accent.value,
                     groups = gs,
-                    canControl = session.canControlState.value, // Compose state → menus update on grant
-                    statusLabel = when (session.statusState.value) {
-                        is ai.rever.bossterm.compose.remote.RemoteStatus.Connected -> null
-                        ai.rever.bossterm.compose.remote.RemoteStatus.Connecting -> "connecting…"
-                        ai.rever.bossterm.compose.remote.RemoteStatus.Pending -> "awaiting approval…"
-                        is ai.rever.bossterm.compose.remote.RemoteStatus.Failed -> "disconnected"
-                        is ai.rever.bossterm.compose.remote.RemoteStatus.Denied -> "denied"
-                        ai.rever.bossterm.compose.remote.RemoteStatus.Closed -> "closed"
+                    canControl = session.canControlState.value && session.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Connected,
+                    actionsAvailable = session.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Connected && (gs.isNotEmpty() || nested.isNotEmpty()),
+                    statusLabel = ai.rever.bossterm.compose.remote.remoteConnectionStatus(session.statusState.value, gs.isNotEmpty() || nested.isNotEmpty()),
+                    statusConnected = session.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Connected,
+                    statusError = session.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed ||
+                        session.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Denied,
+                    connectionMessage = when (val status = session.statusState.value) {
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Failed -> "Tabs are frozen. ${status.message}"
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Denied -> status.reason
+                        else -> null
                     },
-                    statusError = session.statusState.value.let {
-                        it is ai.rever.bossterm.compose.remote.RemoteStatus.Failed ||
-                            it is ai.rever.bossterm.compose.remote.RemoteStatus.Denied ||
-                            it is ai.rever.bossterm.compose.remote.RemoteStatus.Closed
-                    },
+                    onReconnect = if (ai.rever.bossterm.compose.remote.canReconnectRemote(session.statusState.value)) ({ session.reconnect() }) else null,
+                    resizeNotice = remoteResizeNotice(session),
                     // View-only: split/new-tab first confirm via the request-control dialog
                     // (confirming sends the request; the host shows its approval toast).
                     onSplitVertical = {
@@ -1753,25 +1791,9 @@ fun TabbedTerminal(
             // so it highlights. Otherwise highlight the focused split pane.
             val focusedPaneId = if (summaryMode) tabController.activeTabId
                                 else tabController.activeTab?.let { splitStates[it.id]?.focusedPaneId }
-            // A remote session that lost its connection: the vertical sidebar shows this
-            // inline (below); the top bar (no sidebar to house it) keeps the modal further down
-            // (which does its own lookup) — skip building this when nothing will read it.
-            val remoteDisconnectNotice = if (!tabBarOnLeft) null else rm?.sessions?.firstOrNull {
-                it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
-            }?.let { failed ->
-                ai.rever.bossterm.compose.tabs.RemoteDisconnectNotice(
-                    name = failed.customName.value ?: failed.hostName.value
-                        ?: runCatching { java.net.URI(failed.link).host ?: failed.link }.getOrDefault(failed.link),
-                    message = (failed.statusState.value as? ai.rever.bossterm.compose.remote.RemoteStatus.Failed)?.message,
-                    onReconnect = { failed.reconnect() },
-                    onDisconnect = { rm.disconnect(failed) },
-                    onDismiss = { failed.failureDismissed.value = true },
-                )
-            }
             TabBar(
                 groups = tabGroups,
                 remoteGroups = remoteGroups,
-                remoteDisconnectNotice = remoteDisconnectNotice, // already null when !tabBarOnLeft
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->
@@ -2797,34 +2819,6 @@ fun TabbedTerminal(
         )
     }
 
-    // First-view size reconcile for a remote mirror (set by the activeTabId effect above).
-    // The actions re-resolve the focused pane + its measurements AT CLICK TIME — exactly
-    // what the right-click menu items do — rather than using the values captured when the
-    // prompt was scheduled (the canvas may still have been settling then).
-    remoteFitPrompt?.let { (session, container, _) ->
-        ai.rever.bossterm.compose.remote.RemoteFitPrompt(
-            hostName = session.customName.value ?: session.hostName.value
-                ?: runCatching { java.net.URI(session.link).host }.getOrNull() ?: "the host",
-            onFitMyWindow = {
-                remoteFitPrompt = null
-                (splitStates[container.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab)
-                    ?.let { fitClientWindowToHost(it) }
-            },
-            onFitHost = {
-                remoteFitPrompt = null
-                if (session.canControlState.value) {
-                    val p = splitStates[container.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
-                    if (p != null && p.remoteFitCols >= 2 && p.remoteFitRows >= 2)
-                        session.resizeHost(container.id, p.remoteFitCols, p.remoteFitRows)
-                } else {
-                    // View-only: resizing the host needs control — confirm + request it.
-                    requestControlPrompt = { session.requestControl() }
-                }
-            },
-            onDismiss = { remoteFitPrompt = null },
-        )
-    }
-
     // Typing into a read-only mirror (no control, or read-only via an upstream host) surfaces
     // the same request-control prompt; dismissing snoozes it so it doesn't nag per keystroke.
     state?.remoteSessions?.let { mgr ->
@@ -2843,33 +2837,13 @@ fun TabbedTerminal(
         }
     }
 
-    // Disconnect → reconnect: the vertical sidebar shows this inline, under its "Remote
-    // connections" header (TabBar's remoteDisconnectNotice, set above). Only the top-bar
-    // layout — no sidebar to anchor it in — still falls back to this app-wide modal.
-    // (tabBarOnLeft itself is out of scope this far down; same condition, recomputed.)
-    if (settings.tabBarPosition != "left") {
-        state?.remoteSessions?.let { mgr ->
-            mgr.sessions.firstOrNull {
-                it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
-            }?.let { failed ->
-                ai.rever.bossterm.compose.remote.RemoteDisconnectedDialog(
-                    name = failed.customName.value ?: failed.hostName.value
-                        ?: runCatching { java.net.URI(failed.link).host ?: failed.link }.getOrDefault(failed.link),
-                    message = (failed.statusState.value as? ai.rever.bossterm.compose.remote.RemoteStatus.Failed)?.message,
-                    onReconnect = { failed.reconnect() },
-                    onDisconnect = { mgr.disconnect(failed) },
-                    onDismiss = { failed.failureDismissed.value = true },
-                )
-            }
-        }
-    }
-
     // "Add remote": connect to another BossTerm's shared session and mirror its tabs here.
     // Requires an external TabbedTerminalState (it owns the RemoteSessionManager + tab list).
     if (showAddRemote) {
         if (state != null) {
             ai.rever.bossterm.compose.remote.AddRemoteDialog(
                 manager = state.remoteSessions,
+                resizeNotices = state.remoteSessions.sessions.mapNotNull { session -> remoteResizeNotice(session)?.let { session.link to it } }.toMap(),
                 onDismiss = { showAddRemote = false },
             )
         } else {
@@ -2941,10 +2915,10 @@ private fun swingTimerOnce(delayMs: Int, action: () -> Unit) {
  *  - passes 2-3 re-measure after layout settles and correct rounding / per-monitor-scale
  *    drift of a column or two.
  */
-private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab, attempt: Int = 0) {
+private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab, attempt: Int = 0, ownerWindow: java.awt.Window? = null) {
     if (attempt == 0 && focused.fontSizeOverride.value != null) {
         focused.fontSizeOverride.value = null
-        swingTimerOnce(240) { fitClientWindowToHost(focused, attempt = 1) }
+        swingTimerOnce(240) { fitClientWindowToHost(focused, attempt = 1, ownerWindow = ownerWindow) }
         return
     }
     val cw = focused.terminal.cellWidthPx
@@ -2955,9 +2929,10 @@ private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.Termin
     val curCols = focused.remoteFitCols; val curRows = focused.remoteFitRows
     if (hostCols < 2 || hostRows < 2 || curCols < 2 || curRows < 2) return
     if (hostCols == curCols && hostRows == curRows) return // converged — 1:1
-    val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
-        ?: WindowManager.windows.firstOrNull { it.awtWindow != null } ?: return
-    val win = tw.awtWindow ?: return
+    val tw = if (ownerWindow != null) WindowManager.windows.firstOrNull { it.awtWindow === ownerWindow }
+        else WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
+            ?: WindowManager.windows.firstOrNull { it.awtWindow != null }
+    val win = ownerWindow ?: tw?.awtWindow ?: return
     javax.swing.SwingUtilities.invokeLater {
         runCatching {
             val gc = win.graphicsConfiguration
@@ -2974,7 +2949,8 @@ private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.Termin
             if (newW != win.width || newH != win.height) {
                 // Through Compose's WindowState when wired (frame + surface move
                 // together — no unpainted strip), else setSize + heal nudge.
-                ai.rever.bossterm.compose.share.MirrorShare.applyWindowSize(tw, win, newW, newH)
+                if (tw != null) ai.rever.bossterm.compose.share.MirrorShare.applyWindowSize(tw, win, newW, newH)
+                else win.setSize(newW, newH)
             }
             if (newW < wantW || newH < wantH) {
                 // Screen-clamped: the host grid is too big for this monitor at the current
@@ -2989,7 +2965,7 @@ private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.Termin
                 }
             }
             // Verify after layout settles; correct residual drift (rounding, mixed-DPI).
-            if (attempt < 3) swingTimerOnce(420) { fitClientWindowToHost(focused, attempt + 1) }
+            if (attempt < 3) swingTimerOnce(420) { fitClientWindowToHost(focused, attempt + 1, ownerWindow) }
         }
     }
 }

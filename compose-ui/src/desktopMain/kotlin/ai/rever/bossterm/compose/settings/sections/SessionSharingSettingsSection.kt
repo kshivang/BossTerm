@@ -99,6 +99,15 @@ fun SessionSharingSettingsSection(
                         "public reach (Funnel or a custom URL); all = every device incl. LAN; off = the " +
                         "link alone grants access. Approved devices get a 24h key so they aren't re-prompted."
             )
+            SettingsToggle(
+                label = "Allow devices signed into my account without approval",
+                checked = settings.autoApproveAccountSessions,
+                onCheckedChange = { onSettingsChange(settings.copy(autoApproveAccountSessions = it)) },
+                description = "Applies to encrypted connections opened through your account's session list. " +
+                        "Turn off to require approval for new account devices, including on LAN. " +
+                        "Existing connections and valid 24-hour device approvals remain active; " +
+                        "copied guest links follow the device-approval setting above."
+            )
             val account by ai.rever.bossterm.compose.share.AccountSessionSource.state.collectAsState()
             val signedIn = account is ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn
             val accountScope = rememberCoroutineScope()

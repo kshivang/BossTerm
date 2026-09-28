@@ -1140,6 +1140,14 @@ data class TerminalSettings(
     val sessionSharingApprovalScope: String = "funnel",
 
     /**
+     * Let viewers proving possession of this account's encrypted registry link connect
+     * without device approval. Turning this off requires approval even on LAN when
+     * [sessionSharingApprovalScope] is "off". Existing connections and unexpired
+     * device approval grants are unaffected; ordinary guest links keep their own policy.
+     */
+    val autoApproveAccountSessions: Boolean = true,
+
+    /**
      * Publish each active share to the signed-in BOSS account's live-session registry
      * (Supabase `terminal_sessions`, owner-only), so it can be opened from any browser via
      * https://cli.risaboss.com after a magic-link sign-in. Only the LINK

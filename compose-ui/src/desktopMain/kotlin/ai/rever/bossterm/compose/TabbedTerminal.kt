@@ -2653,7 +2653,7 @@ fun TabbedTerminal(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (!statusControlsInHeader) statusStripContent()
-                HostCallBar()
+                if (!ai.rever.bossterm.compose.window.LocalCallBarHosted.current) HostCallBar()
                 if (voiceKeyPrompt) {
                     VoiceKeyDialog(
                         onDismiss = { voiceKeyPrompt = false },

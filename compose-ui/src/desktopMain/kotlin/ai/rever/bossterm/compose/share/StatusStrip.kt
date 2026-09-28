@@ -214,7 +214,8 @@ fun StatusStrip(
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun Segment(dot: Color, label: String, onClick: () -> Unit, icon: ImageVector, tooltip: String? = null, active: Boolean = false, busy: Boolean = false, failed: Boolean = false) {
-    if (ai.rever.bossterm.compose.window.LocalNativeToolbar.current != null) {
+    if (ai.rever.bossterm.compose.window.LocalNativeToolbar.current != null ||
+        ai.rever.bossterm.compose.window.LocalHostedStatusActions.current != null) {
         val id = when {
             icon === McpIcon -> "mcp"
             icon == Icons.Default.Share -> "sharing"
@@ -225,8 +226,13 @@ private fun Segment(dot: Color, label: String, onClick: () -> Unit, icon: ImageV
             "sharing" -> "square.and.arrow.up"
             else -> if (busy) "phone.connection" else "phone"
         }
-        ai.rever.bossterm.compose.window.RegisterNativeToolbarAction(
-            ai.rever.bossterm.compose.window.NativeToolbarAction(id, tooltip ?: label, symbol, active, onClick))
+        if (ai.rever.bossterm.compose.window.LocalHostedStatusActions.current != null) {
+            ai.rever.bossterm.compose.window.RegisterHostedStatusAction(
+                ai.rever.bossterm.compose.window.HostedStatusAction(id, tooltip ?: label, symbol, icon, active, onClick))
+        } else {
+            ai.rever.bossterm.compose.window.RegisterNativeToolbarAction(
+                ai.rever.bossterm.compose.window.NativeToolbarAction(id, tooltip ?: label, symbol, active, onClick))
+        }
         return
     }
     val inTitleBar = LocalInTitleBar.current

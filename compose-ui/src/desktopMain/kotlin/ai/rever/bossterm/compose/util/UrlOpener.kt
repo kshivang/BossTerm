@@ -38,6 +38,22 @@ object UrlOpener {
     }
 
     /**
+     * Open [url] with [preferred] (a full command such as `open -a Safari <url>`) when given, falling
+     * back to the default browser when that command is missing or exits non-zero - `open -a` exits 1
+     * when the app is not installed, so this waits for its result instead of firing and forgetting.
+     */
+    fun openWith(preferred: List<String>?, url: String): Boolean {
+        if (preferred != null) {
+            val opened = runCatching {
+                val process = ProcessBuilder(preferred).redirectErrorStream(true).start()
+                process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0
+            }.getOrDefault(false)
+            if (opened) return true
+        }
+        return open(url)
+    }
+
+    /**
      * Open URL on Linux using multiple fallback strategies.
      * Tries xdg-open first (most standard), then various browser alternatives.
      */

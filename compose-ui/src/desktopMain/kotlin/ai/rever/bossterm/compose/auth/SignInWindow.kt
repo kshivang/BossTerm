@@ -165,6 +165,16 @@ fun SignInWindow(
                             }
                         }
 
+                        is BossAccountManager.AccountState.OAuthPending -> {
+                            OAuthPendingSection(
+                                state = s,
+                                showPaste = showPaste,
+                                onTogglePaste = { showPaste = !showPaste },
+                                pastedLink = pastedLink,
+                                onPastedLinkChange = { pastedLink = it },
+                            )
+                        }
+
                         is BossAccountManager.AccountState.Verifying -> {
                             SettingsSection("Signing you in…") {
                                 Text("Verifying your sign-in link.", color = TextSecondary, fontSize = 13.sp)
@@ -176,6 +186,8 @@ fun SignInWindow(
                                 Text(err.message, color = Danger, fontSize = 12.sp)
                                 Spacer(Modifier.height(12.dp))
                             }
+                            OAuthProviderButtons()
+                            OrDivider()
                             SettingsTextField(
                                 label = "Email",
                                 value = email,
@@ -305,6 +317,101 @@ private fun AnywhereCard(icon: ImageVector, title: String, body: String, extra: 
 }
 
 /**
+ * "Continue with Google" / "Continue with Apple". Google is neutral with its full-colour mark,
+ * Apple is solid in the theme's strongest contrast (Apple's black/white button pairing).
+ */
+@Composable
+private fun OAuthProviderButtons() {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ProviderButton(
+            label = "Continue with Google",
+            background = androidx.compose.ui.graphics.Color.Transparent,
+            content = TextPrimary,
+            bordered = true,
+            onClick = { BossAccountManager.startOAuth(OAuthProvider.GOOGLE) },
+        ) { Icon(OAuthMarks.google, contentDescription = null, tint = androidx.compose.ui.graphics.Color.Unspecified, modifier = Modifier.size(16.dp)) }
+        ProviderButton(
+            label = "Continue with Apple",
+            background = TextPrimary,
+            content = BackgroundColor,
+            bordered = false,
+            onClick = { BossAccountManager.startOAuth(OAuthProvider.APPLE) },
+        ) { Icon(OAuthMarks.apple, contentDescription = null, tint = BackgroundColor, modifier = Modifier.size(16.dp)) }
+    }
+}
+
+@Composable
+private fun ProviderButton(
+    label: String,
+    background: androidx.compose.ui.graphics.Color,
+    content: androidx.compose.ui.graphics.Color,
+    bordered: Boolean,
+    onClick: () -> Unit,
+    mark: @Composable () -> Unit,
+) {
+    androidx.compose.material3.OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(40.dp),
+        shape = RoundedCornerShape(8.dp),
+        border = if (bordered) androidx.compose.foundation.BorderStroke(1.dp, TextMuted) else null,
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = background, contentColor = content),
+    ) {
+        mark()
+        Spacer(Modifier.width(10.dp))
+        Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun OrDivider() {
+    Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.material3.HorizontalDivider(Modifier.weight(1f), color = SurfaceColor)
+        Text("or", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 10.dp))
+        androidx.compose.material3.HorizontalDivider(Modifier.weight(1f), color = SurfaceColor)
+    }
+}
+
+/** Waiting for the browser to hand the Google / Apple sign-in back through bossterm://. */
+@Composable
+private fun OAuthPendingSection(
+    state: BossAccountManager.AccountState.OAuthPending,
+    showPaste: Boolean,
+    onTogglePaste: () -> Unit,
+    pastedLink: String,
+    onPastedLinkChange: (String) -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(state.authorizeUrl) { mutableStateOf(false) }
+    SettingsSection("Continue in your browser") {
+        Text(
+            "Finish signing in with ${state.provider.displayName} in the browser window we opened. BossTerm will continue by itself.",
+            color = TextPrimary, fontSize = 13.sp,
+        )
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { BossAccountManager.reopenOAuthBrowser() },
+                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent),
+            ) { Text("Reopen browser", fontSize = 13.sp) }
+            TextButton(onClick = { clipboard.setText(AnnotatedString(state.authorizeUrl)); copied = true }) {
+                Text(if (copied) "Link copied" else "Copy sign-in link", color = AccentTextColor, fontSize = 13.sp)
+            }
+            TextButton(onClick = { BossAccountManager.cancelOAuth() }) {
+                Text("Cancel", color = TextSecondary, fontSize = 13.sp)
+            }
+        }
+        PasteLinkSection(
+            show = showPaste,
+            onToggle = onTogglePaste,
+            value = pastedLink,
+            onValueChange = onPastedLinkChange,
+            onVerify = { BossAccountManager.verifyPastedLink(pastedLink) },
+            placeholder = "Paste the bossterm://auth/callback link",
+        )
+    }
+}
+
+/**
  * Collapsible manual fallback for when the bossterm:// link can't open the app (dev builds,
  * unregistered scheme, another device): paste the link from the email — or the redirect page's
  * "Open BossTerm" link — and verify it directly. Mirrors BossConsole's "paste magic link" flow.
@@ -316,6 +423,7 @@ private fun PasteLinkSection(
     value: String,
     onValueChange: (String) -> Unit,
     onVerify: () -> Unit,
+    placeholder: String = "Paste the link from the email",
 ) {
     Spacer(Modifier.height(14.dp))
     TextButton(onClick = onToggle, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
@@ -330,7 +438,7 @@ private fun PasteLinkSection(
             label = "Sign-in link",
             value = value,
             onValueChange = onValueChange,
-            placeholder = "Paste the link from the email",
+            placeholder = placeholder,
         )
         Spacer(Modifier.height(10.dp))
         Button(

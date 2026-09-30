@@ -45,7 +45,11 @@ object UrlOpener {
     fun openWith(preferred: List<String>?, url: String): Boolean {
         if (preferred != null) {
             val opened = runCatching {
-                val process = ProcessBuilder(preferred).redirectErrorStream(true).start()
+                // Discarded: an unread pipe would block an opener that prints more than its buffer.
+                val process = ProcessBuilder(preferred)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .start()
                 val exited = process.waitFor(10, TimeUnit.SECONDS)
                 // A wedged opener is not left running behind the fallback it is about to race.
                 if (!exited) process.destroyForcibly()

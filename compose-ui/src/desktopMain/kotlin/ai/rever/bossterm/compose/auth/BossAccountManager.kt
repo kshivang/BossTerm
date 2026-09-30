@@ -12,7 +12,6 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -150,121 +149,42 @@ object BossAccountManager {
         scope.launch { verify(link.tokenHash, link.type) }
     }
 
-    private val oauthAttempts = OAuthAttempts()
+    private val oauth = OAuthSignInController(
+        attempts = OAuthAttempts(),
+        scope = scope,
+        supabaseUrl = { SupabaseAuthConfig.url },
+        state = { _state.value },
+        setState = { _state.value = it },
+        openBrowser = ::openSignInPage,
+        exchange = { code, verifier ->
+            val resp = gotrue(
+                "token?grant_type=pkce",
+                json.encodeToString(PkceExchangeRequest.serializer(), PkceExchangeRequest(code, verifier)),
+            )
+            resp.status.value to resp.bodyAsText()
+        },
+        adoptSession = { session -> adoptSession(session) },
+        onSignedIn = ::emitSignIn,
+    )
 
     /**
      * Start a Google or Apple sign-in: a fresh PKCE verifier (memory only), then the provider's
      * page in the browser - Safari for Apple on macOS, the default browser otherwise. A sign-in
-     * already pending is replaced. Returns false when no browser could be opened; the pending
-     * state still offers the link to copy.
+     * already pending is replaced; the pending state offers the link to copy if no browser opens.
      */
-    fun startOAuth(provider: OAuthProvider): Boolean {
-        val attempt = oauthAttempts.start(provider, SupabaseAuthConfig.url)
-        _state.value = AccountState.OAuthPending(provider, attempt.authorizeUrl)
-        log.info("OAuth sign-in started (provider={})", provider.id)
-        return openSignInPage(provider, attempt.authorizeUrl)
-    }
+    fun startOAuth(provider: OAuthProvider) = oauth.start(provider)
 
     /** Reopen the pending sign-in's page, for a browser tab the user closed. */
-    fun reopenOAuthBrowser(): Boolean {
-        val attempt = oauthAttempts.peek() ?: return false
-        return openSignInPage(attempt.provider, attempt.authorizeUrl)
-    }
+    fun reopenOAuthBrowser() = oauth.reopen()
 
     /** Abandon the pending sign-in; its callback is ignored if it still arrives, even mid-exchange. */
-    fun cancelOAuth() {
-        synchronized(oauthAttempts) {
-            oauthAttempts.cancel()
-            if (_state.value is AccountState.OAuthPending) _state.value = AccountState.SignedOut
-        }
-    }
+    fun cancelOAuth() = oauth.cancel()
 
-    /**
-     * End a pending sign-in whose callback never came, so the window does not wait for ever.
-     * Polled by the pending section while it is shown.
-     */
-    fun expireStaleOAuth() {
-        synchronized(oauthAttempts) {
-            val provider = oauthAttempts.expireIfStale() ?: return
-            _state.value = AccountState.Error("That ${provider.displayName} sign-in took too long. Please try again.")
-        }
-    }
+    /** End a pending sign-in whose callback never came. Polled by the pending section while shown. */
+    fun expireStaleOAuth() = oauth.expireStale()
 
-    /**
-     * Finish the pending Google / Apple sign-in with a `bossterm://auth/callback` link. A callback
-     * with no sign-in pending is ignored (any page can open a bossterm:// link). One that fails - a
-     * provider error, a code that does not exchange - shows a notice and leaves the sign-in open,
-     * so a forged link cannot end it; one exchange runs at a time, and its session is adopted only
-     * if the sign-in was not cancelled or replaced meanwhile.
-     */
-    fun handleOAuthCallback(raw: String) {
-        val callback = parseOAuthCallback(raw) ?: return
-        val code = callback.code
-        val attempt = when (val claim = oauthAttempts.claim(forExchange = code != null)) {
-            is OAuthAttempts.Claim.None -> {
-                log.warn("OAuth callback ignored: no sign-in is pending")
-                return
-            }
-            is OAuthAttempts.Claim.Busy -> {
-                log.warn("OAuth callback ignored: one is already being exchanged")
-                return
-            }
-            is OAuthAttempts.Claim.Expired -> {
-                _state.value = AccountState.Error("That ${claim.provider.displayName} sign-in took too long. Please try again.")
-                return
-            }
-            is OAuthAttempts.Claim.Live -> claim.attempt
-        }
-        if (callback.error != null) {
-            log.warn("OAuth provider returned an error (provider={}, error={})", attempt.provider.id, callback.error)
-            showOAuthNotice(attempt, describeOAuthError(attempt.provider, callback.error))
-            return
-        }
-        if (code == null) return
-        _state.value = AccountState.Verifying
-        scope.launch { exchangeOAuthCode(attempt, code) }
-    }
-
-    private suspend fun exchangeOAuthCode(attempt: OAuthAttempts.Attempt, code: String) {
-        val failure = try {
-            val resp = gotrue(
-                "token?grant_type=pkce",
-                json.encodeToString(PkceExchangeRequest.serializer(), PkceExchangeRequest(code, attempt.verifier)),
-            )
-            if (resp.status.value in 200..299) {
-                val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
-                val email = synchronized(oauthAttempts) {
-                    if (oauthAttempts.finish(attempt)) adoptSession(session) else null
-                }
-                if (email != null) {
-                    log.info("OAuth sign-in completed (provider={})", attempt.provider.id)
-                    emitSignIn(email)
-                } else {
-                    log.info("OAuth session discarded: that sign-in was cancelled or replaced")
-                }
-                null
-            } else {
-                log.warn("OAuth code exchange refused ({})", resp.status.value)
-                describeOAuthExchangeFailure(attempt.provider, resp.status.value)
-            }
-        } catch (e: CancellationException) {
-            oauthAttempts.settle(attempt)
-            throw e
-        } catch (e: Exception) {
-            log.warn("OAuth code exchange failed: {}", e.message)
-            describeOAuthExchangeFailure(attempt.provider, 0)
-        }
-        if (failure != null) showOAuthNotice(attempt, failure)
-    }
-
-    /** Back to waiting on [attempt] with [notice], unless it was cancelled or replaced meanwhile. */
-    private fun showOAuthNotice(attempt: OAuthAttempts.Attempt, notice: String) {
-        synchronized(oauthAttempts) {
-            if (oauthAttempts.settle(attempt)) {
-                _state.value = AccountState.OAuthPending(attempt.provider, attempt.authorizeUrl, notice)
-            }
-        }
-    }
+    /** Finish the pending Google / Apple sign-in with a `bossterm://auth/callback` link. */
+    fun handleOAuthCallback(raw: String) = oauth.handleCallback(raw)
 
     private fun openSignInPage(provider: OAuthProvider, url: String): Boolean =
         UrlOpener.openWith(oauthBrowserCommand(provider, ShellCustomizationUtils.isMacOS(), url), url)
@@ -403,7 +323,7 @@ object BossAccountManager {
 
     /** Back out of EmailSent / Error (e.g. "Use a different email"). No-op when signed in. */
     fun reset() {
-        synchronized(oauthAttempts) { oauthAttempts.cancel() }
+        oauth.cancel()
         if (_state.value !is AccountState.SignedIn) _state.value = AccountState.SignedOut
     }
 

@@ -171,6 +171,32 @@ class OAuthSignInControllerTest {
     }
 
     @Test
+    fun `a callback on a cancelled scope does not leave the window on Verifying`() {
+        controller.start(OAuthProvider.GOOGLE)
+        eventually { opened.size == 1 }
+        exchangeGate = CompletableDeferred()
+        scope.cancel()
+
+        controller.handleCallback(codeLink())
+
+        eventually { state is AccountState.OAuthPending }
+        // Not wedged as "exchanging": the next callback is claimed rather than refused as busy.
+        exchangeGate = null
+        controller.handleCallback(errorLink)
+        assertEquals("Google sign-in was cancelled.", (state as AccountState.OAuthPending).notice)
+    }
+
+    @Test
+    fun `a start on a cancelled scope does not lock out later presses`() {
+        scope.cancel()
+        controller.start(OAuthProvider.GOOGLE)
+        eventually { opened.size == 1 }
+
+        controller.start(OAuthProvider.APPLE)
+        assertEquals(OAuthProvider.APPLE, assertIs<AccountState.OAuthPending>(state).provider)
+    }
+
+    @Test
     fun `a session that cannot be saved ends in an error, not on Verifying`() {
         controller.start(OAuthProvider.APPLE)
         adoptFailure = IllegalStateException("disk full")

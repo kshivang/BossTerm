@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.auth
 
 import ai.rever.bossterm.compose.auth.BossAccountManager.AccountState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -17,6 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Every compound step (check the attempt, then change the state) runs under the [attempts]
  * monitor, so a cancel can never interleave with a notice or an adoption and leave the window
  * showing a sign-in that no longer exists.
+ *
+ * Work handed to [scope] is launched ATOMIC. With the default start, a coroutine whose scope is
+ * cancelled before it is dispatched never runs its body, which would leave an attempt marked as
+ * exchanging (the window stuck on Verifying, every later callback refused as busy) or the
+ * press guard held (every later press ignored). ATOMIC always runs the body, and the
+ * cancellation then reaches the handling that settles the attempt or releases the guard.
  */
 internal class OAuthSignInController(
     private val attempts: OAuthAttempts,
@@ -56,7 +63,7 @@ internal class OAuthSignInController(
             throw e
         }
         log.info("OAuth sign-in started (provider={})", provider.id)
-        scope.launch {
+        scope.launch(start = CoroutineStart.ATOMIC) {
             try {
                 if (!openBrowser(provider, attempt.authorizeUrl)) log.warn("Could not open a browser for the OAuth sign-in")
             } finally {
@@ -75,7 +82,7 @@ internal class OAuthSignInController(
             }
             attempt
         }
-        scope.launch { openBrowser(attempt.provider, attempt.authorizeUrl) }
+        scope.launch(start = CoroutineStart.ATOMIC) { openBrowser(attempt.provider, attempt.authorizeUrl) }
     }
 
     /** Abandon the pending sign-in; its callback is ignored if it still arrives, even mid-exchange. */
@@ -130,7 +137,7 @@ internal class OAuthSignInController(
             return
         }
         if (code == null) return
-        scope.launch { exchangeCode(attempt, code) }
+        scope.launch(start = CoroutineStart.ATOMIC) { exchangeCode(attempt, code) }
     }
 
     private suspend fun exchangeCode(attempt: OAuthAttempts.Attempt, code: String) {

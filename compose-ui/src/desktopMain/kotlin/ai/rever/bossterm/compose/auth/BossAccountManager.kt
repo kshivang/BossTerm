@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.auth
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import ai.rever.bossterm.compose.util.UrlOpener
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
@@ -47,6 +49,15 @@ object BossAccountManager {
         object SignedOut : AccountState()
         /** Magic link sent; waiting for the user to open it. */
         data class EmailSent(val email: String) : AccountState()
+        /**
+         * Google / Apple sign-in open in the browser; waiting for `bossterm://auth/callback`.
+         * [notice] explains a callback that arrived and did not sign in; the sign-in stays open.
+         */
+        data class OAuthPending(
+            val provider: OAuthProvider,
+            val authorizeUrl: String,
+            val notice: String? = null,
+        ) : AccountState()
         /** Deep link received; token exchange in flight. */
         object Verifying : AccountState()
         data class SignedIn(val email: String, val userId: String) : AccountState()
@@ -138,6 +149,46 @@ object BossAccountManager {
         scope.launch { verify(link.tokenHash, link.type) }
     }
 
+    private val oauth = OAuthSignInController(
+        attempts = OAuthAttempts(),
+        scope = scope,
+        supabaseUrl = { SupabaseAuthConfig.url },
+        state = { _state.value },
+        setState = { _state.value = it },
+        openBrowser = ::openSignInPage,
+        exchange = { code, verifier ->
+            val resp = gotrue(
+                "token?grant_type=pkce",
+                json.encodeToString(PkceExchangeRequest.serializer(), PkceExchangeRequest(code, verifier)),
+            )
+            resp.status.value to resp.bodyAsText()
+        },
+        adoptSession = { session -> adoptSession(session) },
+        onSignedIn = ::emitSignIn,
+    )
+
+    /**
+     * Start a Google or Apple sign-in: a fresh PKCE verifier (memory only), then the provider's
+     * page in the browser - Safari for Apple on macOS, the default browser otherwise. A sign-in
+     * already pending is replaced; the pending state offers the link to copy if no browser opens.
+     */
+    fun startOAuth(provider: OAuthProvider) = oauth.start(provider)
+
+    /** Reopen the pending sign-in's page, for a browser tab the user closed. */
+    fun reopenOAuthBrowser() = oauth.reopen()
+
+    /** Abandon the pending sign-in; its callback is ignored if it still arrives, even mid-exchange. */
+    fun cancelOAuth() = oauth.cancel()
+
+    /** End a pending sign-in whose callback never came. Polled by the pending section while shown. */
+    fun expireStaleOAuth() = oauth.expireStale()
+
+    /** Finish the pending Google / Apple sign-in with a `bossterm://auth/callback` link. */
+    fun handleOAuthCallback(raw: String) = oauth.handleCallback(raw)
+
+    private fun openSignInPage(provider: OAuthProvider, url: String): Boolean =
+        UrlOpener.openWith(oauthBrowserCommand(provider, ShellCustomizationUtils.isMacOS(), url), url)
+
     /**
      * Manual "paste the sign-in link" fallback (Sign In dialog): redeem whatever the user pastes —
      * the bossterm:// deep link, the branded email's redirect URL, or the raw confirmation URL.
@@ -145,6 +196,10 @@ object BossAccountManager {
      * a friendly error when no token can be found.
      */
     fun verifyPastedLink(raw: String) {
+        if (parseOAuthCallback(raw) != null) {
+            handleOAuthCallback(raw)
+            return
+        }
         val link = parseAuthInput(raw)
         if (link == null) {
             _state.value = AccountState.Error(
@@ -268,6 +323,7 @@ object BossAccountManager {
 
     /** Back out of EmailSent / Error (e.g. "Use a different email"). No-op when signed in. */
     fun reset() {
+        oauth.cancel()
         if (_state.value !is AccountState.SignedIn) _state.value = AccountState.SignedOut
     }
 

@@ -27,6 +27,32 @@ class OAuthSignInTest {
     }
 
     @Test
+    fun `accepts GoTrue's error redirect, which repeats the error in the query and the fragment`() {
+        val callback = parseOAuthCallback(
+            "bossterm://auth/callback?error=access_denied&error_code=user_cancelled&error_description=Query+text" +
+                "#error=access_denied&error_code=user_cancelled&error_description=Fragment+text&sb",
+        )
+        assertEquals("access_denied", callback?.error)
+        assertEquals("Query text", callback?.errorDescription)
+    }
+
+    @Test
+    fun `a fragment-only error takes its description from the fragment`() {
+        val callback = parseOAuthCallback("bossterm://auth/callback?error_description=planted#error=server_error&error_description=real")
+        assertEquals("real", callback?.errorDescription)
+    }
+
+    @Test
+    fun `a description is bounded and stripped of control characters, and a malformed escape refuses the link`() {
+        val long = parseOAuthCallback("bossterm://auth/callback?error=server_error&error_description=${"a".repeat(1000)}")
+        assertEquals(300, long?.errorDescription?.length)
+        val controls = parseOAuthCallback("bossterm://auth/callback?error=server_error&error_description=line%0Aone%1B%5B2J")
+        assertEquals("lineone[2J", controls?.errorDescription)
+        // java.net.URI rejects the escape before anything is decoded.
+        assertNull(parseOAuthCallback("bossterm://auth/callback?error=server_error&error_description=bad%ZZ"))
+    }
+
+    @Test
     fun `refuses ambiguous and lookalike callbacks`() {
         assertNull(parseOAuthCallback("bossterm://auth/callback"))
         assertNull(parseOAuthCallback("bossterm://auth/callback?code=$code&error=access_denied"))
@@ -37,6 +63,7 @@ class OAuthSignInTest {
         assertNull(parseOAuthCallback("boss://auth/callback?code=$code"))
         assertNull(parseOAuthCallback("bossterm://auth/callback?code=a%26type%3Drecovery"))
         assertNull(parseOAuthCallback("bossterm://auth/callback?error=Not-A-Code"))
+        assertNull(parseOAuthCallback("bossterm://auth/callback?error=access_denied#error=server_error"))
     }
 
     @Test
@@ -82,18 +109,38 @@ class OAuthSignInTest {
     }
 
     @Test
-    fun `an attempt is taken once and a second delivery finds nothing`() {
+    fun `an exchange claims the attempt without consuming it, and finish consumes it`() {
         val attempts = OAuthAttempts()
         val started = attempts.start(OAuthProvider.GOOGLE, "https://api.risaboss.com")
         assertTrue(started.authorizeUrl.contains("code_challenge=${Pkce.challenge(started.verifier)}"))
-        val taken = assertIs<OAuthAttempts.Taken.Live>(attempts.take())
-        assertEquals(started.verifier, taken.attempt.verifier)
-        assertIs<OAuthAttempts.Taken.None>(attempts.take())
+
+        val live = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = true))
+        assertEquals(started.verifier, live.attempt.verifier)
+        assertIs<OAuthAttempts.Claim.Busy>(attempts.claim(forExchange = true))
+
+        assertTrue(attempts.finish(live.attempt))
+        assertIs<OAuthAttempts.Claim.None>(attempts.claim(forExchange = true))
+    }
+
+    @Test
+    fun `a failed exchange or a provider error leaves the attempt pending`() {
+        val attempts = OAuthAttempts()
+        attempts.start(OAuthProvider.APPLE, "https://api.risaboss.com")
+
+        // An error callback does not mark anything.
+        val errored = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = false))
+        assertTrue(attempts.settle(errored.attempt))
+
+        val forged = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = true))
+        assertTrue(attempts.settle(forged.attempt))
+
+        val real = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = true))
+        assertTrue(attempts.finish(real.attempt))
     }
 
     @Test
     fun `nothing pending means a callback is ignored`() {
-        assertIs<OAuthAttempts.Taken.None>(OAuthAttempts().take())
+        assertIs<OAuthAttempts.Claim.None>(OAuthAttempts().claim(forExchange = true))
     }
 
     @Test
@@ -102,8 +149,45 @@ class OAuthSignInTest {
         val attempts = OAuthAttempts { now }
         attempts.start(OAuthProvider.APPLE, "https://api.risaboss.com")
         now = OAuthAttempts.TIMEOUT_MS + 1
-        assertEquals(OAuthProvider.APPLE, assertIs<OAuthAttempts.Taken.Expired>(attempts.take()).provider)
-        assertIs<OAuthAttempts.Taken.None>(attempts.take())
+        assertEquals(OAuthProvider.APPLE, assertIs<OAuthAttempts.Claim.Expired>(attempts.claim(forExchange = true)).provider)
+        assertIs<OAuthAttempts.Claim.None>(attempts.claim(forExchange = true))
+    }
+
+    @Test
+    fun `the pending section's poll expires a stale attempt but never one mid-exchange`() {
+        var now = 0L
+        val attempts = OAuthAttempts { now }
+        assertNull(attempts.expireIfStale())
+
+        attempts.start(OAuthProvider.GOOGLE, "https://api.risaboss.com")
+        now = OAuthAttempts.TIMEOUT_MS - 1
+        assertNull(attempts.expireIfStale())
+        now = OAuthAttempts.TIMEOUT_MS + 1
+        assertEquals(OAuthProvider.GOOGLE, attempts.expireIfStale())
+        assertNull(attempts.peek())
+
+        now = 0L
+        attempts.start(OAuthProvider.GOOGLE, "https://api.risaboss.com")
+        val exchanging = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = true))
+        now = OAuthAttempts.TIMEOUT_MS + 1
+        assertNull(attempts.expireIfStale())
+        assertTrue(attempts.finish(exchanging.attempt))
+    }
+
+    @Test
+    fun `an exchange that returns after a cancel or a new start is not adopted`() {
+        val attempts = OAuthAttempts()
+        attempts.start(OAuthProvider.GOOGLE, "https://api.risaboss.com")
+        val cancelled = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = true)).attempt
+        attempts.cancel()
+        assertFalse(attempts.finish(cancelled))
+
+        attempts.start(OAuthProvider.GOOGLE, "https://api.risaboss.com")
+        val replaced = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = true)).attempt
+        val second = attempts.start(OAuthProvider.APPLE, "https://api.risaboss.com")
+        assertFalse(attempts.finish(replaced))
+        assertFalse(attempts.settle(replaced))
+        assertEquals(second, attempts.peek())
     }
 
     @Test
@@ -111,13 +195,13 @@ class OAuthSignInTest {
         val attempts = OAuthAttempts()
         attempts.start(OAuthProvider.GOOGLE, "https://api.risaboss.com")
         attempts.cancel()
-        assertIs<OAuthAttempts.Taken.None>(attempts.take())
+        assertIs<OAuthAttempts.Claim.None>(attempts.claim(forExchange = true))
 
         val first = attempts.start(OAuthProvider.GOOGLE, "https://api.risaboss.com")
         val second = attempts.start(OAuthProvider.APPLE, "https://api.risaboss.com")
-        val taken = assertIs<OAuthAttempts.Taken.Live>(attempts.take())
-        assertEquals(second.verifier, taken.attempt.verifier)
-        assertNotEquals(first.verifier, taken.attempt.verifier)
+        val live = assertIs<OAuthAttempts.Claim.Live>(attempts.claim(forExchange = true))
+        assertEquals(second.verifier, live.attempt.verifier)
+        assertNotEquals(first.verifier, live.attempt.verifier)
     }
 
     @Test

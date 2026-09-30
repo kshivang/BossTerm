@@ -12,6 +12,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,8 +50,15 @@ object BossAccountManager {
         object SignedOut : AccountState()
         /** Magic link sent; waiting for the user to open it. */
         data class EmailSent(val email: String) : AccountState()
-        /** Google / Apple sign-in open in the browser; waiting for `bossterm://auth/callback`. */
-        data class OAuthPending(val provider: OAuthProvider, val authorizeUrl: String) : AccountState()
+        /**
+         * Google / Apple sign-in open in the browser; waiting for `bossterm://auth/callback`.
+         * [notice] explains a callback that arrived and did not sign in; the sign-in stays open.
+         */
+        data class OAuthPending(
+            val provider: OAuthProvider,
+            val authorizeUrl: String,
+            val notice: String? = null,
+        ) : AccountState()
         /** Deep link received; token exchange in flight. */
         object Verifying : AccountState()
         data class SignedIn(val email: String, val userId: String) : AccountState()
@@ -163,54 +171,97 @@ object BossAccountManager {
         return openSignInPage(attempt.provider, attempt.authorizeUrl)
     }
 
-    /** Abandon the pending sign-in; its callback is ignored if it still arrives. */
+    /** Abandon the pending sign-in; its callback is ignored if it still arrives, even mid-exchange. */
     fun cancelOAuth() {
-        oauthAttempts.cancel()
-        if (_state.value is AccountState.OAuthPending) _state.value = AccountState.SignedOut
+        synchronized(oauthAttempts) {
+            oauthAttempts.cancel()
+            if (_state.value is AccountState.OAuthPending) _state.value = AccountState.SignedOut
+        }
+    }
+
+    /**
+     * End a pending sign-in whose callback never came, so the window does not wait for ever.
+     * Polled by the pending section while it is shown.
+     */
+    fun expireStaleOAuth() {
+        synchronized(oauthAttempts) {
+            val provider = oauthAttempts.expireIfStale() ?: return
+            _state.value = AccountState.Error("That ${provider.displayName} sign-in took too long. Please try again.")
+        }
     }
 
     /**
      * Finish the pending Google / Apple sign-in with a `bossterm://auth/callback` link. A callback
-     * with no sign-in pending is ignored (any page can open a bossterm:// link), and the attempt is
-     * consumed first, so a second delivery of the same link does nothing.
+     * with no sign-in pending is ignored (any page can open a bossterm:// link). One that fails - a
+     * provider error, a code that does not exchange - shows a notice and leaves the sign-in open,
+     * so a forged link cannot end it; one exchange runs at a time, and its session is adopted only
+     * if the sign-in was not cancelled or replaced meanwhile.
      */
     fun handleOAuthCallback(raw: String) {
         val callback = parseOAuthCallback(raw) ?: return
-        val attempt = when (val taken = oauthAttempts.take()) {
-            is OAuthAttempts.Taken.None -> {
+        val code = callback.code
+        val attempt = when (val claim = oauthAttempts.claim(forExchange = code != null)) {
+            is OAuthAttempts.Claim.None -> {
                 log.warn("OAuth callback ignored: no sign-in is pending")
                 return
             }
-            is OAuthAttempts.Taken.Expired -> {
-                _state.value = AccountState.Error("That ${taken.provider.displayName} sign-in took too long. Please try again.")
+            is OAuthAttempts.Claim.Busy -> {
+                log.warn("OAuth callback ignored: one is already being exchanged")
                 return
             }
-            is OAuthAttempts.Taken.Live -> taken.attempt
+            is OAuthAttempts.Claim.Expired -> {
+                _state.value = AccountState.Error("That ${claim.provider.displayName} sign-in took too long. Please try again.")
+                return
+            }
+            is OAuthAttempts.Claim.Live -> claim.attempt
         }
         if (callback.error != null) {
             log.warn("OAuth provider returned an error (provider={}, error={})", attempt.provider.id, callback.error)
-            _state.value = AccountState.Error(describeOAuthError(attempt.provider, callback.error))
+            showOAuthNotice(attempt, describeOAuthError(attempt.provider, callback.error))
             return
         }
-        val code = callback.code ?: return
+        if (code == null) return
         _state.value = AccountState.Verifying
-        scope.launch {
-            try {
-                val resp = gotrue(
-                    "token?grant_type=pkce",
-                    json.encodeToString(PkceExchangeRequest.serializer(), PkceExchangeRequest(code, attempt.verifier)),
-                )
-                if (resp.status.value in 200..299) {
-                    val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
-                    log.info("OAuth sign-in completed (provider={})", attempt.provider.id)
-                    emitSignIn(adoptSession(session))
-                } else {
-                    log.warn("OAuth code exchange refused ({})", resp.status.value)
-                    _state.value = AccountState.Error(describeOAuthExchangeFailure(attempt.provider, resp.status.value))
+        scope.launch { exchangeOAuthCode(attempt, code) }
+    }
+
+    private suspend fun exchangeOAuthCode(attempt: OAuthAttempts.Attempt, code: String) {
+        val failure = try {
+            val resp = gotrue(
+                "token?grant_type=pkce",
+                json.encodeToString(PkceExchangeRequest.serializer(), PkceExchangeRequest(code, attempt.verifier)),
+            )
+            if (resp.status.value in 200..299) {
+                val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
+                val email = synchronized(oauthAttempts) {
+                    if (oauthAttempts.finish(attempt)) adoptSession(session) else null
                 }
-            } catch (e: Exception) {
-                log.warn("OAuth code exchange failed: {}", e.message)
-                _state.value = AccountState.Error(describeOAuthExchangeFailure(attempt.provider, 0))
+                if (email != null) {
+                    log.info("OAuth sign-in completed (provider={})", attempt.provider.id)
+                    emitSignIn(email)
+                } else {
+                    log.info("OAuth session discarded: that sign-in was cancelled or replaced")
+                }
+                null
+            } else {
+                log.warn("OAuth code exchange refused ({})", resp.status.value)
+                describeOAuthExchangeFailure(attempt.provider, resp.status.value)
+            }
+        } catch (e: CancellationException) {
+            oauthAttempts.settle(attempt)
+            throw e
+        } catch (e: Exception) {
+            log.warn("OAuth code exchange failed: {}", e.message)
+            describeOAuthExchangeFailure(attempt.provider, 0)
+        }
+        if (failure != null) showOAuthNotice(attempt, failure)
+    }
+
+    /** Back to waiting on [attempt] with [notice], unless it was cancelled or replaced meanwhile. */
+    private fun showOAuthNotice(attempt: OAuthAttempts.Attempt, notice: String) {
+        synchronized(oauthAttempts) {
+            if (oauthAttempts.settle(attempt)) {
+                _state.value = AccountState.OAuthPending(attempt.provider, attempt.authorizeUrl, notice)
             }
         }
     }
@@ -352,7 +403,7 @@ object BossAccountManager {
 
     /** Back out of EmailSent / Error (e.g. "Use a different email"). No-op when signed in. */
     fun reset() {
-        oauthAttempts.cancel()
+        synchronized(oauthAttempts) { oauthAttempts.cancel() }
         if (_state.value !is AccountState.SignedIn) _state.value = AccountState.SignedOut
     }
 

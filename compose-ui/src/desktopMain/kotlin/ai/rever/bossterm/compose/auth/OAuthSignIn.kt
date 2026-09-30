@@ -16,9 +16,11 @@ import java.util.Base64
  * [BossAccountManager.startOAuth] / [BossAccountManager.handleOAuthCallback].
  *
  * `bossterm://` is registered with the OS, so any page can open a callback link. A callback is
- * acted on only while a sign-in this process started is pending ([OAuthAttempts]), once, and
- * within [OAuthAttempts.TIMEOUT_MS]; and the code is useless without the verifier, which lives
- * only in this process's memory. Codes and verifiers are never logged.
+ * acted on only while a sign-in this process started is pending ([OAuthAttempts]) and within
+ * [OAuthAttempts.TIMEOUT_MS]; and the code is useless without the verifier, which lives only in
+ * this process's memory. Because anyone can send one, a callback that fails does not end the
+ * sign-in: only a successful exchange, a cancel, a new start or expiry does. Codes and verifiers
+ * are never logged.
  */
 enum class OAuthProvider(val id: String, val displayName: String) {
     GOOGLE("google", "Google"),
@@ -45,6 +47,10 @@ private const val MAX_DESCRIPTION = 300
  * is not exactly that shape. Strict like [parseAuthDeepLink]: the host and path must match, a
  * code lives in the query only, and a duplicated parameter or both a code and an error is an
  * ambiguous smuggle that refuses the link.
+ *
+ * GoTrue's error redirect writes `error`, `error_code` and `error_description` into BOTH the
+ * query and the fragment, so the same error in both is one error; two that disagree are refused.
+ * The description is read from the section the error was taken from.
  */
 fun parseOAuthCallback(raw: String): OAuthCallback? {
     val uri = runCatching { java.net.URI(raw.trim()) }.getOrNull() ?: return null
@@ -55,19 +61,24 @@ fun parseOAuthCallback(raw: String): OAuthCallback? {
     if (fragment.containsKey("code")) return null
     if (listOf(query, fragment).any { p -> listOf("code", "error", "error_description").any { (p[it]?.size ?: 0) > 1 } }) return null
     val code = query["code"]?.first()
-    val errors = listOfNotNull(query["error"]?.first(), fragment["error"]?.first())
+    val queryError = query["error"]?.first()
+    val fragmentError = fragment["error"]?.first()
+    val errors = listOfNotNull(queryError, fragmentError).distinct()
     return when {
         code != null && errors.isEmpty() -> code.takeIf { AUTH_CODE.matches(it) }?.let { OAuthCallback(it, null, null) }
         code == null && errors.size == 1 -> errors.single().takeIf { ERROR_CODE.matches(it) }?.let {
-            val description = (query["error_description"] ?: fragment["error_description"])?.first()
-                ?.let { d -> runCatching { URLDecoder.decode(d, StandardCharsets.UTF_8) }.getOrNull() }
-                ?.filter { c -> !c.isISOControl() }
-                ?.take(MAX_DESCRIPTION)
-            OAuthCallback(null, it, description)
+            val section = if (queryError != null) query else fragment
+            OAuthCallback(null, it, section["error_description"]?.first()?.let(::decodeDescription))
         }
         else -> null
     }
 }
+
+/** A percent/plus-encoded error description as bounded printable text, or null if undecodable. */
+private fun decodeDescription(raw: String): String? =
+    runCatching { URLDecoder.decode(raw, StandardCharsets.UTF_8) }.getOrNull()
+        ?.filter { c -> !c.isISOControl() }
+        ?.take(MAX_DESCRIPTION)
 
 private fun params(raw: String?): Map<String, List<String>> =
     if (raw.isNullOrEmpty()) emptyMap()
@@ -114,16 +125,26 @@ fun describeOAuthExchangeFailure(provider: OAuthProvider, status: Int): String =
 
 /**
  * The single sign-in in flight. [start] replaces any earlier one (its verifier is gone, so its
- * callback can no longer be exchanged); [take] consumes it, so a duplicate delivery of the same
- * callback finds nothing.
+ * callback can no longer be exchanged). A callback [claim]s it without consuming it, so a forged
+ * callback that fails cannot end the user's own sign-in; only [finish] after a successful
+ * exchange, [cancel], a new [start] or expiry does. One exchange runs at a time.
+ *
+ * Every attempt is a new object, so a caller holding one can tell whether it is still the one
+ * pending: an exchange that returns after a cancel or a new start is not adopted.
  */
 class OAuthAttempts(private val clock: () -> Long = System::currentTimeMillis) {
-    class Attempt(val provider: OAuthProvider, val verifier: String, val authorizeUrl: String, val startedAtMs: Long)
+    class Attempt(val provider: OAuthProvider, val verifier: String, val authorizeUrl: String, val startedAtMs: Long) {
+        /** A callback's code is being exchanged; further callbacks are refused until it settles. */
+        var exchanging: Boolean = false
+            internal set
+    }
 
-    sealed interface Taken {
-        data class Live(val attempt: Attempt) : Taken
-        data class Expired(val provider: OAuthProvider) : Taken
-        object None : Taken
+    sealed interface Claim {
+        data class Live(val attempt: Attempt) : Claim
+        data class Expired(val provider: OAuthProvider) : Claim
+        /** A callback for this sign-in is already being exchanged. */
+        object Busy : Claim
+        object None : Claim
     }
 
     @Volatile private var current: Attempt? = null
@@ -135,11 +156,48 @@ class OAuthAttempts(private val clock: () -> Long = System::currentTimeMillis) {
         return Attempt(provider, verifier, url, clock()).also { current = it }
     }
 
+    /**
+     * The pending attempt for one callback. Only expiry consumes it; with [forExchange] the
+     * attempt is marked as exchanging until [settle] or [finish].
+     */
     @Synchronized
-    fun take(): Taken {
-        val attempt = current ?: return Taken.None
+    fun claim(forExchange: Boolean): Claim {
+        val attempt = current ?: return Claim.None
+        return when {
+            attempt.exchanging -> Claim.Busy
+            isStale(attempt) -> {
+                current = null
+                Claim.Expired(attempt.provider)
+            }
+            else -> {
+                if (forExchange) attempt.exchanging = true
+                Claim.Live(attempt)
+            }
+        }
+    }
+
+    /** [attempt]'s exchange failed; true when it is still the one pending, so a notice belongs to it. */
+    @Synchronized
+    fun settle(attempt: Attempt): Boolean {
+        attempt.exchanging = false
+        return current === attempt
+    }
+
+    /** [attempt]'s exchange succeeded: consume it, true only when it was still the one pending. */
+    @Synchronized
+    fun finish(attempt: Attempt): Boolean {
+        attempt.exchanging = false
+        if (current !== attempt) return false
         current = null
-        return if (clock() - attempt.startedAtMs > TIMEOUT_MS) Taken.Expired(attempt.provider) else Taken.Live(attempt)
+        return true
+    }
+
+    /** End a pending attempt past [TIMEOUT_MS] with no exchange running; its provider, or null. */
+    @Synchronized
+    fun expireIfStale(): OAuthProvider? {
+        val attempt = current?.takeIf { !it.exchanging && isStale(it) } ?: return null
+        current = null
+        return attempt.provider
     }
 
     /** The pending attempt without consuming it, for "Reopen browser". */
@@ -149,6 +207,8 @@ class OAuthAttempts(private val clock: () -> Long = System::currentTimeMillis) {
     fun cancel() {
         current = null
     }
+
+    private fun isStale(attempt: Attempt): Boolean = clock() - attempt.startedAtMs > TIMEOUT_MS
 
     companion object {
         const val TIMEOUT_MS = 10 * 60 * 1000L

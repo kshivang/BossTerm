@@ -46,7 +46,10 @@ object UrlOpener {
         if (preferred != null) {
             val opened = runCatching {
                 val process = ProcessBuilder(preferred).redirectErrorStream(true).start()
-                process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0
+                val exited = process.waitFor(10, TimeUnit.SECONDS)
+                // A wedged opener is not left running behind the fallback it is about to race.
+                if (!exited) process.destroyForcibly()
+                exited && process.exitValue() == 0
             }.getOrDefault(false)
             if (opened) return true
         }

@@ -382,11 +382,22 @@ private fun OAuthPendingSection(
 ) {
     val clipboard = LocalClipboardManager.current
     var copied by remember(state.authorizeUrl) { mutableStateOf(false) }
+    // A sign-in whose callback never comes would otherwise leave this section up for ever.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15_000)
+            BossAccountManager.expireStaleOAuth()
+        }
+    }
     SettingsSection("Continue in your browser") {
         Text(
             "Finish signing in with ${state.provider.displayName} in the browser window we opened. BossTerm will continue by itself.",
             color = TextPrimary, fontSize = 13.sp,
         )
+        if (state.notice != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(state.notice, color = Danger, fontSize = 13.sp)
+        }
         Spacer(Modifier.height(14.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(

@@ -11,10 +11,13 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import ai.rever.bossterm.compose.daemon.BossTermPaths
 
 /** Unknown launchers (including IDE runs) use the debug default. */
-internal fun defaultAutoUpdateEnabled(buildType: String? = System.getProperty("bossterm.build.type")): Boolean =
-    buildType == "release"
+internal fun defaultAutoUpdateEnabled(
+    buildType: String? = System.getProperty("bossterm.build.type"),
+    testAutoUpdate: Boolean = System.getProperty("bossterm.autoUpdate.test").toBoolean()
+): Boolean = testAutoUpdate || buildType == "release"
 
 /**
  * Update settings data class for serialization
@@ -84,7 +87,7 @@ object UpdateSettingsManager {
     }
 
     private val settingsDir: File by lazy {
-        File(System.getProperty("user.home"), ".bossterm").also { it.mkdirs() }
+        BossTermPaths.dir()
     }
 
     private val settingsFile: File by lazy {

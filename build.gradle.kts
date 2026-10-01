@@ -13,7 +13,9 @@ plugins {
 // - Otherwise: MAJOR.MINOR from VERSION file + PATCH from BUILD_NUMBER
 // - Local builds get "-SNAPSHOT" suffix
 val isReleaseBuild = System.getenv("RELEASE_BUILD") != null || System.getenv("INTELLIJ_DEPENDENCIES_BOT") != null
-val projectVersion = System.getenv("APP_VERSION")?.let { appVersion ->
+val testAutoUpdate = providers.gradleProperty("testAutoUpdate").map { it.toBooleanStrict() }.orElse(false).get()
+require(!testAutoUpdate || !isReleaseBuild) { "testAutoUpdate is only supported for local debug builds" }
+val projectVersion = if (testAutoUpdate) "1.0.0-SNAPSHOT" else System.getenv("APP_VERSION")?.let { appVersion ->
     // Use pre-computed version from CI (ensures consistency with artifact naming)
     appVersion + if (!isReleaseBuild) "-SNAPSHOT" else ""
 } ?: run {

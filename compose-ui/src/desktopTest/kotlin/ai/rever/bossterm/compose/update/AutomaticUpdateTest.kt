@@ -83,6 +83,14 @@ class AutomaticUpdateTest {
     }
 
     @Test
+    fun `testing flag enables debug automatic updates without changing normal debug default`() {
+        assertFalse(defaultAutoUpdateEnabled("debug", false))
+        assertTrue(defaultAutoUpdateEnabled("debug", true))
+        assertTrue(defaultAutoUpdateEnabled("release", false))
+        assertFalse(defaultAutoUpdateEnabled(null, false))
+    }
+
+    @Test
     fun `manual mode only announces an available update`() = runTest {
         UpdateSettings.loadFromData(UpdateSettingsData(autoUpdateEnabled = false))
         val service = FakeUpdates()

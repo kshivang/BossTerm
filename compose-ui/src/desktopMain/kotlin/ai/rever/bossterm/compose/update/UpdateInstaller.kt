@@ -449,6 +449,9 @@ object UpdateInstaller {
                 currentFile = currentFile.parentFile ?: break
             }
 
+            // The testing flag must never fall back to updating the installed release app.
+            if (System.getProperty("bossterm.autoUpdate.test").toBoolean()) return null
+
             val applicationsPath = "$MACOS_APPLICATIONS_DIRECTORY/$BOSSTERM_MACOS_APP_BUNDLE_NAME"
             if (File(applicationsPath).exists()) {
                 return applicationsPath

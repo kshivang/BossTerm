@@ -36,6 +36,10 @@ plugins {
 
 group = "ai.rever.bossterm"
 
+// Opt-in local updater test build: old version, automatic downloads, and isolated preferences.
+val testAutoUpdate = providers.gradleProperty("testAutoUpdate").map { it.toBooleanStrict() }.orElse(false).get()
+val desktopOutputDir = layout.buildDirectory.dir(if (testAutoUpdate) "compose-auto-update-test/binaries" else "compose/binaries")
+
 repositories {
     mavenCentral()
     google()
@@ -78,6 +82,13 @@ compose.desktop {
     application {
         mainClass = "ai.rever.bossterm.app.MainKt"
 
+        if (testAutoUpdate) {
+            jvmArgs += listOf(
+                "-Dbossterm.autoUpdate.test=true",
+                "-Dbossterm.settings.dir=${layout.buildDirectory.dir("auto-update-test-settings").get().asFile.absolutePath}"
+            )
+        }
+
         // JVM args for platform-specific features (access to internal AWT classes)
         jvmArgs += listOf(
             // Local/SNAPSHOT builds are debug; release CI provides a version without that suffix.
@@ -96,6 +107,7 @@ compose.desktop {
         }
 
         nativeDistributions {
+            outputBaseDir.set(desktopOutputDir)
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm)
 
             packageName = "BossTerm"
@@ -124,7 +136,7 @@ compose.desktop {
 
                 // Code signing configuration for distribution
                 signing {
-                    val skipSigning = System.getenv("DISABLE_MACOS_SIGNING") == "true"
+                    val skipSigning = testAutoUpdate || System.getenv("DISABLE_MACOS_SIGNING") == "true"
                     sign.set(!skipSigning)
                     identity.set(macosSigningIdentity)
 
@@ -420,7 +432,7 @@ tasks.register("signPty4jBinaries") {
     // Only run on macOS and when signing is enabled
     onlyIf {
         val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
-        val signingDisabled = System.getenv("DISABLE_MACOS_SIGNING") == "true"
+        val signingDisabled = testAutoUpdate || System.getenv("DISABLE_MACOS_SIGNING") == "true"
         isMacOS && !signingDisabled
     }
 
@@ -441,7 +453,7 @@ tasks.register("signPty4jBinaries") {
         }
 
         // Find the built app in the standard Compose Desktop location
-        val appDir = project.layout.buildDirectory.dir("compose/binaries/main/app").get().asFile
+        val appDir = desktopOutputDir.get().dir("main/app").asFile
         val appFile = appDir.listFiles()?.find { it.name.endsWith(".app") }
 
         if (appFile?.exists() == true) {
@@ -588,7 +600,7 @@ tasks.register("signPty4jBinaries") {
 afterEvaluate {
     val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
     val isLinux = System.getProperty("os.name").lowercase().contains("linux")
-    val signingDisabled = System.getenv("DISABLE_MACOS_SIGNING") == "true"
+    val signingDisabled = testAutoUpdate || System.getenv("DISABLE_MACOS_SIGNING") == "true"
 
     // Make signPty4jBinaries run AFTER createDistributable
     tasks.findByName("signPty4jBinaries")?.apply {
@@ -602,7 +614,7 @@ afterEvaluate {
         val appearanceScript = rootProject.file("scripts/prepare-macos-appearance.py")
         val appearanceEntitlements = rootProject.file("compose-ui/src/desktopMain/resources/entitlements.plist")
         val appearanceExec = project.objects.newInstance<InjectedExecOps>()
-        val packagedApp = layout.buildDirectory.dir("compose/binaries/main/app/BossTerm.app")
+        val packagedApp = desktopOutputDir.map { it.dir("main/app/BossTerm.app") }
         tasks.named("createDistributable").configure {
             inputs.file(appearanceScript)
             inputs.file(appearanceEntitlements)
@@ -663,7 +675,7 @@ tasks.register("fixLinuxDesktopFile") {
 
     doLast {
         // Fix .deb package
-        val debDir = project.layout.buildDirectory.dir("compose/binaries/main/deb").get().asFile
+        val debDir = desktopOutputDir.get().dir("main/deb").asFile
         if (debDir.exists()) {
             fixDesktopFileInDebPackage(debDir, injected)
         }

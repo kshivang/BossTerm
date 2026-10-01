@@ -58,6 +58,8 @@ fun VersionManagementSection(
     val updateService = remember { DesktopUpdateService() }
     val scope = rememberCoroutineScope()
     val currentVersion = Version.CURRENT
+    val updateSettings by UpdateSettings.settings.collectAsState()
+    val updateState by UpdateManager.instance.updateState.collectAsState()
 
     // Fetch releases on first load and when pre-release toggle changes
     LaunchedEffect(state.showPreReleases) {
@@ -79,6 +81,53 @@ fun VersionManagementSection(
     Column(modifier = modifier) {
         // Current version info
         InfoRowStyled("Current Version", currentVersion.toString())
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                .background(SurfaceColor).padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Automatic Updates", color = TextPrimary, fontSize = 13.sp)
+                Text(
+                    "Download updates automatically and install when you quit BossTerm. Open it again manually; an OS password may be required.",
+                    color = TextSecondary, fontSize = 12.sp
+                )
+            }
+            Switch(
+                checked = updateSettings.autoUpdateEnabled,
+                onCheckedChange = { enabled ->
+                    UpdateSettings.autoUpdateEnabled = enabled
+                    scope.launch { UpdateSettingsManager.saveSettings() }
+                },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = AccentColor,
+                    checkedTrackColor = AccentColor.copy(alpha = 0.5f)
+                )
+            )
+        }
+        if (updateSettings.autoUpdateEnabled) {
+            val status = when (val current = updateState) {
+                is UpdateState.CheckingForUpdates -> "Checking for updates…"
+                is UpdateState.UpdateAvailable -> "Update available: v${current.updateInfo.latestVersion}"
+                is UpdateState.Downloading -> "Downloading update… ${(current.progress * 100).toInt()}%"
+                is UpdateState.ReadyToInstall -> "Update ready to install"
+                is UpdateState.InstallOnNextRestart -> "Update downloaded; will install when you quit BossTerm."
+                is UpdateState.Installing -> "Preparing update…"
+                is UpdateState.RestartRequired -> "Update installed; restart required"
+                is UpdateState.Error -> current.message
+                else -> "BossTerm will install new releases as they become available."
+            }
+            Text(status, color = if (updateState is UpdateState.Error) Danger else TextSecondary,
+                fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            if (updateState is UpdateState.Error) {
+                TextButton(onClick = { scope.launch { UpdateManager.instance.checkForUpdates() } }) {
+                    Text("Retry Update", color = AccentTextColor)
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
 

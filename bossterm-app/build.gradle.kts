@@ -80,6 +80,8 @@ compose.desktop {
 
         // JVM args for platform-specific features (access to internal AWT classes)
         jvmArgs += listOf(
+            // Local/SNAPSHOT builds are debug; release CI provides a version without that suffix.
+            "-Dbossterm.build.type=${if (project.version.toString().endsWith("-SNAPSHOT")) "debug" else "release"}",
             // macOS blur effect
             "--add-opens", "java.desktop/sun.lwawt=ALL-UNNAMED",
             "--add-opens", "java.desktop/sun.lwawt.macosx=ALL-UNNAMED",

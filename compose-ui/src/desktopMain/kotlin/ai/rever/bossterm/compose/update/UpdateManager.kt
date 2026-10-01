@@ -3,6 +3,8 @@ package ai.rever.bossterm.compose.update
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,15 +19,17 @@ sealed class UpdateState {
     data class UpdateAvailable(val updateInfo: UpdateInfo) : UpdateState()
     data class Downloading(val progress: Float) : UpdateState()
     data class ReadyToInstall(val downloadPath: String) : UpdateState()
+    data class InstallOnNextRestart(val downloadPath: String) : UpdateState()
     object Installing : UpdateState()
     object RestartRequired : UpdateState()
     data class Error(val message: String) : UpdateState()
 }
 
-/**
- * Central update manager that handles periodic update checks and state management.
- */
-class UpdateManager internal constructor(private val operations: UpdateOperations?) {
+/** Central update manager for update checks, downloads, and installation. */
+class UpdateManager internal constructor(
+    private val operations: UpdateOperations?,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+) {
     constructor() : this(null)
 
     internal val updateService = DesktopUpdateService()
@@ -40,20 +44,64 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
     val updateInfo: StateFlow<UpdateInfo?> = _updateInfo.asStateFlow()
 
     private var periodicCheckJob: Job? = null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var automaticUpdateJob: Job? = null
+    private val initializationMutex = Mutex()
+    private var initialized = false
+
+    /** Load preferences once across all standalone windows before checking. */
+    suspend fun initialize() = initializationMutex.withLock {
+        if (initialized) return@withLock
+        UpdateSettingsManager.loadSettings()
+        startAutomaticUpdates()
+        if (shouldCheckForUpdates()) checkForUpdates()
+        startRealtimePush()
+        initialized = true
+    }
 
     companion object {
         val instance = UpdateManager()
     }
 
+    /** Start only from the standalone app; embedded terminals never self-update. */
+    fun startAutomaticUpdates() {
+        if (automaticUpdateJob != null) return
+        automaticUpdateJob = scope.launch {
+            UpdateSettings.settings.map { it.autoUpdateEnabled }.distinctUntilChanged().collect { enabled ->
+                if (enabled) {
+                    checkMutex.withLock {
+                        if (!UpdateSettings.autoUpdateEnabled) return@withLock
+                        when (val state = _updateState.value) {
+                            is UpdateState.ReadyToInstall -> installUpdateInternal(state.downloadPath, restartAutomatically = false)
+                            is UpdateState.UpdateAvailable -> applyAutomaticUpdate(state.updateInfo)
+                            is UpdateState.RestartRequired, is UpdateState.InstallOnNextRestart, is UpdateState.Installing -> Unit
+                            else -> runCheck()
+                        }
+                    }
+                    if (UpdateSettings.autoUpdateEnabled) startPeriodicChecks(checkImmediately = false)
+                } else {
+                    stopPeriodicChecks()
+                }
+            }
+        }
+    }
+
+    private suspend fun applyAutomaticUpdate(info: UpdateInfo) {
+        if (!UpdateSettings.autoUpdateEnabled) return
+        downloadUpdateInternal(info)
+        val ready = _updateState.value as? UpdateState.ReadyToInstall ?: return
+        // Turning the mode off during a download leaves it ready for manual installation.
+        if (UpdateSettings.autoUpdateEnabled) installUpdateInternal(ready.downloadPath, restartAutomatically = false)
+    }
+
     /**
      * Start periodic update checks.
      */
-    fun startPeriodicChecks() {
+    fun startPeriodicChecks(checkImmediately: Boolean = true) {
         if (!UpdateSettings.autoCheckEnabled) return
 
         periodicCheckJob?.cancel()
         periodicCheckJob = scope.launch {
+            if (!checkImmediately) delay(UpdateSettings.checkIntervalHours * 60 * 60 * 1000)
             while (isActive) {
                 try {
                     checkForUpdatesInternal()
@@ -106,7 +154,14 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
             }
         }
         return try {
-            runCheck()
+            when (val state = _updateState.value) {
+                is UpdateState.ReadyToInstall -> {
+                    if (UpdateSettings.autoUpdateEnabled) installUpdateInternal(state.downloadPath, restartAutomatically = false)
+                    _updateInfo.value?.let { UpdateResult.UpdateAvailable(it) } ?: UpdateResult.NoUpdateAvailable
+                }
+                is UpdateState.RestartRequired, is UpdateState.InstallOnNextRestart, is UpdateState.Installing -> UpdateResult.NoUpdateAvailable
+                else -> runCheck()
+            }
         } finally {
             checkMutex.unlock()
         }
@@ -124,6 +179,7 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
             when {
                 updateInfo.isNewerVersionAvailable -> {
                     _updateState.value = UpdateState.UpdateAvailable(updateInfo)
+                    applyAutomaticUpdate(updateInfo)
                     UpdateResult.UpdateAvailable(updateInfo)
                 }
                 else -> {
@@ -131,6 +187,8 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
                     UpdateResult.NoUpdateAvailable
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _updateState.value = UpdateState.Error(e.message ?: "Unknown error")
             UpdateResult.Error("Failed to check for updates", e)
@@ -143,10 +201,10 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
     suspend fun downloadUpdate(updateInfo: UpdateInfo): UpdateResult = checkMutex.withLock {
         if (updateInProgress()) return@withLock UpdateResult.Error("An update is already in progress")
         _updateInfo.value = updateInfo
-        downloadAvailableUpdate(updateInfo)
+        downloadUpdateInternal(updateInfo)
     }
 
-    private suspend fun downloadAvailableUpdate(updateInfo: UpdateInfo): UpdateResult {
+    private suspend fun downloadUpdateInternal(updateInfo: UpdateInfo): UpdateResult {
         return try {
             _updateState.value = UpdateState.Downloading(0f)
 
@@ -163,6 +221,8 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
                 _updateState.value = UpdateState.Error(errorMsg)
                 UpdateResult.Error(errorMsg)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val errorMsg = "Download failed: ${e.message}"
             _updateState.value = UpdateState.Error(errorMsg)
@@ -181,18 +241,24 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
     /** An approval belongs to this staged artifact, not merely its possibly reusable filename. */
     internal suspend fun installUpdate(expected: UpdateState.ReadyToInstall): Boolean = checkMutex.withLock {
         if (_updateState.value !== expected || !_updateState.compareAndSet(expected, UpdateState.Installing)) false
-        else installStagedUpdate(expected.downloadPath)
+        else installUpdateInternal(expected.downloadPath)
     }
 
-    private suspend fun installStagedUpdate(downloadPath: String): Boolean {
+    private suspend fun installUpdateInternal(downloadPath: String, restartAutomatically: Boolean = true): Boolean {
         return try {
-            val success = operations?.install?.invoke(downloadPath) ?: updateService.installUpdate(downloadPath)
+            _updateState.value = UpdateState.Installing
+
+            val install = if (restartAutomatically) operations?.install else operations?.schedule
+            val success = install?.invoke(downloadPath) ?: updateService.installUpdate(downloadPath, restartAutomatically)
             if (success) {
-                _updateState.value = UpdateState.RestartRequired
+                _updateState.value = if (restartAutomatically) UpdateState.RestartRequired
+                    else UpdateState.InstallOnNextRestart(downloadPath)
             } else {
                 _updateState.value = UpdateState.Error("Installation failed")
             }
             success
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _updateState.value = UpdateState.Error("Installation failed: ${e.message}")
             false
@@ -220,13 +286,14 @@ class UpdateManager internal constructor(private val operations: UpdateOperation
      */
     fun resetState() {
         val state = _updateState.value
-        if (state !is UpdateState.Downloading && state != UpdateState.Installing && state != UpdateState.RestartRequired) {
+        if (!checkMutex.isLocked && state !is UpdateState.Downloading && state != UpdateState.Installing &&
+            state != UpdateState.RestartRequired && state !is UpdateState.InstallOnNextRestart) {
             _updateState.compareAndSet(state, UpdateState.Idle)
         }
     }
 
     private fun updateInProgress(): Boolean = when (_updateState.value) {
-        is UpdateState.Downloading, is UpdateState.ReadyToInstall,
+        is UpdateState.Downloading, is UpdateState.ReadyToInstall, is UpdateState.InstallOnNextRestart,
         UpdateState.Installing, UpdateState.RestartRequired -> true
         else -> false
     }
@@ -245,4 +312,5 @@ internal class UpdateOperations(
     val check: suspend () -> UpdateInfo,
     val download: suspend (UpdateInfo, (Float) -> Unit) -> String?,
     val install: suspend (String) -> Boolean,
+    val schedule: suspend (String) -> Boolean = install,
 )

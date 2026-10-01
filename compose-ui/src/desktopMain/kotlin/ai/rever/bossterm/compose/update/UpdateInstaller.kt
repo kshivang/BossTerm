@@ -181,7 +181,7 @@ object UpdateInstaller {
     /**
      * Install update for the current platform.
      */
-    suspend fun installUpdate(downloadPath: String): InstallResult {
+    suspend fun installUpdate(downloadPath: String, restartAutomatically: Boolean = true): InstallResult {
         return try {
             val downloadFile = File(downloadPath)
             if (!downloadFile.exists()) {
@@ -193,11 +193,11 @@ object UpdateInstaller {
             }
 
             when (getCurrentPlatform()) {
-                "macOS" -> installMacOSUpdate(downloadFile)
-                "Windows" -> installWindowsUpdate(downloadFile)
-                "Linux-deb" -> installLinuxDebUpdate(downloadFile)
-                "Linux-rpm" -> installLinuxRpmUpdate(downloadFile)
-                else -> installJarUpdate(downloadFile)
+                "macOS" -> installMacOSUpdate(downloadFile, restartAutomatically)
+                "Windows" -> installWindowsUpdate(downloadFile, restartAutomatically)
+                "Linux-deb" -> installLinuxDebUpdate(downloadFile, restartAutomatically)
+                "Linux-rpm" -> installLinuxRpmUpdate(downloadFile, restartAutomatically)
+                else -> installJarUpdate(downloadFile, restartAutomatically)
             }
         } catch (e: Exception) {
             println("Error installing update: ${e.message}")
@@ -208,7 +208,7 @@ object UpdateInstaller {
     /**
      * Install macOS update using helper script pattern.
      */
-    private suspend fun installMacOSUpdate(downloadFile: File): InstallResult {
+    private suspend fun installMacOSUpdate(downloadFile: File, restartAutomatically: Boolean): InstallResult {
         return withContext(Dispatchers.IO) {
             try {
                 println("Starting macOS update installation...")
@@ -217,7 +217,8 @@ object UpdateInstaller {
                 val currentAppPath = getCurrentApplicationPath()
                 if (currentAppPath == null) {
                     println("⚠️ Could not determine current application path")
-                    return@withContext openDMGForManualInstallation(downloadFile)
+                    return@withContext if (restartAutomatically) openDMGForManualInstallation(downloadFile)
+                        else InstallResult.Error("Could not locate BossTerm.app for installation on exit")
                 }
 
                 println("🎯 Target application path: $currentAppPath")
@@ -254,13 +255,16 @@ object UpdateInstaller {
                 val scriptFile = UpdateScriptGenerator.generateMacOSUpdateScript(
                     dmgPath = downloadFile.absolutePath,
                     targetAppPath = currentAppPath,
-                    appPid = currentPid
+                    appPid = currentPid,
+                    restartAutomatically = restartAutomatically
                 )
 
                 println("🚀 Launching update script")
                 UpdateScriptGenerator.launchScript(scriptFile)
 
-                InstallResult.RequiresRestart("Update is ready to install. The app will quit and install the update.")
+                InstallResult.RequiresRestart(if (restartAutomatically)
+                    "Update is ready to install. The app will quit and install the update."
+                    else "Update will install when you quit BossTerm. Open BossTerm again manually.")
             } catch (e: Exception) {
                 println("❌ Error during update preparation: ${e.message}")
                 InstallResult.Error(e.message ?: "Unknown error")
@@ -271,7 +275,7 @@ object UpdateInstaller {
     /**
      * Install Windows update using helper script pattern.
      */
-    private suspend fun installWindowsUpdate(downloadFile: File): InstallResult {
+    private suspend fun installWindowsUpdate(downloadFile: File, restartAutomatically: Boolean): InstallResult {
         return withContext(Dispatchers.IO) {
             try {
                 println("Starting Windows update installation...")
@@ -280,12 +284,15 @@ object UpdateInstaller {
                 val currentPid = ProcessHandle.current().pid()
                 val scriptFile = UpdateScriptGenerator.generateWindowsUpdateScript(
                     msiPath = downloadFile.absolutePath,
-                    appPid = currentPid
+                    appPid = currentPid,
+                    restartAutomatically = restartAutomatically
                 )
 
                 UpdateScriptGenerator.launchScript(scriptFile)
 
-                InstallResult.RequiresRestart("Update is ready to install. The app will quit and install the update.")
+                InstallResult.RequiresRestart(if (restartAutomatically)
+                    "Update is ready to install. The app will quit and install the update."
+                    else "Update will install when you quit BossTerm. Open BossTerm again manually.")
             } catch (e: Exception) {
                 InstallResult.Error(e.message ?: "Unknown error")
             }
@@ -295,7 +302,7 @@ object UpdateInstaller {
     /**
      * Install JAR update.
      */
-    private suspend fun installJarUpdate(downloadFile: File): InstallResult {
+    private suspend fun installJarUpdate(downloadFile: File, restartAutomatically: Boolean): InstallResult {
         return withContext(Dispatchers.IO) {
             try {
                 validateDownloadFile(downloadFile, ".jar")
@@ -303,6 +310,14 @@ object UpdateInstaller {
                 val currentJar = getCurrentJarPath()
                 if (currentJar == null) {
                     return@withContext InstallResult.Error("Could not locate current JAR")
+                }
+
+                if (!restartAutomatically) {
+                    val script = UpdateScriptGenerator.generateJarUpdateScript(
+                        downloadFile.absolutePath, currentJar.absolutePath, ProcessHandle.current().pid()
+                    )
+                    UpdateScriptGenerator.launchScript(script)
+                    return@withContext InstallResult.RequiresRestart("Update will install when you quit BossTerm.")
                 }
 
                 val backupJar = File(currentJar.parentFile, "${currentJar.name}.backup")
@@ -356,7 +371,7 @@ object UpdateInstaller {
     /**
      * Install Linux Deb update using helper script pattern.
      */
-    private suspend fun installLinuxDebUpdate(downloadFile: File): InstallResult {
+    private suspend fun installLinuxDebUpdate(downloadFile: File, restartAutomatically: Boolean): InstallResult {
         return withContext(Dispatchers.IO) {
             try {
                 println("Starting Linux Deb update installation...")
@@ -368,12 +383,15 @@ object UpdateInstaller {
                 val currentPid = ProcessHandle.current().pid()
                 val scriptFile = UpdateScriptGenerator.generateLinuxDebUpdateScript(
                     debPath = downloadFile.absolutePath,
-                    appPid = currentPid
+                    appPid = currentPid,
+                    restartAutomatically = restartAutomatically
                 )
 
                 UpdateScriptGenerator.launchScript(scriptFile)
 
-                InstallResult.RequiresRestart("Update is ready to install. The app will quit and install the update.")
+                InstallResult.RequiresRestart(if (restartAutomatically)
+                    "Update is ready to install. The app will quit and install the update."
+                    else "Update will install when you quit BossTerm. Open BossTerm again manually.")
             } catch (e: Exception) {
                 InstallResult.Error(e.message ?: "Unknown error")
             }
@@ -383,7 +401,7 @@ object UpdateInstaller {
     /**
      * Install Linux RPM update using helper script pattern.
      */
-    private suspend fun installLinuxRpmUpdate(downloadFile: File): InstallResult {
+    private suspend fun installLinuxRpmUpdate(downloadFile: File, restartAutomatically: Boolean): InstallResult {
         return withContext(Dispatchers.IO) {
             try {
                 println("Starting Linux RPM update installation...")
@@ -395,12 +413,15 @@ object UpdateInstaller {
                 val currentPid = ProcessHandle.current().pid()
                 val scriptFile = UpdateScriptGenerator.generateLinuxRpmUpdateScript(
                     rpmPath = downloadFile.absolutePath,
-                    appPid = currentPid
+                    appPid = currentPid,
+                    restartAutomatically = restartAutomatically
                 )
 
                 UpdateScriptGenerator.launchScript(scriptFile)
 
-                InstallResult.RequiresRestart("Update is ready to install. The app will quit and install the update.")
+                InstallResult.RequiresRestart(if (restartAutomatically)
+                    "Update is ready to install. The app will quit and install the update."
+                    else "Update will install when you quit BossTerm. Open BossTerm again manually.")
             } catch (e: Exception) {
                 InstallResult.Error(e.message ?: "Unknown error")
             }

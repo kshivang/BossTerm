@@ -85,7 +85,7 @@ class AppUpdateCommandsTest {
     fun `checks never replace a download or staged update`() = runTest {
         val backend = Backend()
         val commands = AppUpdateCommands(backend, backgroundScope)
-        for (state in listOf("checking", "downloading", "ready_to_install", "installing", "restart_required")) {
+        for (state in listOf("checking", "downloading", "ready_to_install", "install_on_next_restart", "installing", "restart_required")) {
             backend.state = backend.state.copy(state = state)
             assertTrue(commands.start("check").isError)
         }

@@ -28,6 +28,9 @@ fun UpdateBanner(
     onInstallUpdate: (String) -> Unit = {},
     onDismiss: () -> Unit = {}
 ) {
+    val settings by UpdateSettings.settings.collectAsState()
+    if (settings.autoUpdateEnabled) return
+
     when (updateState) {
         is UpdateState.UpdateAvailable -> {
             UpdateAvailableBanner(
@@ -43,6 +46,13 @@ fun UpdateBanner(
             ReadyToInstallBanner(
                 onInstall = { onInstallUpdate(updateState.downloadPath) }
             )
+        }
+        is UpdateState.InstallOnNextRestart -> {
+            Surface(modifier = Modifier.fillMaxWidth(), color = BannerBackground) {
+                Text("Update will install when you quit BossTerm. Open it again manually.",
+                    color = BossUiTheme.current.chalk, fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+            }
         }
         is UpdateState.RestartRequired -> {
             RestartRequiredBanner()

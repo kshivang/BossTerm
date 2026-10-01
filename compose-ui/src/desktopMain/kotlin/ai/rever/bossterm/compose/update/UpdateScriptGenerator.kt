@@ -11,7 +11,7 @@ import java.nio.file.attribute.PosixFilePermission
  * These scripts run AFTER the main app quits and handle:
  * - Waiting for app to fully terminate
  * - Performing the actual installation
- * - Launching the updated app
+ * - Launching the updated app only for an explicitly requested immediate installation
  * - Cleaning up the script itself
  */
 object UpdateScriptGenerator {
@@ -62,7 +62,8 @@ object UpdateScriptGenerator {
     fun generateMacOSUpdateScript(
         dmgPath: String,
         targetAppPath: String,
-        appPid: Long
+        appPid: Long,
+        restartAutomatically: Boolean = true
     ): File {
         validatePath(dmgPath, "DMG path")
         validatePath(targetAppPath, "Target app path")
@@ -77,6 +78,19 @@ object UpdateScriptGenerator {
 
         val scriptFile = File(tempDir, "update_bossterm_${System.currentTimeMillis()}.sh")
 
+        val launchApp = if (restartAutomatically) """
+            # A successful `open` only means LaunchServices accepted the request;
+            # it does not verify that BossTerm stayed running after launch.
+            echo "Launching new BossTerm..."
+            open $escapedTargetAppPath
+            if [ ${'$'}? -ne 0 ]; then
+                echo "First relaunch attempt failed - retrying in 2s..."
+                sleep 2
+                open $escapedTargetAppPath || echo "Relaunch failed - please start BossTerm manually"
+            fi
+
+        """ else """            echo "Update installed. Open BossTerm again manually.""""
+
         val script = """
             #!/bin/bash
 
@@ -86,11 +100,11 @@ object UpdateScriptGenerator {
             echo "Waiting for BossTerm to quit (PID: $appPid)..."
 
             WAIT_COUNT=0
-            MAX_WAIT=30
+            MAX_WAIT=${if (restartAutomatically) 30 else 0}
             while kill -0 $appPid 2>/dev/null; do
                 sleep 1
                 WAIT_COUNT=${'$'}((WAIT_COUNT + 1))
-                if [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
+                if [ ${'$'}MAX_WAIT -gt 0 ] && [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
                     echo "Timeout waiting for app to quit"
                     exit 1
                 fi
@@ -103,14 +117,14 @@ object UpdateScriptGenerator {
             hdiutil attach $escapedDmgPath -nobrowse -quiet
             if [ ${'$'}? -ne 0 ]; then
                 echo "Failed to mount DMG"
-                open $escapedDmgPath
+                ${if (restartAutomatically) "open $escapedDmgPath" else "echo \"Please install the downloaded DMG manually\""}
                 exit 1
             fi
 
             VOLUME=${'$'}(ls -d /Volumes/BossTerm* 2>/dev/null | head -n 1)
             if [ -z "${'$'}VOLUME" ]; then
                 echo "Could not find mounted BossTerm volume"
-                open $escapedDmgPath
+                ${if (restartAutomatically) "open $escapedDmgPath" else "echo \"Please install the downloaded DMG manually\""}
                 exit 1
             fi
 
@@ -120,7 +134,7 @@ object UpdateScriptGenerator {
             if [ -z "${'$'}APP_BUNDLE" ]; then
                 echo "Could not find BossTerm.app in volume"
                 hdiutil detach "${'$'}VOLUME" -quiet
-                open $escapedDmgPath
+                ${if (restartAutomatically) "open $escapedDmgPath" else "echo \"Please install the downloaded DMG manually\""}
                 exit 1
             fi
 
@@ -155,16 +169,7 @@ object UpdateScriptGenerator {
 
             hdiutil detach "${'$'}VOLUME" -quiet
 
-            # A successful `open` only means LaunchServices accepted the request;
-            # it does not verify that BossTerm stayed running after launch.
-            echo "Launching new BossTerm..."
-            open $escapedTargetAppPath
-            if [ ${'$'}? -ne 0 ]; then
-                echo "First relaunch attempt failed - retrying in 2s..."
-                sleep 2
-                open $escapedTargetAppPath || echo "Relaunch failed - please start BossTerm manually"
-            fi
-
+${launchApp}
             sleep 2
             rm -f "${'$'}0"
             exit 0
@@ -182,7 +187,8 @@ object UpdateScriptGenerator {
      */
     fun generateWindowsUpdateScript(
         msiPath: String,
-        appPid: Long
+        appPid: Long,
+        restartAutomatically: Boolean = true
     ): File {
         validatePath(msiPath, "MSI path")
         val escapedMsiPath = escapeWindowsArg(msiPath)
@@ -216,7 +222,7 @@ object UpdateScriptGenerator {
 
             if %ERRORLEVEL% NEQ 0 (
                 echo Installation failed. Opening installer manually...
-                start "" $escapedMsiPath
+                ${if (restartAutomatically) "start \"\" $escapedMsiPath" else "echo Please install the downloaded MSI manually."}
             ) else (
                 echo Installation successful!
             )
@@ -236,7 +242,8 @@ object UpdateScriptGenerator {
      */
     fun generateLinuxDebUpdateScript(
         debPath: String,
-        appPid: Long
+        appPid: Long,
+        restartAutomatically: Boolean = true
     ): File {
         validatePath(debPath, "Deb path")
         val escapedDebPath = escapeShellArg(debPath)
@@ -247,6 +254,19 @@ object UpdateScriptGenerator {
         tempDir.mkdirs()
 
         val scriptFile = File(tempDir, "update_bossterm_${System.currentTimeMillis()}.sh")
+
+        val launchApp = if (restartAutomatically) """
+                echo "[5/5] Launching BossTerm..."
+                if [ -x /opt/bossterm/bin/BossTerm ]; then
+                    nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
+                    echo "✅ Launched from /opt/bossterm/bin/BossTerm"
+                elif [ -x /usr/bin/bossterm ]; then
+                    nohup /usr/bin/bossterm > /dev/null 2>&1 &
+                    echo "✅ Launched from /usr/bin/bossterm"
+                else
+                    echo "⚠️ WARNING: Could not find BossTerm executable"
+                fi
+        """ else """                echo "Update installed. Open BossTerm again manually.""""
 
         val script = """
             #!/bin/bash
@@ -269,11 +289,11 @@ object UpdateScriptGenerator {
 
             echo "[1/5] Waiting for BossTerm to quit (PID: $appPid)..."
             WAIT_COUNT=0
-            MAX_WAIT=30
+            MAX_WAIT=${if (restartAutomatically) 30 else 0}
             while kill -0 $appPid 2>/dev/null; do
                 sleep 1
                 WAIT_COUNT=${'$'}((WAIT_COUNT + 1))
-                if [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
+                if [ ${'$'}MAX_WAIT -gt 0 ] && [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
                     echo "❌ ERROR: Timeout waiting for app to quit after ${'$'}MAX_WAIT seconds"
                     exit 1
                 fi
@@ -377,16 +397,7 @@ ASKPASS_EOF
                 fi
 
                 echo ""
-                echo "[5/5] Launching BossTerm..."
-                if [ -x /opt/bossterm/bin/BossTerm ]; then
-                    nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
-                    echo "✅ Launched from /opt/bossterm/bin/BossTerm"
-                elif [ -x /usr/bin/bossterm ]; then
-                    nohup /usr/bin/bossterm > /dev/null 2>&1 &
-                    echo "✅ Launched from /usr/bin/bossterm"
-                else
-                    echo "⚠️ WARNING: Could not find BossTerm executable"
-                fi
+${launchApp}
 
                 sleep 2
                 echo ""
@@ -414,7 +425,8 @@ ASKPASS_EOF
      */
     fun generateLinuxRpmUpdateScript(
         rpmPath: String,
-        appPid: Long
+        appPid: Long,
+        restartAutomatically: Boolean = true
     ): File {
         validatePath(rpmPath, "RPM path")
         val escapedRpmPath = escapeShellArg(rpmPath)
@@ -425,6 +437,19 @@ ASKPASS_EOF
         tempDir.mkdirs()
 
         val scriptFile = File(tempDir, "update_bossterm_${System.currentTimeMillis()}.sh")
+
+        val launchApp = if (restartAutomatically) """
+                echo "[5/5] Launching BossTerm..."
+                if [ -x /opt/bossterm/bin/BossTerm ]; then
+                    nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
+                    echo "✅ Launched from /opt/bossterm/bin/BossTerm"
+                elif [ -x /usr/bin/bossterm ]; then
+                    nohup /usr/bin/bossterm > /dev/null 2>&1 &
+                    echo "✅ Launched from /usr/bin/bossterm"
+                else
+                    echo "⚠️ WARNING: Could not find BossTerm executable"
+                fi
+        """ else """                echo "Update installed. Open BossTerm again manually.""""
 
         val script = """
             #!/bin/bash
@@ -447,11 +472,11 @@ ASKPASS_EOF
 
             echo "[1/5] Waiting for BossTerm to quit (PID: $appPid)..."
             WAIT_COUNT=0
-            MAX_WAIT=30
+            MAX_WAIT=${if (restartAutomatically) 30 else 0}
             while kill -0 $appPid 2>/dev/null; do
                 sleep 1
                 WAIT_COUNT=${'$'}((WAIT_COUNT + 1))
-                if [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
+                if [ ${'$'}MAX_WAIT -gt 0 ] && [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
                     echo "❌ ERROR: Timeout waiting for app to quit after ${'$'}MAX_WAIT seconds"
                     exit 1
                 fi
@@ -546,16 +571,7 @@ ASKPASS_EOF
                 fi
 
                 echo ""
-                echo "[5/5] Launching BossTerm..."
-                if [ -x /opt/bossterm/bin/BossTerm ]; then
-                    nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
-                    echo "✅ Launched from /opt/bossterm/bin/BossTerm"
-                elif [ -x /usr/bin/bossterm ]; then
-                    nohup /usr/bin/bossterm > /dev/null 2>&1 &
-                    echo "✅ Launched from /usr/bin/bossterm"
-                else
-                    echo "⚠️ WARNING: Could not find BossTerm executable"
-                fi
+${launchApp}
 
                 sleep 2
                 echo ""
@@ -576,6 +592,32 @@ ASKPASS_EOF
 
         println("Generated Linux RPM update script: ${scriptFile.absolutePath}")
         return scriptFile
+    }
+
+    /** Replace a JAR only after the current process exits, without launching it. */
+    fun generateJarUpdateScript(jarPath: String, targetJarPath: String, appPid: Long): File {
+        validatePath(jarPath, "Downloaded JAR path")
+        validatePath(targetJarPath, "Target JAR path")
+        val source = escapeShellArg(jarPath)
+        val target = escapeShellArg(targetJarPath)
+        val backup = escapeShellArg("$targetJarPath.backup")
+        val replacement = escapeShellArg("$targetJarPath.update")
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "bossterm-updater").also { it.mkdirs() }
+        val script = File.createTempFile("update_bossterm_", ".sh", tempDir)
+        script.writeText("""
+            #!/bin/bash
+            set -e
+            while kill -0 $appPid 2>/dev/null; do
+                sleep 1
+            done
+            cp $target $backup
+            cp $source $replacement
+            mv $replacement $target
+            echo "Update installed. Open BossTerm again manually."
+            rm -f "${'$'}0"
+        """.trimIndent())
+        makeExecutable(script)
+        return script
     }
 
     /**

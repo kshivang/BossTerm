@@ -55,6 +55,7 @@ private fun stateName(state: UpdateState): String =
         is UpdateState.UpdateAvailable -> "available"
         is UpdateState.Downloading -> "downloading"
         is UpdateState.ReadyToInstall -> "ready_to_install"
+        is UpdateState.InstallOnNextRestart -> "install_on_next_restart"
         UpdateState.Installing -> "installing"
         UpdateState.RestartRequired -> "restart_required"
         is UpdateState.Error -> "error"

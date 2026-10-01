@@ -336,8 +336,8 @@ class DesktopUpdateService {
     /**
      * Install an update.
      */
-    suspend fun installUpdate(downloadPath: String): Boolean {
-        val result = UpdateInstaller.installUpdate(downloadPath)
+    suspend fun installUpdate(downloadPath: String, restartAutomatically: Boolean = true): Boolean {
+        val result = UpdateInstaller.installUpdate(downloadPath, restartAutomatically)
 
         return when (result) {
             is InstallResult.Success -> {
@@ -346,10 +346,12 @@ class DesktopUpdateService {
             }
             is InstallResult.RequiresRestart -> {
                 println("🔄 ${result.message}")
-                @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-                GlobalScope.launch {
-                    delay(1000)
-                    quitForUpdate()
+                if (restartAutomatically) {
+                    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+                    GlobalScope.launch {
+                        delay(1000)
+                        quitForUpdate()
+                    }
                 }
                 true
             }

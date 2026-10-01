@@ -1,7 +1,7 @@
 plugins {
     // Keep Kotlin and its compiler plugins on the same release.
     id("org.jetbrains.kotlin.multiplatform") version "2.4.20" apply false
-    id("org.jetbrains.compose") version "1.12.0" apply false
+    id("org.jetbrains.compose") version "1.12.1" apply false
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.20" apply false
     id("org.jetbrains.kotlin.plugin.serialization") version "2.4.20" apply false
     id("com.android.kotlin.multiplatform.library") version "9.4.1" apply false
@@ -13,7 +13,9 @@ plugins {
 // - Otherwise: MAJOR.MINOR from VERSION file + PATCH from BUILD_NUMBER
 // - Local builds get "-SNAPSHOT" suffix
 val isReleaseBuild = System.getenv("RELEASE_BUILD") != null || System.getenv("INTELLIJ_DEPENDENCIES_BOT") != null
-val projectVersion = System.getenv("APP_VERSION")?.let { appVersion ->
+val testAutoUpdate = providers.gradleProperty("testAutoUpdate").map { it.toBooleanStrict() }.orElse(false).get()
+require(!testAutoUpdate || !isReleaseBuild) { "testAutoUpdate is only supported for local debug builds" }
+val projectVersion = if (testAutoUpdate) "1.0.0-SNAPSHOT" else System.getenv("APP_VERSION")?.let { appVersion ->
     // Use pre-computed version from CI (ensures consistency with artifact naming)
     appVersion + if (!isReleaseBuild) "-SNAPSHOT" else ""
 } ?: run {

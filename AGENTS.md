@@ -16,6 +16,24 @@
 pkill -9 -f "gradle"                             # Kill stuck gradle
 ```
 
+## Testing Automatic Updates
+
+Build an isolated older debug app for a real update test:
+
+```bash
+./gradlew :bossterm-app:createDistributable -PtestAutoUpdate=true
+```
+
+This flag uses version `1.0.0-SNAPSHOT`, enables automatic updates by default, keeps
+preferences under `.gradleBuild/bossterm-app/auto-update-test-settings`, and skips
+macOS distribution signing. Launch the generated app from
+`.gradleBuild/bossterm-app/compose-auto-update-test/binaries/main/app/BossTerm.app`. It downloads a
+newer release, installs after you manually quit, and stays closed until you open it
+again. Previously saved preferences in the test profile remain authoritative.
+Do not use `:bossterm-app:run` for installation testing: the flag prevents the
+updater from falling back to the release app in `/Applications` outside a bundle.
+Normal debug builds default automatic updates off; release builds default them on.
+
 ## JVM Requirements (Java 16+)
 
 For full functionality on Java 16+, add these JVM arguments:

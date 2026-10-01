@@ -37,6 +37,8 @@ import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsWindow
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import ai.rever.bossterm.compose.update.UpdateCompletedNotification
+import ai.rever.bossterm.compose.update.Version
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.NativeWindowGlass
@@ -484,6 +486,7 @@ fun main(args: Array<String>) {
                     // Update manager state
                     val updateManager = remember { UpdateManager.instance }
                     val updateState by updateManager.updateState.collectAsState()
+                    var completedUpdateVersion by remember { mutableStateOf<Version?>(null) }
                     val scope = rememberCoroutineScope()
 
                     // Hoist TabbedTerminalState so external integrations (MCP) can observe it.
@@ -545,19 +548,10 @@ fun main(args: Array<String>) {
                         }
                     }
 
-                    // Check for updates on first window launch, then subscribe to
-                    // Supabase Realtime so later releases push an update check
-                    // instantly (no polling). The startup check is the catch-up for
-                    // releases published while the app was closed.
-                    var hasCheckedForUpdates by remember { mutableStateOf(false) }
+                    // Initialize the app-wide updater once, including persisted preferences.
                     LaunchedEffect(Unit) {
-                        if (!hasCheckedForUpdates) {
-                            hasCheckedForUpdates = true
-                            if (updateManager.shouldCheckForUpdates()) {
-                                updateManager.checkForUpdates()
-                            }
-                            updateManager.startRealtimePush()
-                        }
+                        updateManager.initialize()
+                        completedUpdateVersion = updateManager.takeCompletedUpdateNotification()
                     }
 
                     // Request notification permission on first launch
@@ -1113,6 +1107,14 @@ fun main(args: Array<String>) {
                                         modifier = Modifier.fillMaxSize().weight(1f)
                                     )
                                 }
+                            }
+
+                            completedUpdateVersion?.let { version ->
+                                UpdateCompletedNotification(
+                                    version = version,
+                                    onDismiss = { completedUpdateVersion = null },
+                                    modifier = Modifier.align(Alignment.BottomCenter)
+                                )
                             }
 
                             // Hotkey hint overlay (top-right corner, like iTerm2)

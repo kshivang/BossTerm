@@ -72,6 +72,8 @@ object DeepLinkHandler {
         if (!uri.startsWith("bossterm://")) return
         if (parseAuthDeepLink(uri) != null) {
             BossAccountManager.handleAuthDeepLink(uri)
+        } else if (parseOAuthCallback(uri) != null) {
+            BossAccountManager.handleOAuthCallback(uri)
         } else {
             log.info("Unrouted deep link (host={})", runCatching { java.net.URI(uri).host }.getOrNull())
             _pendingUri.value = uri

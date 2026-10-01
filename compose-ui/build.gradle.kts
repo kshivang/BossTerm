@@ -87,7 +87,7 @@ kotlin {
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
                 // Logging
-                implementation("org.slf4j:slf4j-api:2.0.19")
+                implementation("org.slf4j:slf4j-api:2.0.20")
             }
         }
 

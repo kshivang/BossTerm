@@ -83,7 +83,7 @@ internal object SettingsSearchIndex {
         group(SettingsCategory.SESSION_SHARING, "Session Sharing", "Enable Session Sharing|Port|Bind scope|Custom bind host"),
         group(SettingsCategory.SESSION_SHARING, "Remote Access (advanced)", "Remote access|Public URL override|Require device approval"),
         group(SettingsCategory.ABOUT, "Application", ""),
-        group(SettingsCategory.ABOUT, "Version Management", ""),
+        group(SettingsCategory.ABOUT, "Version Management", "Automatic Updates|Show pre-release versions|Select Version"),
         group(SettingsCategory.ABOUT, "System", ""),
         group(SettingsCategory.ABOUT, "GPU Rendering", ""),
         group(SettingsCategory.ABOUT, "Links", ""),

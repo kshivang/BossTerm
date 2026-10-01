@@ -37,6 +37,8 @@ import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsWindow
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import ai.rever.bossterm.compose.update.UpdateCompletedNotification
+import ai.rever.bossterm.compose.update.Version
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.NativeWindowGlass
@@ -484,6 +486,7 @@ fun main(args: Array<String>) {
                     // Update manager state
                     val updateManager = remember { UpdateManager.instance }
                     val updateState by updateManager.updateState.collectAsState()
+                    var completedUpdateVersion by remember { mutableStateOf<Version?>(null) }
                     val scope = rememberCoroutineScope()
 
                     // Hoist TabbedTerminalState so external integrations (MCP) can observe it.
@@ -548,6 +551,7 @@ fun main(args: Array<String>) {
                     // Initialize the app-wide updater once, including persisted preferences.
                     LaunchedEffect(Unit) {
                         updateManager.initialize()
+                        completedUpdateVersion = updateManager.takeCompletedUpdateNotification()
                     }
 
                     // Request notification permission on first launch
@@ -1103,6 +1107,14 @@ fun main(args: Array<String>) {
                                         modifier = Modifier.fillMaxSize().weight(1f)
                                     )
                                 }
+                            }
+
+                            completedUpdateVersion?.let { version ->
+                                UpdateCompletedNotification(
+                                    version = version,
+                                    onDismiss = { completedUpdateVersion = null },
+                                    modifier = Modifier.align(Alignment.BottomCenter)
+                                )
                             }
 
                             // Hotkey hint overlay (top-right corner, like iTerm2)

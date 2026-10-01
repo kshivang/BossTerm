@@ -17,6 +17,27 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/** A brief success notice after launching an upgraded version, independent of update banners. */
+@Composable
+fun UpdateCompletedNotification(version: Version, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    LaunchedEffect(version) {
+        kotlinx.coroutines.delay(8_000)
+        onDismiss()
+    }
+    Snackbar(
+        modifier = modifier.widthIn(max = 480.dp).padding(16.dp),
+        backgroundColor = BossUiTheme.current.panel,
+        contentColor = BossUiTheme.current.chalk,
+        action = {
+            TextButton(onClick = onDismiss) {
+                Text("Dismiss", color = BossUiTheme.current.signalText)
+            }
+        }
+    ) {
+        Text("BossTerm updated to v$version", fontSize = 13.sp)
+    }
+}
+
 /**
  * Update notification banner that appears at the top of the application.
  */

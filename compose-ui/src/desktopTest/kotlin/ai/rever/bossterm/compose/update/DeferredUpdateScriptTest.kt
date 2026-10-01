@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.update
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
@@ -18,9 +19,11 @@ class DeferredUpdateScriptTest {
             assertFalse(content.contains("open '"), "Must not open the app or the installer")
             assertFalse(content.contains("nohup /"), "Must not relaunch BossTerm")
             assertTrue(content.contains("Open BossTerm again manually."))
-            val syntax = ProcessBuilder("bash", "-n", script.absolutePath).redirectErrorStream(true).start()
-            val output = syntax.inputStream.bufferedReader().readText()
-            assertEquals(0, syntax.waitFor(), output)
+            if (!ShellCustomizationUtils.isWindows()) {
+                val syntax = ProcessBuilder("bash", "-n", script.absolutePath).redirectErrorStream(true).start()
+                val output = syntax.inputStream.bufferedReader().readText()
+                assertEquals(0, syntax.waitFor(), output)
+            }
         } finally {
             script.delete()
         }
@@ -53,6 +56,7 @@ class DeferredUpdateScriptTest {
 
     @Test
     fun `jar helper leaves running app untouched and replaces it after manual exit`() {
+        if (ShellCustomizationUtils.isWindows()) return // The JAR helper targets Unix launchers.
         val directory = Files.createTempDirectory("bossterm-deferred-test").toFile()
         val current = File(directory, "current.jar").apply { writeText("old version") }
         val downloaded = File(directory, "update.jar").apply { writeText("new version") }

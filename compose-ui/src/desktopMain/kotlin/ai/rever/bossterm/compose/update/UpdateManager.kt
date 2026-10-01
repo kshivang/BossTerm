@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 
 /**
  * Update state sealed class representing the current update status.
@@ -47,13 +48,26 @@ class UpdateManager internal constructor(
     private var automaticUpdateJob: Job? = null
     private val initializationMutex = Mutex()
     private var initialized = false
+    private val completedUpdate = MutableStateFlow<Version?>(null)
+
+    /** Only one window claims the startup notification for this installation. */
+    fun takeCompletedUpdateNotification(): Version? = completedUpdate.getAndUpdate { null }
 
     /** Load preferences once across all standalone windows before checking. */
     suspend fun initialize() = initializationMutex.withLock {
         if (initialized) return@withLock
         UpdateSettingsManager.loadSettings()
+        completedUpdate.value = withContext(Dispatchers.IO) {
+            try {
+                UpdateLaunchTracker.forCurrentInstallation().recordLaunch(getCurrentVersion())
+            } catch (e: Exception) {
+                println("Could not record update launch version: ${e.message}")
+                null
+            }
+        }
         startAutomaticUpdates()
-        if (shouldCheckForUpdates()) checkForUpdates()
+        // Network checks must not delay the notification for an already completed update.
+        if (shouldCheckForUpdates()) scope.launch { checkForUpdates() }
         startRealtimePush()
         initialized = true
     }

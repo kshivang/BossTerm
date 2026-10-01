@@ -27,7 +27,7 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("org.slf4j:slf4j-api:2.0.19")
+                implementation("org.slf4j:slf4j-api:2.0.20")
                 implementation("org.jetbrains:annotations:26.1.0")
             }
         }
@@ -44,7 +44,7 @@ kotlin {
         val jvmTest by getting {
             dependencies {
                 implementation("junit:junit:4.13.2")
-                runtimeOnly("org.slf4j:slf4j-simple:2.0.19")
+                runtimeOnly("org.slf4j:slf4j-simple:2.0.20")
             }
         }
     }

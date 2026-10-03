@@ -11,12 +11,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * Window-owned controls for embedders, independent of any terminal's composition lifetime.
  * [activeTabId] resolves the window's last active terminal at click time; null keeps sharing
  * settings available without creating a terminal or sharing another window implicitly.
- * All three buttons remain visible. A disabled service is enabled only by an explicit action;
+ * A call without a configured key is exported as call_setup for the host's More menu.
+ * A disabled service is enabled only by an explicit action;
  * terminal floating-indicator preferences do not hide host-owned navigation.
  */
 @Composable
@@ -33,7 +37,21 @@ fun HostedTerminalControls(
     val remoteUrl by SessionShareManager.remoteUrlFlow.collectAsState()
     val remoteCalls by RemoteVoiceCalls.active.collectAsState()
     val call by HostVoiceCall.state.collectAsState()
-    val keyPresent by VoiceAgentStorage.keyPresentFlow.collectAsState()
+    val storedKeyPresent by VoiceAgentStorage.keyPresentFlow.collectAsState()
+    val keyPresent by produceState(false, storedKeyPresent) {
+        while (true) {
+            value = withContext(Dispatchers.IO) { !VoiceKeySource.resolve().isNullOrBlank() }
+            delay(1_000)
+        }
+    }
+    var hostedActions by remember { mutableStateOf(emptyList<HostedStatusAction>()) }
+    val publishActions by rememberUpdatedState(onActions)
+    LaunchedEffect(hostedActions, keyPresent) {
+        publishActions(hostedActions.map { action ->
+            if (action.id == "call" && !keyPresent) action.copy(id = "call_setup") else action
+        })
+    }
+    DisposableEffect(Unit) { onDispose { publishActions(emptyList()) } }
     val segment = call.segmentState(featureEnabled = true, indicatorEnabled = true, keyPresent = keyPresent)
     val scope = rememberCoroutineScope()
     val menu = remember { ContextMenuController() }
@@ -61,7 +79,7 @@ fun HostedTerminalControls(
         }
     }
     Box(Modifier.size(0.dp)) {
-        HostedStatusActions(onActions) {
+        HostedStatusActions({ hostedActions = it }) {
             StatusStrip(
                 showMcp = true, mcpOn = port != null,
                 onMcpClick = {

@@ -86,7 +86,8 @@ List all open terminal tabs across every window registered with the
 
 - Arguments:
   - `include_fields` (optional array) - allow-list over TabInfo fields
-    (`id`, `title`, `cwd`, `pid`, `isActive`). Omit to get every field;
+    (`id`, `title`, `cwd`, `pid`, `isActive`, `machine`, `machineId`,
+    `remote`, `via`, `canControl`, `connected`). Omit to get every field;
     pass e.g. `["id", "isActive"]` for a minimal response when listing
     many tabs.
 - Returns:
@@ -98,7 +99,12 @@ List all open terminal tabs across every window registered with the
         "title": "<string>",
         "cwd": "<string|null>",
         "pid": 12345,
-        "isActive": true
+        "isActive": true,
+        "machine": "local",
+        "machineId": "local",
+        "remote": false,
+        "canControl": true,
+        "connected": true
       }
     ],
     "activeTabId": "<uuid|null>"
@@ -106,6 +112,43 @@ List all open terminal tabs across every window registered with the
   ```
 - `activeTabId` is the active tab of the **primary** (first-registered)
   window. `isActive` on each `TabInfo` is per-window.
+
+
+### Tabs on other machines
+
+A window that has joined another BossTerm share (Add remote) holds that machine's tabs as
+mirrors, and every tool sees them. Each `TabInfo` therefore says which machine runs the tab:
+
+- `machine` - `"local"` for this machine, else the sharer's session name (their username by
+  default); `machineId` - a stable key (the share's origin hash), the same one `list_machines`
+  uses; `remote` - true for a mirror; `via` - for a chained share, the machine it is reached
+  through; `canControl` / `connected` - whether writes can reach it right now. `pid` is omitted
+  for a mirror, which has no local process.
+- Writes (`send_input`, `send_signal`, `run_command`, `close_panel`) go to the machine that runs
+  the tab, and are refused with an error naming it when you are view-only there or it is
+  disconnected - nothing is sent.
+- Panes and images are made by THIS machine, so `run_in_panel` splits, `run_command` without a
+  `pane_id`, and `show_image` (except `panel: "new_tab"`) are refused on a remote tab rather than
+  running locally while appearing to run remotely. Use an existing remote pane (`list_panes`)
+  with `send_input`, or `run_command` with `pane_id`.
+- `close_panel` asks the owning machine to close the tab or pane, and refuses that machine's last
+  shared tab, since closing it there may quit BossTerm.
+
+### `list_machines`
+
+The machines whose terminals you can reach, with the tab ids each owns. Always includes this
+machine first.
+
+- Arguments: none.
+- Returns:
+  ```json
+  {
+    "machines": [
+      { "id": "local", "name": "local", "remote": false, "canControl": true, "connected": true, "tabIds": ["<uuid>"] },
+      { "id": "<origin hash>", "name": "alice", "remote": true, "canControl": false, "connected": true, "tabIds": ["<uuid>", "<uuid>"] }
+    ]
+  }
+  ```
 
 ### `get_active_tab`
 
@@ -313,6 +356,7 @@ are omitted when `allowWriteTools = false`).
 {
   "tools": [
     { "name": "list_tabs",           "enabled": true },
+    { "name": "list_machines",       "enabled": true },
     { "name": "get_active_tab",      "enabled": true },
     { "name": "read_scrollback",     "enabled": true },
     { "name": "search_output",       "enabled": true },

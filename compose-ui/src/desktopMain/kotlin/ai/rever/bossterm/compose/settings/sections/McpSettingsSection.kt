@@ -316,6 +316,7 @@ private fun toolDescription(name: String): String = when (name) {
     "app_update_download" -> "Download the available application update."
     "app_update_install" -> "Install the staged version; the app may quit and relaunch."
     "list_tabs" -> "Enumerate every open terminal tab across all windows."
+    "list_machines" -> "List this machine and every joined share, with their tab ids."
     "get_active_tab" -> "Return the active tab of the primary window."
     "read_scrollback" -> "Read the last N lines from a tab/pane's buffer."
     "search_output" -> "Regex-search a tab/pane's scrollback for matches."

@@ -122,6 +122,7 @@ class BossTermMcpServer(
     // without duplicating the list.
     private val readToolRegistrations: Map<String, (Server) -> Unit> = mapOf(
         "list_tabs" to ::registerListTabs,
+        "list_machines" to ::registerListMachines,
         "get_active_tab" to ::registerGetActiveTab,
         "list_panes" to ::registerListPanes,
         "read_scrollback" to ::registerReadScrollback,
@@ -342,15 +343,22 @@ class BossTermMcpServer(
                 "list_tabs",
                 "List all open terminal tabs across all windows. Each tab includes " +
                         "id, title, working directory, pid, and isActive (true if the tab is the " +
-                        "currently selected tab of its window)."
+                        "currently selected tab of its window). Tabs can belong to OTHER machines: " +
+                        "a window that joined another BossTerm share shows that machine's tabs here " +
+                        "too. Every tab says which machine runs it - `machine` (a name, \"local\" for " +
+                        "this one), `machineId`, `remote`, `via` for a share reached through another " +
+                        "machine - and whether you can write to it (`canControl`, `connected`). Check " +
+                        "`machine` before sending input or running commands; list_machines gives the " +
+                        "same information grouped per machine."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("include_fields") {
                         put("type", "array")
                         put("description", "Optional allow-list over TabInfo fields: " +
-                                "id, title, cwd, pid, isActive. Omit to get every field. " +
-                                "Useful when you only need a subset (e.g. `[\"id\",\"isActive\"]`).")
+                                "id, title, cwd, pid, isActive, machine, machineId, remote, via, " +
+                                "canControl, connected. Omit to get every field. " +
+                                "Useful when you only need a subset (e.g. `[\"id\",\"machine\"]`).")
                     }
                 },
                 required = emptyList()
@@ -375,6 +383,31 @@ class BossTermMcpServer(
         }
     }
 
+    // -----------------------------------------------------------------
+    // Tool: list_machines
+    // -----------------------------------------------------------------
+
+    private fun registerListMachines(server: Server) {
+        server.addTool(
+            name = toolName("list_machines"),
+            description = describe(
+                "list_machines",
+                "List the machines whose terminals you can reach, with the tab ids each one owns. " +
+                        "Always includes this machine (id \"local\"); every BossTerm share this app " +
+                        "has joined adds the sharing machine, named by its owner's session name. " +
+                        "`canControl` false means view-only there (read tools work, writes are " +
+                        "refused); `connected` false means it is unreachable right now; `via` names " +
+                        "the machine a chained share is reached through. Use it to plan work per " +
+                        "machine, then pass a tab id from `tabIds` to the other tools."
+            ),
+            inputSchema = ToolSchema(properties = buildJsonObject { }, required = emptyList())
+        ) { _ ->
+            val pairs = registry.allTabs().map { tab -> tab.id to machineOf(registry.findState(tab.id), tab) }
+            val payload = ListMachinesResult(McpMachines.group(pairs))
+            successJson(json.encodeToString(ListMachinesResult.serializer(), payload))
+        }
+    }
+
     /** Projects a [TabInfo] onto the given field allow-list. Empty set = no fields. */
     private fun tabInfoToJson(info: TabInfo, fields: Set<String>): JsonObject = buildJsonObject {
         if ("id" in fields) put("id", info.id)
@@ -382,6 +415,12 @@ class BossTermMcpServer(
         if ("cwd" in fields && info.cwd != null) put("cwd", info.cwd)
         if ("pid" in fields && info.pid != null) put("pid", info.pid)
         if ("isActive" in fields) put("isActive", info.isActive)
+        if ("machine" in fields) put("machine", info.machine)
+        if ("machineId" in fields) put("machineId", info.machineId)
+        if ("remote" in fields) put("remote", info.remote)
+        if ("via" in fields && info.via != null) put("via", info.via)
+        if ("canControl" in fields) put("canControl", info.canControl)
+        if ("connected" in fields) put("connected", info.connected)
     }
 
     // -----------------------------------------------------------------
@@ -396,14 +435,16 @@ class BossTermMcpServer(
                 "Return the calling client's own tab (the tab whose process tree the MCP " +
                         "client runs in) when it can be resolved, otherwise the active tab of " +
                         "the primary window; null if no tab is available. The `isActive` field " +
-                        "reports whether that tab is the window's currently-focused one."
+                        "reports whether that tab is the window's currently-focused one, and " +
+                        "`machine` / `remote` say which machine runs it (see list_tabs)."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("include_fields") {
                         put("type", "array")
                         put("description", "Optional allow-list over TabInfo fields: " +
-                                "id, title, cwd, pid, isActive. Omit to get every field.")
+                                "id, title, cwd, pid, isActive, machine, machineId, remote, via, " +
+                                "canControl, connected. Omit to get every field.")
                     }
                 },
                 required = emptyList()
@@ -423,7 +464,7 @@ class BossTermMcpServer(
             val callerTabId = registry.lastResolvedClientTabId()
                 ?.takeIf { primary?.getTabById(it) != null }
             val targetTab = callerTabId?.let { primary?.getTabById(it) } ?: primary?.activeTab
-            val info = targetTab?.toTabInfo(activeId)
+            val info = targetTab?.toTabInfo(activeId, primary)
             // The literal JSON `null` is valid output — clients calling
             // JSON.parse get a real null. Cheaper than wrapping in `{tab: null}`.
             val text = when {
@@ -849,7 +890,9 @@ class BossTermMcpServer(
                         "when you want that newline — a multi-line prompt to an AI CLI, for " +
                         "instance — which is why this tool does not rewrite it for you. " +
                         "When `pane_id` is supplied (e.g. the value returned by run_in_panel), " +
-                        "writes go to that specific split; otherwise to the tab's primary session."
+                        "writes go to that specific split; otherwise to the tab's primary session. " +
+                        "Tabs can run on other machines (list_tabs `machine` / `remote`): input goes to the machine " +
+                        "that runs the tab, and is refused when you are view-only there or it is disconnected."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -880,6 +923,8 @@ class BossTermMcpServer(
 
             val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
+            McpMachines.writeRefusal(machineOfTab(state, tabId), "send_input")
+                ?.let { return@addTool errorResult(it) }
             val session = state.findSession(tabId, paneId)
                 ?: return@addTool errorResult(
                     if (paneId != null) "Unknown pane_id '$paneId' in tab '$tabId'"
@@ -902,7 +947,9 @@ class BossTermMcpServer(
                 "Send a control signal to a tab's shell. Allowed signals: " +
                         "'ctrl_c' (interrupt), 'ctrl_d' (EOF), 'ctrl_z' (suspend). When `pane_id` " +
                         "is supplied, the signal targets that specific split; otherwise the tab's " +
-                        "primary session."
+                        "primary session. " +
+                        "Tabs can run on other machines (list_tabs `machine` / `remote`): input goes to the machine " +
+                        "that runs the tab, and is refused when you are view-only there or it is disconnected."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -932,6 +979,8 @@ class BossTermMcpServer(
 
             val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
+            McpMachines.writeRefusal(machineOfTab(state, tabId), "send_signal")
+                ?.let { return@addTool errorResult(it) }
             val session = state.findSession(tabId, paneId)
                 ?: return@addTool errorResult(
                     if (paneId != null) "Unknown pane_id '$paneId' in tab '$tabId'"
@@ -945,6 +994,13 @@ class BossTermMcpServer(
                 else -> return@addTool errorResult(
                     "Unknown signal: '$signal'. Expected one of: ctrl_c, ctrl_d, ctrl_z."
                 )
+            }
+            // A mirror pane has no local PTY: writeRawBytes would queue the byte to nothing and
+            // the remote process would never see Ctrl+C. Its input path is writeUserInput, which
+            // forwards keystrokes to the machine that owns the shell.
+            if (session.isRemote) {
+                session.writeUserInput(String(bytes, Charsets.ISO_8859_1))
+                return@addTool successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
             }
             // TerminalSession interface doesn't surface writeRawBytes; cast
             // to the concrete TerminalTab implementation (the only one in
@@ -984,7 +1040,9 @@ class BossTermMcpServer(
                         "leaves the rest of the tab open; without it, closes the tab and every pane " +
                         "in it. This kills whatever is running there and cannot be undone, so check " +
                         "with list_panes / read_scrollback first if something might be mid-task. " +
-                        "Refuses to close a window's last remaining tab, because that quits the app."
+                        "Refuses to close a window's last remaining tab, because that quits the app. On a tab " +
+                        "from another machine (list_tabs `remote`), the close is asked of that machine; it " +
+                        "needs control there and refuses that machine's last shared tab."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -1010,6 +1068,11 @@ class BossTermMcpServer(
             val paneId = args.requireString("pane_id")
             val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
+
+            val machine = machineOfTab(state, tabId)
+            if (machine.remote) {
+                return@addTool closeRemote(state, tabId, paneId, machine)
+            }
 
             if (paneId != null) {
                 val split = state.splitStates[tabId]
@@ -1043,6 +1106,47 @@ class BossTermMcpServer(
         }
     }
 
+    /**
+     * `close_panel` on a tab mirrored from another machine. Closing the mirror here would do
+     * nothing useful - the owner's next layout puts it straight back - so the close is asked of
+     * the machine that owns it, which removes the mirror when it complies.
+     */
+    private fun closeRemote(
+        state: TabbedTerminalState,
+        tabId: String,
+        paneId: String?,
+        machine: MachineRef,
+    ): CallToolResult {
+        McpMachines.writeRefusal(machine, "close_panel")?.let { return errorResult(it) }
+        val tab = state.getTabById(tabId) ?: return errorResult("Unknown tab_id: $tabId")
+        val remote = state.remoteSessions.sessionForTab(tab)
+            ?: return errorResult("close_panel: tab '$tabId' lost its remote connection")
+        if (paneId != null) {
+            val split = state.splitStates[tabId]
+            if (split == null || split.isSinglePane) {
+                return errorResult("Tab '$tabId' has no split panes. Omit pane_id to close the whole tab.")
+            }
+            if (split.getAllPanes().none { it.id == paneId }) {
+                return errorResult("Unknown pane_id '$paneId' in tab '$tabId'")
+            }
+            remote.closeFromChip(tabId, paneId)
+            val payload = ClosePanelResult(ok = true, closed = "pane", tabId = tabId, paneId = paneId)
+            return successJson(json.encodeToString(ClosePanelResult.serializer(), payload))
+        }
+        // The same reasoning as lastTabRefusal, on the other machine: its last shared tab may be
+        // its last tab, and closing that quits BossTerm there.
+        val sharedTabs = state.tabs.count { it.isRemote && state.remoteSessions.sessionForTab(it) === remote }
+        if (sharedTabs <= 1) {
+            return errorResult(
+                "close_panel: refusing to close the last tab '${machine.name}' shares with you - on " +
+                    "that machine it may be the last tab, and closing it would quit BossTerm there."
+            )
+        }
+        remote.closeFromChip(tabId, tabId)
+        val payload = ClosePanelResult(ok = true, closed = "tab", tabId = tabId, paneId = null)
+        return successJson(json.encodeToString(ClosePanelResult.serializer(), payload))
+    }
+
     // -----------------------------------------------------------------
     // Tool: run_in_panel
     // -----------------------------------------------------------------
@@ -1064,7 +1168,9 @@ class BossTermMcpServer(
                         "A split mode REUSES the pane this tool already owns in the target tab " +
                         "when there is one, rather than splitting again - so calling this " +
                         "repeatedly gives you one panel with a scrollback, not a tab sliced into " +
-                        "N unreadable strips. Pass force_new to opt out."
+                        "N unreadable strips. Pass force_new to opt out. Panels are always created on THIS " +
+                        "machine: splitting a tab that runs on another machine (list_tabs `remote`) is " +
+                        "refused rather than opening a local shell inside it."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -1151,6 +1257,8 @@ class BossTermMcpServer(
                         ?: registry.lastResolvedClientTabId()
                         ?: state.activeTabId
                         ?: return@addTool errorResult("No active tab to split")
+                    McpMachines.localPaneRefusal(machineOfTab(state, targetTabId), "run_in_panel", "a split pane")
+                        ?.let { return@addTool errorResult(it) }
                     // Resolve effective ratio: per-call override > user setting > 0.3 fallback.
                     val configuredDefault = SettingsManager.instance.settings.value.mcpDefaultSplitRatio
                     val requestedRatio = args.optionalFloat("split_ratio")
@@ -1390,6 +1498,12 @@ class BossTermMcpServer(
                 ?: registry.lastResolvedClientTabId()
                 ?: state.activeTabId
                 ?: return@addTool errorResult("No active tab")
+            // An image is drawn by THIS machine's emulator; in a mirrored tab only this screen would
+            // show it. A new tab is local anyway, so that mode stays available.
+            if (panel != "new_tab") {
+                McpMachines.localPaneRefusal(machineOfTab(state, tabId), "show_image", "the image")
+                    ?.let { return@addTool errorResult(it) }
+            }
 
             // --- 4. Resolve or create the target pane. Unlike run_command, `reuse`
             //        targets the active pane directly (no scratch-pane decay) so the
@@ -1588,7 +1702,10 @@ class BossTermMcpServer(
                         "pass back the `pane_id` from a prior call to keep using the same pane. " +
                         "Requires OSC 133 shell integration on the user's shell. For TUIs " +
                         "(vim, less, htop, git commit without -m), returns `error: \"TUI detected\"`; " +
-                        "switch to send_input / read_scrollback to drive those."
+                        "switch to send_input / read_scrollback to drive those. On a tab from another machine " +
+                        "(list_tabs `remote`), pass `pane_id` of one of its existing panes: the scratch pane " +
+                        "this tool would otherwise create is a local shell, so that is refused, as is any " +
+                        "write when you are view-only there."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -1664,6 +1781,17 @@ class BossTermMcpServer(
                 ?: registry.lastResolvedClientTabId()
                 ?: state.activeTabId
                 ?: return@addTool errorResult("No active tab")
+            // run_command's own pane is a split it creates, and a split is a local shell even inside a
+            // mirrored tab: the command would run here while the agent believed it ran there. On a
+            // remote tab it therefore needs an existing pane, and control of that machine.
+            val targetMachine = machineOfTab(state, tabId)
+            if (targetMachine.remote) {
+                McpMachines.writeRefusal(targetMachine, "run_command")?.let { return@addTool errorResult(it) }
+                if (explicitPaneId == null) {
+                    McpMachines.localPaneRefusal(targetMachine, "run_command", "its scratch pane")
+                        ?.let { return@addTool errorResult(it) }
+                }
+            }
 
             // Resolve target pane in priority order: explicit > cached > newly-created.
             // freshlyCreated controls whether we wait for OSC 133;A before sending.
@@ -2401,17 +2529,33 @@ class BossTermMcpServer(
     private fun McpTerminalRegistry.collectTabInfos(): List<TabInfo> {
         return allTabs().map { tab ->
             val owning = findState(tab.id)
-            tab.toTabInfo(owning?.activeTabId)
+            tab.toTabInfo(owning?.activeTabId, owning)
         }
     }
 
-    private fun TerminalTab.toTabInfo(activeId: String?): TabInfo {
+    /** The machine tab [tabId] of [state] runs on. */
+    private fun machineOfTab(state: TabbedTerminalState, tabId: String): MachineRef =
+        machineOf(state, state.getTabById(tabId))
+
+    /** The machine [tab] runs on; local when its window is unknown (it then cannot be remote here). */
+    private fun machineOf(state: TabbedTerminalState?, tab: TerminalTab?): MachineRef =
+        if (state == null || tab == null) McpMachines.LOCAL else McpMachines.of(state, tab)
+
+    private fun TerminalTab.toTabInfo(activeId: String?, state: TabbedTerminalState?): TabInfo {
+        val machine = machineOf(state, this)
         return TabInfo(
             id = id,
             title = title.value,
             cwd = workingDirectory.value,
-            pid = processHandle.value?.getPid(),
-            isActive = id == activeId
+            // A mirror has no local process; any pid here would be meaningless to the agent.
+            pid = if (machine.remote) null else processHandle.value?.getPid(),
+            isActive = id == activeId,
+            machine = machine.name,
+            machineId = machine.id,
+            remote = machine.remote,
+            via = machine.via,
+            canControl = machine.canControl,
+            connected = machine.connected,
         )
     }
 
@@ -2531,8 +2675,23 @@ class BossTermMcpServer(
         val title: String,
         val cwd: String?,
         val pid: Long?,
-        val isActive: Boolean
+        val isActive: Boolean,
+        /** Name of the machine whose shell this tab runs ("local", or the sharer's name). */
+        val machine: String = McpMachines.LOCAL.name,
+        /** Stable machine key, the same one list_machines reports ("local" for this machine). */
+        val machineId: String = McpMachines.LOCAL_ID,
+        /** True for a tab mirrored from another machine's share. */
+        val remote: Boolean = false,
+        /** For a chained share, the machine it is reached through. */
+        val via: String? = null,
+        /** False when writes would be refused (view-only on the remote machine). */
+        val canControl: Boolean = true,
+        /** False while the remote machine is disconnected. */
+        val connected: Boolean = true,
     )
+
+    @Serializable
+    data class ListMachinesResult(val machines: List<MachineInfo>)
 
     @Serializable
     data class ListTabsResult(
@@ -2768,6 +2927,7 @@ class BossTermMcpServer(
          */
         val BUILT_IN_READ_TOOLS: List<String> = listOf(
             "list_tabs",
+            "list_machines",
             "get_active_tab",
             "list_panes",
             "read_scrollback",

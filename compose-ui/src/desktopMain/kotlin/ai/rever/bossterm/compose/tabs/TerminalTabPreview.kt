@@ -1,5 +1,8 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.ComposeTerminalDisplay
+import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.compose.SelectionMode
 import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.compose.rendering.RenderingContext
@@ -9,7 +12,6 @@ import ai.rever.bossterm.compose.util.loadTerminalFont
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -30,43 +32,63 @@ internal fun terminalPreviewRows(lines: List<String>): IntRange {
     return maxOf(first, last - 7)..last
 }
 
+internal fun <T : Any> captureTerminalPreviewFrame(
+    display: ComposeTerminalDisplay,
+    previous: T?,
+    capture: () -> T
+): T? = display.captureStableRenderFrame(capture) ?: previous
+
 /** A read-only screen snapshot: no PTY, input handlers, cursor timer or resize side effects. */
 @Composable
 internal fun TerminalTabPreview(session: TerminalSession, settings: TerminalSettings) {
     var frame by remember(session) {
-        mutableStateOf(session.textBuffer.createIncrementalSnapshot() to session.terminal.getImageDataCache().snapshotImages())
+        // No initial buffer read on the UI thread, or while a synchronized redraw is active.
+        mutableStateOf<Pair<VersionedBufferSnapshot, Map<Long, TerminalImage>>?>(null)
     }
     // This composition exists only while the tooltip is visible. Throttle to five
     // frames per second and read off the UI thread; closing hover cancels the loop.
     LaunchedEffect(session) {
         while (isActive) {
-            delay(200)
             frame = withContext(Dispatchers.Default) {
-                session.textBuffer.createIncrementalSnapshot() to session.terminal.getImageDataCache().snapshotImages()
+                captureTerminalPreviewFrame(session.display, frame) {
+                    val images = session.terminal.getImageDataCache().snapshotImages()
+                    session.textBuffer.createIncrementalSnapshot() to images
+                }
             }
+            delay(200)
         }
     }
-    val (snapshot, images) = frame
-    val rowRange = remember(snapshot) { terminalPreviewRows(snapshot.screenLines.map { it.line.text }) }
     val font = remember(settings.fontName) { loadTerminalFont(settings.fontName) }
     val measurer = rememberTextMeasurer()
-    val previewFontSize = 12f
-    val metrics = remember(font, measurer) {
-        measurer.measure("M", TextStyle(fontFamily = font, fontSize = previewFontSize.sp))
+    val density = LocalDensity.current
+    val fontSize = 12f
+    val metrics = remember(font, measurer, fontSize, density) {
+        val style = TextStyle(fontFamily = font, fontSize = fontSize.sp)
+        val sample = measurer.measure("W".repeat(100), style)
+        val single = measurer.measure("W", style)
+        Triple(sample.size.width / 100f, single.size.height.toFloat(), single.firstBaseline)
     }
-    val rowHeight = metrics.size.height.toFloat().coerceAtLeast(1f) * settings.lineSpacing.coerceAtLeast(0.5f)
-    val previewHeight = with(LocalDensity.current) { (rowRange.count() * rowHeight).toDp() }
+    val snapshot = frame?.first
+    val rowRange = remember(snapshot) {
+        terminalPreviewRows(snapshot?.screenLines?.map { it.line.text } ?: emptyList())
+    }
+    val baseHeight = metrics.second.coerceAtLeast(1f)
+    val cellWidth = metrics.first.coerceAtLeast(1f)
+    val lineSpacing = if (settings.disableLineSpacingInAlternateBuffer && snapshot?.isUsingAlternateBuffer == true) {
+        1f
+    } else settings.lineSpacing
+    val cellHeight = baseHeight * lineSpacing.coerceAtLeast(0.5f)
+    val previewHeight = with(density) { (rowRange.count() * cellHeight).toDp() }
     Canvas(Modifier.width(320.dp).height(previewHeight)) {
-        val cellWidth = metrics.size.width.toFloat().coerceAtLeast(1f)
-        val baseHeight = metrics.size.height.toFloat().coerceAtLeast(1f)
-        val cellHeight = baseHeight * settings.lineSpacing.coerceAtLeast(0.5f)
-        val cols = minOf(snapshot.width.coerceAtLeast(1), (size.width / cellWidth).toInt().coerceAtLeast(1))
-        val rows = rowRange.count()
+        drawRect(settings.defaultBackgroundColor)
+        val (snapshot, images) = frame ?: return@Canvas
         val context = RenderingContext(
             bufferSnapshot = snapshot, cellWidth = cellWidth, cellHeight = cellHeight,
-            baseCellHeight = baseHeight, cellBaseline = metrics.firstBaseline,
-            scrollOffset = -rowRange.first, visibleCols = cols, visibleRows = rows,
-            textMeasurer = measurer, measurementFontFamily = font, fontSize = previewFontSize,
+            baseCellHeight = baseHeight, cellBaseline = metrics.third,
+            scrollOffset = -rowRange.first,
+            visibleCols = minOf(snapshot.width, (size.width / cellWidth).toInt().coerceAtLeast(1)),
+            visibleRows = rowRange.count(),
+            textMeasurer = measurer, measurementFontFamily = font, fontSize = fontSize,
             settings = settings, ambiguousCharsAreDoubleWidth = session.display.ambiguousCharsAreDoubleWidth(),
             selectionStart = null, selectionEnd = null, selectionMode = SelectionMode.NORMAL,
             searchVisible = false, searchQuery = "", searchMatches = emptyList(), currentMatchIndex = -1,

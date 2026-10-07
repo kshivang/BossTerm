@@ -75,6 +75,11 @@ kotlin {
                 runtimeOnly("org.slf4j:slf4j-simple:2.0.20")
             }
         }
+        val desktopTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 }
 

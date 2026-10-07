@@ -233,23 +233,27 @@ fun main(args: Array<String>) {
 
     application {
         ai.rever.bossterm.compose.window.FollowSystemTheme()
+        val isMacOS = ShellCustomizationUtils.isMacOS()
+        val windowLifecycle = remember {
+            ApplicationWindowLifecycle(isMacOS, ::exitApplication)
+        }
+        if (isMacOS) {
+            MacOSApplicationLifecycle(
+                onReopen = windowLifecycle::reopen,
+                onNewWindow = { WindowManager.createWindow() },
+                onQuit = ::exitApplication,
+            )
+        }
         // Expose the embedder's MCP config to the in-app settings UI so it
         // can adapt its labels and visibility. bossterm-app provides the
         // default; other host applications would provide their own.
         CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {
-        // Create initial window if none exist
-        if (WindowManager.windows.isEmpty()) {
-            WindowManager.createWindow()
-        }
-
-        // Start global hotkey manager after initial window creation
-        // Use LaunchedEffect to run only once
+        // Create the initial window once. A windowless macOS app waits for a Dock
+        // reopen or New Window request instead of recreating a window on recomposition.
         LaunchedEffect(Unit) {
+            windowLifecycle.openInitialWindow()
             startGlobalHotKeyManager()
         }
-
-        // Detect platform
-        val isMacOS = ShellCustomizationUtils.isMacOS()
 
         // Render all windows
         for (window in WindowManager.windows) {
@@ -319,10 +323,7 @@ fun main(args: Array<String>) {
 
                 Window(
                     onCloseRequest = {
-                        WindowManager.closeWindow(window.id)
-                        if (!WindowManager.hasWindows()) {
-                            exitApplication()
-                        }
+                        windowLifecycle.closeWindow(window.id)
                     },
                     state = windowState,
                     title = window.title.value,
@@ -594,10 +595,7 @@ fun main(args: Array<String>) {
                             Item(
                                 "Close Window",
                                 onClick = {
-                                    WindowManager.closeWindow(window.id)
-                                    if (!WindowManager.hasWindows()) {
-                                        exitApplication()
-                                    }
+                                    windowLifecycle.closeWindow(window.id)
                                 },
                                 shortcut = KeyShortcut(Key.W, meta = isMacOS, ctrl = !isMacOS, shift = true)
                             )
@@ -1023,10 +1021,7 @@ fun main(args: Array<String>) {
                                                     title = window.title.value,
                                                     windowState = windowState,
                                                     onClose = {
-                                                        WindowManager.closeWindow(window.id)
-                                                        if (!WindowManager.hasWindows()) {
-                                                            exitApplication()
-                                                        }
+                                                        windowLifecycle.closeWindow(window.id)
                                                     },
                                                     onMinimize = { windowState.isMinimized = true },
                                                     onFullscreen = placementController::toggleFullscreen,
@@ -1084,10 +1079,7 @@ fun main(args: Array<String>) {
                                             ai.rever.bossterm.compose.share.SessionShareManager.onTabClosed(tabId)
                                         },
                                         onExit = {
-                                            WindowManager.closeWindow(window.id)
-                                            if (!WindowManager.hasWindows()) {
-                                                exitApplication()
-                                            }
+                                            windowLifecycle.closeWindow(window.id)
                                         },
                                         onWindowTitleChange = { newTitle ->
                                             window.title.value = newTitle

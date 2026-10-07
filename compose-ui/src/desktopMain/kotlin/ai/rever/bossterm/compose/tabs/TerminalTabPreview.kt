@@ -19,20 +19,17 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Uniformly fit the entire grid; neither terminal rows nor columns are cropped. */
-internal fun terminalPreviewSize(grid: Size, bounds: Size): Size {
-    val scale = minOf(bounds.width / grid.width, bounds.height / grid.height, 1f)
-    return Size(grid.width * scale, grid.height * scale)
+internal fun terminalPreviewRows(lines: List<String>): IntRange {
+    val last = lines.indexOfLast { it.any { char -> !char.isWhitespace() && char != '\u0000' } }
+    if (last < 0) return 0..0
+    val first = lines.indexOfFirst { it.any { char -> !char.isWhitespace() && char != '\u0000' } }
+    return maxOf(first, last - 7)..last
 }
 
 internal fun <T : Any> captureTerminalPreviewFrame(
@@ -40,17 +37,6 @@ internal fun <T : Any> captureTerminalPreviewFrame(
     previous: T?,
     capture: () -> T
 ): T? = display.captureStableRenderFrame(capture) ?: previous
-
-/** Render in terminal coordinates, including the logical size used by text clipping. */
-internal fun DrawScope.drawTerminalPreviewGrid(gridSize: Size, draw: DrawScope.() -> Unit) {
-    clipRect {
-        val scale = minOf(size.width / gridSize.width, size.height / gridSize.height)
-        withTransform({
-            scale(scale, scale, Offset.Zero)
-            inset(0f, 0f, size.width - gridSize.width, size.height - gridSize.height)
-        }, draw)
-    }
-}
 
 /** A read-only screen snapshot: no PTY, input handlers, cursor timer or resize side effects. */
 @Composable
@@ -75,7 +61,7 @@ internal fun TerminalTabPreview(session: TerminalSession, settings: TerminalSett
     val font = remember(settings.fontName) { loadTerminalFont(settings.fontName) }
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    val fontSize = (session as? TerminalTab)?.fontSizeOverride?.value ?: settings.fontSize
+    val fontSize = 12f
     val metrics = remember(font, measurer, fontSize, density) {
         val style = TextStyle(fontFamily = font, fontSize = fontSize.sp)
         val sample = measurer.measure("W".repeat(100), style)
@@ -83,24 +69,25 @@ internal fun TerminalTabPreview(session: TerminalSession, settings: TerminalSett
         Triple(sample.size.width / 100f, single.size.height.toFloat(), single.firstBaseline)
     }
     val snapshot = frame?.first
+    val rowRange = remember(snapshot) {
+        terminalPreviewRows(snapshot?.screenLines?.map { it.line.text } ?: emptyList())
+    }
     val baseHeight = metrics.second.coerceAtLeast(1f)
     val cellWidth = metrics.first.coerceAtLeast(1f)
     val lineSpacing = if (settings.disableLineSpacingInAlternateBuffer && snapshot?.isUsingAlternateBuffer == true) {
         1f
     } else settings.lineSpacing
     val cellHeight = baseHeight * lineSpacing.coerceAtLeast(0.5f)
-    val gridSize = Size((snapshot?.width ?: 1).coerceAtLeast(1) * cellWidth,
-        (snapshot?.height ?: 1).coerceAtLeast(1) * cellHeight)
-    val previewSize = with(density) {
-        terminalPreviewSize(gridSize, Size(320.dp.toPx(), 240.dp.toPx()))
-    }
-    Canvas(with(density) { Modifier.width(previewSize.width.toDp()).height(previewSize.height.toDp()) }) {
+    val previewHeight = with(density) { (rowRange.count() * cellHeight).toDp() }
+    Canvas(Modifier.width(320.dp).height(previewHeight)) {
         drawRect(settings.defaultBackgroundColor)
         val (snapshot, images) = frame ?: return@Canvas
         val context = RenderingContext(
             bufferSnapshot = snapshot, cellWidth = cellWidth, cellHeight = cellHeight,
             baseCellHeight = baseHeight, cellBaseline = metrics.third,
-            scrollOffset = 0, visibleCols = snapshot.width, visibleRows = snapshot.height,
+            scrollOffset = -rowRange.first,
+            visibleCols = minOf(snapshot.width, (size.width / cellWidth).toInt().coerceAtLeast(1)),
+            visibleRows = rowRange.count(),
             textMeasurer = measurer, measurementFontFamily = font, fontSize = fontSize,
             settings = settings, ambiguousCharsAreDoubleWidth = session.display.ambiguousCharsAreDoubleWidth(),
             selectionStart = null, selectionEnd = null, selectionMode = SelectionMode.NORMAL,
@@ -111,7 +98,7 @@ internal fun TerminalTabPreview(session: TerminalSession, settings: TerminalSett
             slowBlinkVisible = true, rapidBlinkVisible = true,
             terminalWidthCells = snapshot.width, terminalHeightCells = snapshot.height, imageDataById = images
         )
-        drawTerminalPreviewGrid(gridSize) {
+        clipRect {
             with(TerminalCanvasRenderer) { renderTerminal(context) }
         }
     }

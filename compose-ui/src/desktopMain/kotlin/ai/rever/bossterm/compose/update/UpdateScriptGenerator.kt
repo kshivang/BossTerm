@@ -11,7 +11,7 @@ import java.nio.file.attribute.PosixFilePermission
  * These scripts run AFTER the main app quits and handle:
  * - Waiting for app to fully terminate
  * - Performing the actual installation
- * - Launching the updated app only for an explicitly requested immediate installation
+ * - Relaunching for an explicit installation or a windowless macOS update
  * - Cleaning up the script itself
  */
 object UpdateScriptGenerator {
@@ -63,10 +63,12 @@ object UpdateScriptGenerator {
         dmgPath: String,
         targetAppPath: String,
         appPid: Long,
-        restartAutomatically: Boolean = true
+        restartAutomatically: Boolean = true,
+        windowlessRelaunchRequestPath: String? = null,
     ): File {
         validatePath(dmgPath, "DMG path")
         validatePath(targetAppPath, "Target app path")
+        windowlessRelaunchRequestPath?.let { validatePath(it, "Windowless relaunch request path") }
 
         val escapedDmgPath = escapeShellArg(dmgPath)
         val escapedTargetAppPath = escapeShellArg(targetAppPath)
@@ -77,6 +79,13 @@ object UpdateScriptGenerator {
         tempDir.mkdirs()
 
         val scriptFile = File(tempDir, "update_bossterm_${System.currentTimeMillis()}.sh")
+        val escapedRelaunchRequest = windowlessRelaunchRequestPath?.let(::escapeShellArg)
+        val cleanupRequest = if (escapedRelaunchRequest != null) """
+            cleanup_windowless_request() {
+                rm -f $escapedRelaunchRequest
+            }
+            trap cleanup_windowless_request EXIT
+        """ else ""
 
         val launchApp = if (restartAutomatically) """
             # A successful `open` only means LaunchServices accepted the request;
@@ -89,12 +98,25 @@ object UpdateScriptGenerator {
                 open $escapedTargetAppPath || echo "Relaunch failed - please start BossTerm manually"
             fi
 
+        """ else if (escapedRelaunchRequest != null) """
+            if [ -f $escapedRelaunchRequest ]; then
+                echo "Relaunching BossTerm in the Dock without a window..."
+                open -n $escapedTargetAppPath --args --no-window
+                if [ ${'$'}? -ne 0 ]; then
+                    sleep 2
+                    open -n $escapedTargetAppPath --args --no-window || echo "Relaunch failed - please start BossTerm manually"
+                fi
+            else
+                echo "Update installed. Open BossTerm again manually."
+            fi
         """ else """            echo "Update installed. Open BossTerm again manually.""""
 
         val script = """
             #!/bin/bash
 
             # BossTerm Update Helper Script
+
+${cleanupRequest}
 
             echo "BossTerm Update Helper started"
             echo "Waiting for BossTerm to quit (PID: $appPid)..."
@@ -624,6 +646,11 @@ ${launchApp}
      * Launch the update script in the background.
      */
     fun launchScript(scriptFile: File) {
+        launchScriptProcess(scriptFile)
+    }
+
+    /** Track the macOS helper so an idle update quits only while its installer is alive. */
+    internal fun launchScriptProcess(scriptFile: File): Process {
         try {
             val logDir = File("/tmp/bossterm-updater")
             logDir.mkdirs()
@@ -664,6 +691,7 @@ ${launchApp}
                 println("✅ Update script launched successfully")
                 println("💡 Monitor progress: tail -f ${logFile.absolutePath}")
             }
+            return process
         } catch (e: Exception) {
             println("❌ Failed to launch update script: ${e.message}")
             throw e

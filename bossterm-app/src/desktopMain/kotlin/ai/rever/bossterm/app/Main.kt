@@ -81,6 +81,7 @@ import kotlinx.coroutines.launch
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import org.jetbrains.skia.Image
+import kotlin.system.exitProcess
 import androidx.compose.ui.graphics.toComposeImageBitmap
 
 /**
@@ -231,25 +232,45 @@ fun main(args: Array<String>) {
         daemonScope.cancel()
     })
 
-    application {
+    val quitLifecycle = ApplicationQuitLifecycle()
+    application(exitProcessOnExit = false) {
         ai.rever.bossterm.compose.window.FollowSystemTheme()
+        val isMacOS = ShellCustomizationUtils.isMacOS()
+        val updateManager = remember { UpdateManager.instance }
+        var quitting by remember { mutableStateOf(false) }
+        val quitApplication: () -> Unit = {
+            quitting = true
+            exitApplication()
+        }
+        val windowLifecycle = remember {
+            ApplicationWindowLifecycle(isMacOS, quitApplication)
+        }
+        if (isMacOS) {
+            MacOSApplicationLifecycle(
+                onReopen = { if (!quitting) windowLifecycle.reopen() },
+                onNewWindow = { if (!quitting) WindowManager.createWindow() },
+                onQuit = { response -> quitLifecycle.requestQuit(response, quitApplication) },
+            )
+            LaunchedEffect(Unit) {
+                updateManager.installAutomaticUpdatesWhenWindowless(
+                    windowsOpen = snapshotFlow { WindowManager.hasWindows() },
+                    canRestart = { !quitting && !WindowManager.hasWindows() },
+                    quitForUpdate = quitApplication,
+                )
+            }
+        }
         // Expose the embedder's MCP config to the in-app settings UI so it
         // can adapt its labels and visibility. bossterm-app provides the
         // default; other host applications would provide their own.
         CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {
-        // Create initial window if none exist
-        if (WindowManager.windows.isEmpty()) {
-            WindowManager.createWindow()
-        }
-
-        // Start global hotkey manager after initial window creation
-        // Use LaunchedEffect to run only once
+        // Create the initial window once. A windowless macOS app waits for a Dock
+        // reopen or New Window request instead of recreating a window on recomposition.
         LaunchedEffect(Unit) {
+            windowLifecycle.openInitialWindow(startWithoutWindow = isMacOS && "--no-window" in args)
             startGlobalHotKeyManager()
+            // The updater must also start after a windowless update relaunch.
+            updateManager.initialize()
         }
-
-        // Detect platform
-        val isMacOS = ShellCustomizationUtils.isMacOS()
 
         // Render all windows
         for (window in WindowManager.windows) {
@@ -319,10 +340,7 @@ fun main(args: Array<String>) {
 
                 Window(
                     onCloseRequest = {
-                        WindowManager.closeWindow(window.id)
-                        if (!WindowManager.hasWindows()) {
-                            exitApplication()
-                        }
+                        windowLifecycle.closeWindow(window.id)
                     },
                     state = windowState,
                     title = window.title.value,
@@ -594,10 +612,7 @@ fun main(args: Array<String>) {
                             Item(
                                 "Close Window",
                                 onClick = {
-                                    WindowManager.closeWindow(window.id)
-                                    if (!WindowManager.hasWindows()) {
-                                        exitApplication()
-                                    }
+                                    windowLifecycle.closeWindow(window.id)
                                 },
                                 shortcut = KeyShortcut(Key.W, meta = isMacOS, ctrl = !isMacOS, shift = true)
                             )
@@ -1023,10 +1038,7 @@ fun main(args: Array<String>) {
                                                     title = window.title.value,
                                                     windowState = windowState,
                                                     onClose = {
-                                                        WindowManager.closeWindow(window.id)
-                                                        if (!WindowManager.hasWindows()) {
-                                                            exitApplication()
-                                                        }
+                                                        windowLifecycle.closeWindow(window.id)
                                                     },
                                                     onMinimize = { windowState.isMinimized = true },
                                                     onFullscreen = placementController::toggleFullscreen,
@@ -1084,10 +1096,7 @@ fun main(args: Array<String>) {
                                             ai.rever.bossterm.compose.share.SessionShareManager.onTabClosed(tabId)
                                         },
                                         onExit = {
-                                            WindowManager.closeWindow(window.id)
-                                            if (!WindowManager.hasWindows()) {
-                                                exitApplication()
-                                            }
+                                            windowLifecycle.closeWindow(window.id)
                                         },
                                         onWindowTitleChange = { newTitle ->
                                             window.title.value = newTitle
@@ -1195,6 +1204,10 @@ fun main(args: Array<String>) {
         }
         } // end CompositionLocalProvider(LocalBossTermMcpConfig)
     }
+    // Compose has now disposed every window and cancelled its effects. Complete
+    // any native quit request without cancelling a macOS system shutdown.
+    quitLifecycle.completeQuit()
+    exitProcess(0)
 }
 
 /**

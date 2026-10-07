@@ -29,7 +29,11 @@ preferences under `.gradleBuild/bossterm-app/auto-update-test-settings`, and ski
 macOS distribution signing. Launch the generated app from
 `.gradleBuild/bossterm-app/compose-auto-update-test/binaries/main/app/BossTerm.app`. It downloads a
 newer release, installs after you manually quit, and stays closed until you open it
-again. Previously saved preferences in the test profile remain authoritative.
+again. On macOS, an automatic update also installs when no terminal windows remain,
+including when its download finishes after the last window closes. That idle update
+relaunches with `--no-window`, leaving the app in the Dock until a Dock click or New
+Window request. Explicit Quit still leaves the app closed. Previously saved
+preferences in the test profile remain authoritative.
 Do not use `:bossterm-app:run` for installation testing: the flag prevents the
 updater from falling back to the release app in `/Applications` outside a bundle.
 Normal debug builds default automatic updates off; release builds default them on.

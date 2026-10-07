@@ -2,6 +2,8 @@ package ai.rever.bossterm.compose.update
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -27,8 +29,11 @@ class AutomaticUpdateTest {
         var downloads = 0
         var installs = 0
         val restartPolicies = mutableListOf<Boolean>()
+        val windowlessRestarts = mutableListOf<String>()
+        var canPrepareWindowlessRestart = true
         fun operations() = UpdateOperations(::checkForUpdates, ::downloadUpdate,
-            { installUpdate(it, true) }, { installUpdate(it, false) })
+            { installUpdate(it, true) }, { installUpdate(it, false) },
+            prepareWindowlessRestart = { windowlessRestarts += it; canPrepareWindowlessRestart })
         var downloadPath: String? = "/tmp/bossterm-update"
         var installSuccess = true
         var downloadGate: CompletableDeferred<Unit>? = null
@@ -177,6 +182,128 @@ class AutomaticUpdateTest {
         manager.installUpdate(ready.downloadPath)
         assertIs<UpdateState.RestartRequired>(manager.updateState.value)
         assertEquals(listOf(true), service.restartPolicies)
+    }
+
+    @Test
+    fun `closing all windows installs staged update and relaunches without scheduling twice`() = runTest {
+        UpdateSettings.loadFromData(UpdateSettingsData(autoUpdateEnabled = true))
+        val service = FakeUpdates()
+        val manager = UpdateManager(service.operations(), backgroundScope)
+        val windowsOpen = MutableStateFlow(true)
+        var quits = 0
+        backgroundScope.launch {
+            manager.installAutomaticUpdatesWhenWindowless(windowsOpen, { !windowsOpen.value }) { quits++ }
+        }
+        manager.checkForUpdates()
+        runCurrent()
+        assertEquals(0, quits)
+        windowsOpen.value = false
+        runCurrent()
+        assertEquals(1, quits)
+        assertEquals(listOf("/tmp/bossterm-update"), service.windowlessRestarts)
+        assertEquals(listOf(false), service.restartPolicies)
+        assertEquals(1, service.installs)
+        assertIs<UpdateState.RestartRequired>(manager.updateState.value)
+        windowsOpen.value = true
+        runCurrent()
+        windowsOpen.value = false
+        runCurrent()
+        assertEquals(1, quits)
+    }
+
+    @Test
+    fun `download completing without windows also triggers update`() = runTest {
+        UpdateSettings.loadFromData(UpdateSettingsData(autoUpdateEnabled = true))
+        val gate = CompletableDeferred<Unit>()
+        val service = FakeUpdates().apply { downloadGate = gate }
+        val manager = UpdateManager(service.operations(), backgroundScope)
+        val windowsOpen = MutableStateFlow(false)
+        var quits = 0
+        backgroundScope.launch {
+            manager.installAutomaticUpdatesWhenWindowless(windowsOpen, { !windowsOpen.value }) { quits++ }
+        }
+        val check = async { manager.checkForUpdates() }
+        runCurrent()
+        assertEquals(0, quits)
+        gate.complete(Unit)
+        check.await()
+        runCurrent()
+        assertEquals(1, quits)
+        assertEquals(1, service.windowlessRestarts.size)
+    }
+
+    @Test
+    fun `window reopened while staging prevents idle restart`() = runTest {
+        UpdateSettings.loadFromData(UpdateSettingsData(autoUpdateEnabled = true))
+        val gate = CompletableDeferred<Unit>()
+        val service = FakeUpdates().apply { downloadGate = gate }
+        val manager = UpdateManager(service.operations(), backgroundScope)
+        var windowsOpen = false
+        val check = async { manager.checkForUpdates() }
+        runCurrent()
+        val restart = async { manager.prepareAutomaticWindowlessRestart { !windowsOpen } }
+        runCurrent()
+        windowsOpen = true
+        gate.complete(Unit)
+        check.await()
+        assertFalse(restart.await())
+        assertEquals(0, service.windowlessRestarts.size)
+        assertIs<UpdateState.InstallOnNextRestart>(manager.updateState.value)
+    }
+
+    @Test
+    fun `disabling automatic updates prevents idle restart and reenabling applies staged update`() = runTest {
+        UpdateSettings.loadFromData(UpdateSettingsData(autoUpdateEnabled = true))
+        val service = FakeUpdates()
+        val manager = UpdateManager(service.operations(), backgroundScope)
+        manager.checkForUpdates()
+        UpdateSettings.autoUpdateEnabled = false
+        val windowsOpen = MutableStateFlow(false)
+        var quits = 0
+        backgroundScope.launch {
+            manager.installAutomaticUpdatesWhenWindowless(windowsOpen, { !windowsOpen.value }) { quits++ }
+        }
+        runCurrent()
+        assertEquals(0, quits)
+        assertFalse(manager.prepareAutomaticWindowlessRestart { true })
+        UpdateSettings.autoUpdateEnabled = true
+        runCurrent()
+        assertEquals(1, quits)
+    }
+
+    @Test
+    fun `manual download does not trigger a windowless update`() = runTest {
+        UpdateSettings.loadFromData(UpdateSettingsData(autoUpdateEnabled = false))
+        val service = FakeUpdates()
+        val manager = UpdateManager(service.operations(), backgroundScope)
+        manager.checkForUpdates()
+        manager.downloadUpdate(service.info)
+        val windowsOpen = MutableStateFlow(false)
+        var quits = 0
+        backgroundScope.launch {
+            manager.installAutomaticUpdatesWhenWindowless(windowsOpen, { true }) { quits++ }
+        }
+        runCurrent()
+        assertEquals(0, quits)
+        assertEquals(0, service.windowlessRestarts.size)
+        assertIs<UpdateState.ReadyToInstall>(manager.updateState.value)
+    }
+
+    @Test
+    fun `unavailable relaunch helper leaves app running without a retry loop`() = runTest {
+        UpdateSettings.loadFromData(UpdateSettingsData(autoUpdateEnabled = true))
+        val service = FakeUpdates().apply { canPrepareWindowlessRestart = false }
+        val manager = UpdateManager(service.operations(), backgroundScope)
+        val windowsOpen = MutableStateFlow(false)
+        var quits = 0
+        backgroundScope.launch {
+            manager.installAutomaticUpdatesWhenWindowless(windowsOpen, { true }) { quits++ }
+        }
+        manager.checkForUpdates()
+        runCurrent()
+        assertEquals(0, quits)
+        assertEquals(1, service.windowlessRestarts.size)
+        assertIs<UpdateState.InstallOnNextRestart>(manager.updateState.value)
     }
 
     @Test

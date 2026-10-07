@@ -92,7 +92,7 @@ fun VersionManagementSection(
             Column(Modifier.weight(1f)) {
                 Text("Automatic Updates", color = TextPrimary, fontSize = 13.sp)
                 Text(
-                    "Download updates automatically and install when you quit BossTerm. Open it again manually; an OS password may be required.",
+                    "Download updates automatically and install when you quit or close all windows. On macOS, closing all windows relaunches in the Dock; quitting keeps the app closed. An OS password may be required.",
                     color = TextSecondary, fontSize = 12.sp
                 )
             }
@@ -114,7 +114,7 @@ fun VersionManagementSection(
                 is UpdateState.UpdateAvailable -> "Update available: v${current.updateInfo.latestVersion}"
                 is UpdateState.Downloading -> "Downloading update… ${(current.progress * 100).toInt()}%"
                 is UpdateState.ReadyToInstall -> "Update ready to install"
-                is UpdateState.InstallOnNextRestart -> "Update downloaded; will install when you quit BossTerm."
+                is UpdateState.InstallOnNextRestart -> "Update downloaded; will install when you quit or close all windows."
                 is UpdateState.Installing -> "Preparing update…"
                 is UpdateState.RestartRequired -> "Update installed; restart required"
                 is UpdateState.Error -> current.message

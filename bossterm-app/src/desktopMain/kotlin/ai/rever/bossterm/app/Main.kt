@@ -234,15 +234,28 @@ fun main(args: Array<String>) {
     application {
         ai.rever.bossterm.compose.window.FollowSystemTheme()
         val isMacOS = ShellCustomizationUtils.isMacOS()
+        val updateManager = remember { UpdateManager.instance }
+        var quitting by remember { mutableStateOf(false) }
+        val quitApplication: () -> Unit = {
+            quitting = true
+            exitApplication()
+        }
         val windowLifecycle = remember {
-            ApplicationWindowLifecycle(isMacOS, ::exitApplication)
+            ApplicationWindowLifecycle(isMacOS, quitApplication)
         }
         if (isMacOS) {
             MacOSApplicationLifecycle(
-                onReopen = windowLifecycle::reopen,
-                onNewWindow = { WindowManager.createWindow() },
-                onQuit = ::exitApplication,
+                onReopen = { if (!quitting) windowLifecycle.reopen() },
+                onNewWindow = { if (!quitting) WindowManager.createWindow() },
+                onQuit = quitApplication,
             )
+            LaunchedEffect(Unit) {
+                updateManager.installAutomaticUpdatesWhenWindowless(
+                    windowsOpen = snapshotFlow { WindowManager.hasWindows() },
+                    canRestart = { !quitting && !WindowManager.hasWindows() },
+                    quitForUpdate = quitApplication,
+                )
+            }
         }
         // Expose the embedder's MCP config to the in-app settings UI so it
         // can adapt its labels and visibility. bossterm-app provides the
@@ -251,8 +264,10 @@ fun main(args: Array<String>) {
         // Create the initial window once. A windowless macOS app waits for a Dock
         // reopen or New Window request instead of recreating a window on recomposition.
         LaunchedEffect(Unit) {
-            windowLifecycle.openInitialWindow()
+            windowLifecycle.openInitialWindow(startWithoutWindow = isMacOS && "--no-window" in args)
             startGlobalHotKeyManager()
+            // The updater must also start after a windowless update relaunch.
+            updateManager.initialize()
         }
 
         // Render all windows

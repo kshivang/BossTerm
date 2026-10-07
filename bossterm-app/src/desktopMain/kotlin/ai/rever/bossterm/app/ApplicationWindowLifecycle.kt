@@ -7,8 +7,8 @@ internal class ApplicationWindowLifecycle(
     private val isMacOS: Boolean,
     private val exitApplication: () -> Unit,
 ) {
-    fun openInitialWindow() {
-        if (!WindowManager.hasWindows()) WindowManager.createWindow()
+    fun openInitialWindow(startWithoutWindow: Boolean = false) {
+        if (!startWithoutWindow && !WindowManager.hasWindows()) WindowManager.createWindow()
     }
 
     fun closeWindow(id: String) {

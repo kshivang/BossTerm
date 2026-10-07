@@ -53,6 +53,16 @@ class ApplicationWindowLifecycleTest {
     }
 
     @Test
+    fun windowlessUpdateLaunchWaitsForDockWithoutCreatingTerminal() {
+        val lifecycle = ApplicationWindowLifecycle(isMacOS = true) {}
+        lifecycle.openInitialWindow(startWithoutWindow = true)
+        assertEquals(0, WindowManager.windows.size)
+
+        lifecycle.reopen()
+        assertEquals(1, WindowManager.windows.size)
+    }
+
+    @Test
     fun repeatedDockRequestsDoNotDuplicateWindows() {
         val lifecycle = ApplicationWindowLifecycle(isMacOS = true) {}
         repeat(3) { lifecycle.reopen() }

@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 
 /**
  * Update state sealed class representing the current update status.
@@ -97,6 +99,34 @@ class UpdateManager internal constructor(
                 }
             }
         }
+    }
+
+    /**
+     * The standalone macOS app observes window count outside its window compositions.
+     * A staged automatic update can then install even if its download finishes after
+     * the last window closes. Embedded terminals never start this observer.
+     */
+    suspend fun installAutomaticUpdatesWhenWindowless(
+        windowsOpen: Flow<Boolean>,
+        canRestart: () -> Boolean,
+        quitForUpdate: () -> Unit,
+    ) {
+        combine(windowsOpen, updateState, UpdateSettings.settings) { open, state, settings ->
+            !open && settings.autoUpdateEnabled && state is UpdateState.InstallOnNextRestart
+        }.distinctUntilChanged().collect { eligible ->
+            if (eligible && prepareAutomaticWindowlessRestart(canRestart)) quitForUpdate()
+        }
+    }
+
+    internal suspend fun prepareAutomaticWindowlessRestart(canRestart: () -> Boolean): Boolean = checkMutex.withLock {
+        // Recheck on the caller's UI dispatcher after any in-flight staging finishes:
+        // the user may have reopened a window or disabled automatic updates meanwhile.
+        if (!UpdateSettings.autoUpdateEnabled || !canRestart()) return@withLock false
+        val pending = _updateState.value as? UpdateState.InstallOnNextRestart ?: return@withLock false
+        val prepare = operations?.prepareWindowlessRestart ?: UpdateInstaller::prepareWindowlessRelaunch
+        if (!prepare(pending.downloadPath)) return@withLock false
+        _updateState.value = UpdateState.RestartRequired
+        true
     }
 
     private suspend fun applyAutomaticUpdate(info: UpdateInfo) {
@@ -327,4 +357,5 @@ internal class UpdateOperations(
     val download: suspend (UpdateInfo, (Float) -> Unit) -> String?,
     val install: suspend (String) -> Boolean,
     val schedule: suspend (String) -> Boolean = install,
+    val prepareWindowlessRestart: (String) -> Boolean = { false },
 )

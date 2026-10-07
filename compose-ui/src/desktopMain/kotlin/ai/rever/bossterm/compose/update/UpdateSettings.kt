@@ -39,7 +39,7 @@ object UpdateSettings {
     private val _settings = MutableStateFlow(UpdateSettingsData())
     val settings: StateFlow<UpdateSettingsData> = _settings.asStateFlow()
 
-    /** Download new releases and install after a manual quit when enabled. */
+    /** Download releases and install on quit, or when macOS has no open windows. */
     var autoUpdateEnabled: Boolean
         get() = _settings.value.autoUpdateEnabled
         set(value) {

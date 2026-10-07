@@ -70,7 +70,7 @@ fun UpdateBanner(
         }
         is UpdateState.InstallOnNextRestart -> {
             Surface(modifier = Modifier.fillMaxWidth(), color = BannerBackground) {
-                Text("Update will install when you quit BossTerm. Open it again manually.",
+                Text("Update will install when you quit BossTerm or close all windows.",
                     color = BossUiTheme.current.chalk, fontSize = 12.sp,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
             }

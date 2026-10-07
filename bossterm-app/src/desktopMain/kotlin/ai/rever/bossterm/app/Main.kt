@@ -81,6 +81,7 @@ import kotlinx.coroutines.launch
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import org.jetbrains.skia.Image
+import kotlin.system.exitProcess
 import androidx.compose.ui.graphics.toComposeImageBitmap
 
 /**
@@ -231,7 +232,8 @@ fun main(args: Array<String>) {
         daemonScope.cancel()
     })
 
-    application {
+    val quitLifecycle = ApplicationQuitLifecycle()
+    application(exitProcessOnExit = false) {
         ai.rever.bossterm.compose.window.FollowSystemTheme()
         val isMacOS = ShellCustomizationUtils.isMacOS()
         val updateManager = remember { UpdateManager.instance }
@@ -247,7 +249,7 @@ fun main(args: Array<String>) {
             MacOSApplicationLifecycle(
                 onReopen = { if (!quitting) windowLifecycle.reopen() },
                 onNewWindow = { if (!quitting) WindowManager.createWindow() },
-                onQuit = quitApplication,
+                onQuit = { response -> quitLifecycle.requestQuit(response, quitApplication) },
             )
             LaunchedEffect(Unit) {
                 updateManager.installAutomaticUpdatesWhenWindowless(
@@ -1202,6 +1204,10 @@ fun main(args: Array<String>) {
         }
         } // end CompositionLocalProvider(LocalBossTermMcpConfig)
     }
+    // Compose has now disposed every window and cancelled its effects. Complete
+    // any native quit request without cancelling a macOS system shutdown.
+    quitLifecycle.completeQuit()
+    exitProcess(0)
 }
 
 /**

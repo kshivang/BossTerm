@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import java.awt.Desktop
 import java.awt.desktop.AppReopenedListener
+import java.awt.desktop.QuitResponse
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import javax.swing.JMenu
@@ -21,7 +22,7 @@ import kotlinx.coroutines.awaitCancellation
 internal fun MacOSApplicationLifecycle(
     onReopen: () -> Unit,
     onNewWindow: () -> Unit,
-    onQuit: () -> Unit,
+    onQuit: (QuitResponse) -> Unit,
 ) {
     val currentReopen by rememberUpdatedState(onReopen)
     val currentNewWindow by rememberUpdatedState(onNewWindow)
@@ -41,11 +42,10 @@ internal fun MacOSApplicationLifecycle(
         }
         desktop.addAppEventListener(reopenListener)
         desktop.setQuitHandler { _, response ->
-            // Let Compose dispose every window and its sessions before process
-            // shutdown; performQuit() would use AWT's immediate System.exit strategy.
-            response.cancelQuit()
+            // Keep the native request pending during Compose cleanup. cancelQuit()
+            // would also veto a pending macOS logout, restart, or shutdown.
             SwingUtilities.invokeLater {
-                if (!disposed) currentQuit()
+                if (!disposed) currentQuit(response)
             }
         }
 

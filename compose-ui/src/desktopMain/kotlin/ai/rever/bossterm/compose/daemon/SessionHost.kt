@@ -150,8 +150,8 @@ class SessionHost(
         arguments: List<String> = emptyList(),
         cols: Int = 80,
         rows: Int = 24,
+        initialCommand: String? = if (command == null && arguments.isEmpty()) settingsProvider().initialCommand else null,
     ): Pair<String, String> {
-        val initialCommand = if (command == null && arguments.isEmpty()) settingsProvider().initialCommand else null
         val sessionId = openSessionInternal(cwd, command, arguments, cols, rows, initialCommand, notify = false)
         val groupId = java.util.UUID.randomUUID().toString()
         synchronized(groupLock) {
@@ -274,6 +274,14 @@ class SessionHost(
     }
 
     fun get(id: String): TerminalSessionCore? = sessions[id]
+
+    fun currentSettings(): TerminalSettings = settingsProvider()
+
+    fun groupForSession(sessionId: String): String? = synchronized(groupLock) { sessionToGroup[sessionId] }
+
+    fun sessionsInGroup(groupId: String): List<String> = synchronized(groupLock) {
+        groups[groupId]?.getAllSessionIds().orEmpty()
+    }
 
     fun closeSession(id: String) {
         val core = synchronized(groupLock) {

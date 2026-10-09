@@ -450,6 +450,8 @@ Requires OSC 133 shell integration on the user's shell. See
     exit code and the slice covers from the first B onward). Use
     `bash -lc '…'` or `sh -c '…'` to bundle compound logic into a single
     shell command - that emits a single B/D pair.
+    On system Bash 3.2, bare subshell expressions such as `(exit 7)` can also
+    lack command markers; use `sh -c '…'` for those scripts.
 - Optional:
   - `pane_id` (string) - reuse a specific MCP pane. Defaults to the pane this
     tool last created for `tab_id`; if none, a new pane is created.
@@ -492,6 +494,29 @@ Requires OSC 133 shell integration on the user's shell. See
 Concurrent calls on the same `pane_id` are serialized FIFO (per-pane mutex)
 so two pipelined commands cannot interleave their input in the shell's stdin
 buffer.
+
+In standalone daemon mode, `run_command` uses the same command runner as local
+MCP, but owns its scratch pane through the daemon. It works without an open GUI
+and keeps shell variables and working directory across MCP client reconnects.
+The response has the same fields shown above. `pane_id` identifies a daemon
+session and `tab_id` identifies its split group (a source session ID is also
+accepted). Without an explicit target, the daemon uses its first tab, creating a
+scratch tab when none exists. A grouped source gets a scratch split; a flat
+session gets a separate scratch tab. Existing scratch panes are reused as in
+local mode, and explicit user panes never replace the scratch cache.
+
+Daemon `send_input`, `send_signal`, and `read_scrollback` accept the returned
+`paneId` as `pane_id` as well as their existing `session_id` argument. Command
+timeouts and TUIs leave the pane available for those tools. Preferred-shell
+instructions and the hook's `mcp.port` marker are enabled only while
+`run_command` is available; disabling the tool removes the marker without a
+daemon restart. Window-specific MCP tools remain outside the daemon endpoint.
+
+Automatic Bash integration uses `--rcfile` to load the command markers. For a
+login-shell request, the loader sources `/etc/profile` and the first user login
+profile once; Bash's `shopt login_shell` remains false. Explicit command/script
+and startup-control flags are preserved, and disabling automatic injection
+keeps Bash's native startup behavior.
 
 ## `manage_tools` meta-tool
 

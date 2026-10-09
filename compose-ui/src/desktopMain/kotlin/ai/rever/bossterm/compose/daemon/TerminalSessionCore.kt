@@ -24,6 +24,8 @@ class TerminalSessionCore(
     initialCommand: String? = null,
     environmentOverrides: Map<String, String> = emptyMap(),
 ) {
+    /** Serializes MCP command submissions without retaining closed sessions in a global lock map. */
+    internal val mcpCommandMutex = kotlinx.coroutines.sync.Mutex()
     sealed class State {
         object Initializing : State()
         object Connected : State()

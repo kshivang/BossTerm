@@ -119,6 +119,7 @@ fun runDaemon(args: Array<String>) {
                     val srv = DaemonMcpServer(
                         sessionHost,
                         shouldWriteMarker = { liveSessionSettings.current().mcpRunCommandPreferredShell },
+                        disabledTools = { liveSessionSettings.current().disabledMcpTools },
                     )
                     val p = srv.start(liveSessionSettings.current().mcpPort)
                     if (p == null) {

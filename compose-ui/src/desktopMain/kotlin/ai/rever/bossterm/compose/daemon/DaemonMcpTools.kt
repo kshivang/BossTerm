@@ -11,12 +11,13 @@ import kotlinx.serialization.json.put
  * [TerminalSessionCore]. Kept transport-free (like [DaemonControlHandler]) so it can be unit-tested
  * without an MCP client: each method takes JSON args and returns a JSON text payload.
  *
- * This is the daemon-hosted subset of BossTerm's MCP surface — the read/write tools that make sense
- * over a flat list of headless sessions (no GUI window/tab/split model): list / open / read /
- * send_input / send_signal / resize / close. The GUI's richer window-aware MCP
- * ([ai.rever.bossterm.compose.mcp.BossTermMcpServer]) is unchanged.
+ * Session operations plus scratch-pane command execution use the daemon's authoritative sessions
+ * and split groups. Command capture is shared with the GUI MCP through SessionCommandRunner.
  */
 class DaemonMcpTools(private val host: SessionHost) {
+    private val commands = DaemonCommandExecutor(host)
+
+    suspend fun runCommand(args: JsonObject): String = commands.run(args)
 
     companion object {
         const val DEFAULT_SCROLLBACK_LINES = 200
@@ -53,7 +54,7 @@ class DaemonMcpTools(private val host: SessionHost) {
 
     /** Read the last N lines (history + screen) of a session's buffer as plain text. */
     fun readScrollback(args: JsonObject): String {
-        val id = args.str("session_id") ?: return err("Missing required argument: session_id")
+        val id = args.sessionId() ?: return err("Missing required argument: session_id or pane_id")
         val requested = args.intOr("lines", DEFAULT_SCROLLBACK_LINES).coerceAtLeast(1)
         val core = host.get(id) ?: return err("Unknown session_id: $id")
         val snapshot = core.textBuffer.createSnapshot()
@@ -73,7 +74,7 @@ class DaemonMcpTools(private val host: SessionHost) {
 
     /** Write text to a session's stdin (caller appends '\r' to submit — a bare '\n' is Ctrl+J). */
     fun sendInput(args: JsonObject): String {
-        val id = args.str("session_id") ?: return err("Missing required argument: session_id")
+        val id = args.sessionId() ?: return err("Missing required argument: session_id or pane_id")
         val text = args.str("text") ?: return err("Missing required argument: text")
         val core = host.get(id) ?: return err("Unknown session_id: $id")
         core.writeInput(text)
@@ -82,7 +83,7 @@ class DaemonMcpTools(private val host: SessionHost) {
 
     /** Send a control signal (ctrl_c / ctrl_d / ctrl_z) to a session. */
     fun sendSignal(args: JsonObject): String {
-        val id = args.str("session_id") ?: return err("Missing required argument: session_id")
+        val id = args.sessionId() ?: return err("Missing required argument: session_id or pane_id")
         val signal = args.str("signal") ?: return err("Missing required argument: signal")
         val core = host.get(id) ?: return err("Unknown session_id: $id")
         val byte = SIGNAL_BYTES[signal] ?: return err("Unknown signal '$signal' (ctrl_c|ctrl_d|ctrl_z)")
@@ -110,6 +111,7 @@ class DaemonMcpTools(private val host: SessionHost) {
     }
 
     // ---- json helpers (defensive: a non-primitive/absent arg yields null, never throws) ----
+    private fun JsonObject.sessionId(): String? = str("session_id") ?: str("pane_id")
     private fun JsonObject.str(key: String): String? = runCatching {
         (this[key] as? kotlinx.serialization.json.JsonPrimitive)
             ?.takeIf { it.isString }?.content

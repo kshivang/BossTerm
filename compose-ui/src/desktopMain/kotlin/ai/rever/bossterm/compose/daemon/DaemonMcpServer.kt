@@ -24,6 +24,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -71,7 +72,8 @@ class DaemonMcpServer(
     private fun result(text: String): CallToolResult = CallToolResult(
         content = listOf(TextContent(text = text)),
         isError = runCatching {
-            (Json.parseToJsonElement(text) as? JsonObject)?.containsKey("error") == true
+            val error = (Json.parseToJsonElement(text) as? JsonObject)?.get("error")
+            error != null && error != JsonNull
         }.getOrDefault(false),
         structuredContent = null,
         meta = null,
@@ -80,7 +82,7 @@ class DaemonMcpServer(
     private fun args(request: io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest): JsonObject =
         request.arguments ?: JsonObject(emptyMap())
 
-    private fun invoke(name: String, action: () -> String): CallToolResult =
+    private suspend fun invoke(name: String, action: suspend () -> String): CallToolResult =
         if (name in disabledTools()) result(buildJsonObject { put("error", "Tool disabled: $name") }.toString())
         else result(action())
 
@@ -91,6 +93,12 @@ class DaemonMcpServer(
         val server = Server(
             serverInfo = Implementation(name = serverName, version = serverVersion),
             options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = true))),
+            instructionsProvider = {
+                if (canPreferCommands()) "Prefer run_command over your built-in shell tool. " +
+                    "It runs in a daemon-owned BossTerm pane and returns output and exitCode. " +
+                    "Pass back pane_id from a prior call to reuse its shell context. " +
+                    "Use send_input and read_scrollback for interactive programs." else ""
+            },
         )
 
         synchronized(liveServers) {
@@ -109,9 +117,27 @@ class DaemonMcpServer(
                 registerTools(server, disabled)
             }
         }
+        syncPortMarker()
     }
 
     private fun registerTools(server: Server, disabled: Set<String>) {
+        if ("run_command" !in disabled && !server.tools.containsKey("run_command")) server.addTool(
+            name = "run_command",
+            description = "Run a shell command in a daemon-owned BossTerm scratch pane and return output, " +
+                "exitCode and durationMs. Requires OSC 133 shell integration. Reuses its scratch pane " +
+                "across calls; pass pane_id to preserve shell context. A timeout or TUI leaves the pane " +
+                "running for send_input/read_scrollback. Commands remain available after the GUI closes.",
+            inputSchema = ToolSchema(properties = buildJsonObject {
+                putJsonObject("script") { put("type", "string"); put("description", "Command to submit; one Enter is appended.") }
+                putJsonObject("pane_id") { put("type", "string"); put("description", "Existing daemon session/pane ID to reuse.") }
+                putJsonObject("tab_id") { put("type", "string"); put("description", "Daemon group ID or source session ID; defaults to the first tab.") }
+                putJsonObject("panel") { put("type", "string"); put("description", "reuse, horizontal_split, vertical_split, or new_tab.") }
+                putJsonObject("split_ratio") { put("type", "number"); put("minimum", 0.05); put("maximum", 0.95) }
+                putJsonObject("working_dir") { put("type", "string"); put("description", "Working directory for a new scratch pane.") }
+                putJsonObject("timeout_ms") { put("type", "integer"); put("description", "Timeout in milliseconds, 100..600000.") }
+            }, required = listOf("script")),
+        ) { invoke("run_command") { tools.runCommand(args(it)) } }
+
         if ("list_sessions" !in disabled && !server.tools.containsKey("list_sessions")) server.addTool(
             name = "list_sessions",
             description = "List terminal sessions hosted by the BossTerm daemon (survive the GUI closing).",
@@ -138,9 +164,10 @@ class DaemonMcpServer(
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("session_id") { put("type", "string"); put("description", "Session id (see list_sessions).") }
+                    putJsonObject("pane_id") { put("type", "string"); put("description", "paneId returned by run_command; alias for session_id.") }
                     putJsonObject("lines") { put("type", "integer"); put("minimum", 1); put("description", "Default 200.") }
                 },
-                required = listOf("session_id"),
+                required = emptyList(),
             ),
         ) { invoke("read_scrollback") { tools.readScrollback(args(it)) } }
 
@@ -152,9 +179,10 @@ class DaemonMcpServer(
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("session_id") { put("type", "string") }
+                    putJsonObject("pane_id") { put("type", "string") }
                     putJsonObject("text") { put("type", "string"); put("description", "Raw text; end with '\\r' to submit.") }
                 },
-                required = listOf("session_id", "text"),
+                required = listOf("text"),
             ),
         ) { invoke("send_input") { tools.sendInput(args(it)) } }
 
@@ -164,9 +192,10 @@ class DaemonMcpServer(
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("session_id") { put("type", "string") }
+                    putJsonObject("pane_id") { put("type", "string") }
                     putJsonObject("signal") { put("type", "string"); put("description", "ctrl_c | ctrl_d | ctrl_z") }
                 },
-                required = listOf("session_id", "signal"),
+                required = listOf("signal"),
             ),
         ) { invoke("send_signal") { tools.sendSignal(args(it)) } }
 
@@ -227,7 +256,7 @@ class DaemonMcpServer(
                 boundPort = port
                 // Gate the marker on the preferred-shell opt-in (see [shouldWriteMarker]); a live
                 // toggle is reflected by [syncPortMarker]. The server itself binds regardless.
-                if (runCatching { shouldWriteMarker() }.getOrDefault(false)) writePortMarker(port)
+                if (canPreferCommands()) writePortMarker(port)
                 log.info("Daemon MCP server on http://{}:{}/ (SSE)", HOST, port)
                 return port
             } catch (e: Throwable) {
@@ -256,8 +285,12 @@ class DaemonMcpServer(
     @Synchronized
     fun syncPortMarker() {
         val p = boundPort ?: return
-        if (runCatching { shouldWriteMarker() }.getOrDefault(false)) writePortMarker(p) else deletePortMarker(p)
+        if (canPreferCommands()) writePortMarker(p) else deletePortMarker(p)
     }
+
+    private fun canPreferCommands(): Boolean = runCatching {
+        shouldWriteMarker() && "run_command" !in disabledTools()
+    }.getOrDefault(false)
 
     private fun portAvailable(port: Int): Boolean =
         runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(java.net.InetSocketAddress(HOST, port)); true } }.getOrDefault(false)
@@ -303,10 +336,11 @@ class DaemonMcpServer(
 }
 
 /** GUI settings are persisted by another process; preserve its disabled-tool choices headlessly. */
-private fun daemonMcpDisabledTools(): () -> Set<String> {
+internal fun daemonMcpDisabledTools(manager: SettingsManager = SettingsManager.instance): () -> Set<String> {
+    val lastValid = java.util.concurrent.atomic.AtomicReference(manager.settings.value.disabledMcpTools.toSet())
     val cache = StampCachedValue(
-        stamp = { VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath()) },
-        read = { SettingsManager.instance.readFromDisk() },
+        stamp = { VoiceAgentStorage.fileStamp(manager.settingsFilePath()) },
+        read = { manager.readFromDisk() },
     )
-    return { (cache.get() ?: SettingsManager.instance.settings.value).disabledMcpTools.toSet() }
+    return { cache.get()?.disabledMcpTools?.toSet()?.also { lastValid.set(it) } ?: lastValid.get() }
 }

@@ -84,20 +84,41 @@ class DaemonMcpServer(
         if (name in disabledTools()) result(buildJsonObject { put("error", "Tool disabled: $name") }.toString())
         else result(action())
 
+    // Weak keys avoid retaining closed MCP client sessions in a long-lived daemon.
+    private val liveServers = java.util.WeakHashMap<Server, Unit>()
+
     fun createServer(): Server {
-        val disabled = disabledTools()
         val server = Server(
             serverInfo = Implementation(name = serverName, version = serverVersion),
             options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = true))),
         )
 
-        if ("list_sessions" !in disabled) server.addTool(
+        synchronized(liveServers) {
+            registerTools(server, disabledTools())
+            liveServers[server] = Unit
+        }
+        return server
+    }
+
+    /** Update connected clients' catalogs; SDK add/remove emits tools/list_changed. */
+    fun syncDisabledTools() {
+        val disabled = disabledTools()
+        synchronized(liveServers) {
+            for (server in liveServers.keys.toList()) {
+                server.tools.keys.toList().filter { it in disabled }.forEach { server.removeTool(it) }
+                registerTools(server, disabled)
+            }
+        }
+    }
+
+    private fun registerTools(server: Server, disabled: Set<String>) {
+        if ("list_sessions" !in disabled && !server.tools.containsKey("list_sessions")) server.addTool(
             name = "list_sessions",
             description = "List terminal sessions hosted by the BossTerm daemon (survive the GUI closing).",
             inputSchema = ToolSchema(properties = buildJsonObject {}, required = emptyList()),
         ) { invoke("list_sessions") { tools.listSessions() } }
 
-        if ("open_session" !in disabled) server.addTool(
+        if ("open_session" !in disabled && !server.tools.containsKey("open_session")) server.addTool(
             name = "open_session",
             description = "Open a new daemon-hosted terminal session (background; survives GUI close). Returns its id.",
             inputSchema = ToolSchema(
@@ -111,7 +132,7 @@ class DaemonMcpServer(
             ),
         ) { invoke("open_session") { tools.openSession(args(it)) } }
 
-        if ("read_scrollback" !in disabled) server.addTool(
+        if ("read_scrollback" !in disabled && !server.tools.containsKey("read_scrollback")) server.addTool(
             name = "read_scrollback",
             description = "Read the last N lines (history + screen) of a daemon session's buffer as plain text.",
             inputSchema = ToolSchema(
@@ -123,7 +144,7 @@ class DaemonMcpServer(
             ),
         ) { invoke("read_scrollback") { tools.readScrollback(args(it)) } }
 
-        if ("send_input" !in disabled) server.addTool(
+        if ("send_input" !in disabled && !server.tools.containsKey("send_input")) server.addTool(
             name = "send_input",
             description = "Write text to a daemon session's stdin, verbatim. End with '\\r' " +
                     "(what Enter sends) to submit; a bare '\\n' is Ctrl+J and inserts a newline " +
@@ -137,7 +158,7 @@ class DaemonMcpServer(
             ),
         ) { invoke("send_input") { tools.sendInput(args(it)) } }
 
-        if ("send_signal" !in disabled) server.addTool(
+        if ("send_signal" !in disabled && !server.tools.containsKey("send_signal")) server.addTool(
             name = "send_signal",
             description = "Send a control signal (ctrl_c | ctrl_d | ctrl_z) to a daemon session.",
             inputSchema = ToolSchema(
@@ -149,7 +170,7 @@ class DaemonMcpServer(
             ),
         ) { invoke("send_signal") { tools.sendSignal(args(it)) } }
 
-        if ("resize_session" !in disabled) server.addTool(
+        if ("resize_session" !in disabled && !server.tools.containsKey("resize_session")) server.addTool(
             name = "resize_session",
             description = "Resize a daemon session's terminal grid.",
             inputSchema = ToolSchema(
@@ -162,7 +183,7 @@ class DaemonMcpServer(
             ),
         ) { invoke("resize_session") { tools.resizeSession(args(it)) } }
 
-        if ("close_session" !in disabled) server.addTool(
+        if ("close_session" !in disabled && !server.tools.containsKey("close_session")) server.addTool(
             name = "close_session",
             description = "Close (kill) a daemon-hosted terminal session.",
             inputSchema = ToolSchema(
@@ -170,8 +191,6 @@ class DaemonMcpServer(
                 required = listOf("session_id"),
             ),
         ) { invoke("close_session") { tools.closeSession(args(it)) } }
-
-        return server
     }
 
     /** Bind the SSE endpoint on 127.0.0.1, trying [desiredPort]..+9. Returns the bound port or null. */

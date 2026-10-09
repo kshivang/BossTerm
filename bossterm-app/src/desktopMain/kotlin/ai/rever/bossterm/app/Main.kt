@@ -172,16 +172,11 @@ fun main(arguments: Array<String>) {
             // Spawn/connect off the main thread; the daemon outlives this GUI process.
             daemonScope.launch {
                 val ep = client.ensureConnected()
-                if (ep != null) {
-                    println("BossTerm daemon connected on control port ${ep.port}")
-                    // Discover the attach endpoint so windows can render daemon sessions.
-                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.onConnected(client)
+                val attachReady = configureDaemonConnection(client, ::ensureInProcessMcp)
+                if (attachReady) {
+                    println("BossTerm daemon connected on control port ${checkNotNull(ep).port}")
                 } else {
                     System.err.println("BossTerm daemon unavailable; hosting MCP in-process as a fallback")
-                    // Tell windows to stop waiting for a daemon bridge that will never attach, so they
-                    // fall back to local tabs immediately instead of sitting empty for the grace period.
-                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.markAttachUnavailable()
-                    ensureInProcessMcp()
                 }
                 // Refresh the at-login service so its baked java/classpath stay current after an app
                 // update (stale paths would silently fail to start the daemon at next login). Strictly

@@ -16,8 +16,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.io.BufferedReader
@@ -120,9 +118,9 @@ fun runDaemon(args: Array<String>) {
                     // run_command PreToolUse hook for users who never opted into preferred-shell.
                     val srv = DaemonMcpServer(
                         sessionHost,
-                        shouldWriteMarker = { SettingsManager.instance.settings.value.mcpRunCommandPreferredShell },
+                        shouldWriteMarker = { liveSessionSettings.current().mcpRunCommandPreferredShell },
                     )
-                    val p = srv.start(SettingsManager.instance.settings.value.mcpPort)
+                    val p = srv.start(liveSessionSettings.current().mcpPort)
                     if (p == null) {
                         log.warn("Daemon MCP server failed to bind; continuing without it")
                         // Reflect the failure in the persisted setting so it doesn't read 'enabled' while no
@@ -150,10 +148,15 @@ fun runDaemon(args: Array<String>) {
         // merely whether MCP is hosted — same contract as the in-process BossTermMcpManager's watcher.
         // Re-sync the marker against the live setting + bound port whenever the setting toggles.
         daemonScope.launch {
-            SettingsManager.instance.settings
-                .map { it.mcpRunCommandPreferredShell }
-                .distinctUntilChanged()
-                .collect { synchronized(mcpLock) { mcpServerRef.get()?.syncPortMarker() } }
+            daemonMcpSettingsChanges(liveSessionSettings::current)
+                .collect {
+                    synchronized(mcpLock) {
+                        mcpServerRef.get()?.let { server ->
+                            server.syncPortMarker()
+                            server.syncDisabledTools()
+                        }
+                    }
+                }
         }
 
         // Host session sharing in the daemon, so a share link survives the GUI closing. Always
@@ -246,6 +249,9 @@ fun runDaemon(args: Array<String>) {
             }
         } catch (e: Exception) {
             log.error("Daemon startup/runtime failed: {}", e.message)
+            // Login managers restart on failure. A fatal startup error must remain a failed
+            // process exit; only the intentional single-instance/normal-stop paths return normally.
+            throw e
         } finally {
             shutdown()
             runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }

@@ -4,11 +4,22 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.tabs.TabController
 import androidx.compose.runtime.mutableStateMapOf
+import io.ktor.server.application.install
+import io.ktor.server.cio.CIO
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.net.ServerSocket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -16,6 +27,62 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class DaemonSessionBridgeTest {
+    @Test
+    fun `ungrouped tab close survives stale state and is replayed on connection`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val controller = TabController(TerminalSettings.DEFAULT, {}, parentScope = scope)
+        val splits = mutableStateMapOf<String, SplitViewState>()
+        val port = ServerSocket(0).use { it.localPort }
+        val closeRequest = CompletableDeferred<String>()
+        val acknowledgeClose = CompletableDeferred<Unit>()
+        val sessions = DaemonAttachProtocol.Server.SessionList(listOf(DaemonAttachProtocol.SessionMeta("mcp-session", "MCP shell")))
+        val groups = DaemonAttachProtocol.Server.GroupList(emptyList())
+        val server = embeddedServer(CIO, host = "127.0.0.1", port = port) {
+            install(WebSockets)
+            routing {
+                webSocket("/attach") {
+                    send(Frame.Text(DaemonAttachProtocol.encodeServer(sessions)))
+                    send(Frame.Text(DaemonAttachProtocol.encodeServer(groups)))
+                    for (frame in incoming) {
+                        if (frame !is Frame.Text) continue
+                        val request = DaemonAttachProtocol.decodeClient(frame.readText())
+                        if (request is DaemonAttachProtocol.Client.ClosePane) {
+                            closeRequest.complete(request.sessionId)
+                            acknowledgeClose.await()
+                            send(Frame.Text(DaemonAttachProtocol.encodeServer(DaemonAttachProtocol.Server.SessionList(emptyList()))))
+                            send(Frame.Text(DaemonAttachProtocol.encodeServer(groups)))
+                        }
+                    }
+                }
+            }
+        }
+        val bridge = DaemonSessionBridge(controller, splits, port, "test", scope, Dispatchers.Unconfined)
+        try {
+            bridge.dispatch(sessions)
+            bridge.dispatch(groups)
+            val tab = controller.tabs.single()
+            assertEquals(null, bridge.groupIdForTab(tab.id), "MCP-created sessions have no group")
+            assertTrue(bridge.closeTab(tab.id))
+            controller.closeTab(0)
+            bridge.dispatch(sessions)
+            bridge.dispatch(groups)
+            assertTrue(controller.tabs.isEmpty(), "stale topology must not resurrect a closed flat session")
+            assertFalse(bridge.closeTab("local-tab"), "unrelated tabs must not send daemon closes")
+            server.start(wait = false)
+            bridge.start()
+            assertEquals("mcp-session", withTimeout(5000) { closeRequest.await() }, "the disconnected close must reach the next socket")
+            assertTrue(controller.tabs.isEmpty(), "the reconnect's stale SessionList must remain hidden before acknowledgement")
+            acknowledgeClose.complete(Unit)
+            Unit
+        } finally {
+            acknowledgeClose.complete(Unit)
+            bridge.stop()
+            server.stop(0, 500)
+            controller.disposeAll()
+            scope.cancel()
+        }
+    }
+
     @Test
     fun `split expansion resend and collapse preserve the surviving stream and tab position`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

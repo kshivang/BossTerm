@@ -21,7 +21,8 @@ object LoginServiceManager {
     private val log = LoggerFactory.getLogger(LoginServiceManager::class.java)
 
     private val isDefaultProfile: Boolean
-        get() = BossTermPaths.dir().canonicalFile == File(System.getProperty("user.home"), ".bossterm").canonicalFile
+        get() = BossTermPaths.resolvedDirectory(BossTermPaths.dir()) ==
+            BossTermPaths.resolvedDirectory(File(System.getProperty("user.home"), ".bossterm"))
 
     /** Base id, suffixed with the profile tag for non-default settings dirs. */
     private fun serviceId(): String =

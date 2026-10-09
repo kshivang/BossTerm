@@ -95,13 +95,18 @@ object BossTermPaths {
      * `-Dbossterm.settings.dir` profile get distinct values.
      */
     fun profileTag(): String {
-        val path = dir().canonicalPath
+        val path = resolvedDirectory(dir()).toString()
         // First 6 bytes of SHA-256 → 12 hex chars: filename-safe, deterministic, and collision-
         // resistant across profiles. (32-bit String.hashCode() could collide two settings dirs and
         // clobber each other's login-service artifacts.) Not security-sensitive.
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(path.toByteArray(Charsets.UTF_8))
         return digest.take(6).joinToString("") { "%02x".format(it) }
     }
+
+    /** File.canonicalFile does not consistently follow Windows directory symlinks. */
+    internal fun resolvedDirectory(directory: File): java.nio.file.Path =
+        runCatching { directory.toPath().toRealPath() }
+            .getOrElse { directory.canonicalFile.toPath() }
 
     /**
      * chmod 600 a file (best-effort; no-op where POSIX perms are unsupported, e.g. Windows). Keeps

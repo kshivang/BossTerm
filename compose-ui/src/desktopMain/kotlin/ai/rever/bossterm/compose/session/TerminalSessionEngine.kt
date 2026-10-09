@@ -28,6 +28,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -415,13 +416,45 @@ class TerminalSessionEngine(
     // Last requested grid size, so a resize that arrives before the PTY is spawned (handle still null)
     // is replayed onto the PTY in start() instead of being silently dropped.
     @Volatile private var lastResize: Pair<Int, Int>? = null
+    private val resizeRequestLock = Any()
+    // A partial CSI/OSC can hold the publication lock indefinitely. Keep only the latest
+    // requested grid while it does, without parking the UI or the PTY input consumer.
+    private var pendingResize: Pair<Int, Int>? = null
+    private var resizeWorkerRunning = false
+    @Volatile private var resizeWorker: Job? = null
 
     /** Serialize model resize with parsing/snapshot capture, then enqueue the matching PTY size. */
     fun resize(cols: Int, rows: Int) {
         if (closed) return // don't launch a SIGWINCH on a closing session (model/PTY would diverge)
         val c = cols.coerceIn(1, MAX_GRID_DIM)
         val r = rows.coerceIn(1, MAX_GRID_DIM)
+        synchronized(resizeRequestLock) {
+            if (closed) return
+            pendingResize = c to r
+            if (applyPendingResize()) return
+            if (!resizeWorkerRunning) {
+                resizeWorkerRunning = true
+                resizeWorker = scope.launch {
+                    while (isActive) {
+                        val done = synchronized(resizeRequestLock) {
+                            if (closed || applyPendingResize()) {
+                                resizeWorkerRunning = false
+                                true
+                            } else false
+                        }
+                        if (done) return@launch
+                        delay(10)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Caller owns resizeRequestLock, so a deferred older grid cannot overtake a new one. */
+    private fun applyPendingResize(): Boolean {
+        val (c, r) = pendingResize ?: return true
         val apply = {
+            pendingResize = null
             if (!closed) {
                 lastResize = c to r
                 terminal.resize(TermSize(c, r), RequestOrigin.User)
@@ -429,7 +462,9 @@ class TerminalSessionEngine(
                 enqueueWrite(WriteOp.Resize(c, r), 0)
             }
         }
-        runCatching { outputPublisher?.mutate(apply) ?: synchronized(resizeLock) { apply() } }
+        return runCatching {
+            outputPublisher?.tryMutate(apply) ?: synchronized(resizeLock) { apply(); true }
+        }.getOrElse { true }
     }
 
     private val resizeLock = Any()
@@ -484,6 +519,7 @@ class TerminalSessionEngine(
     suspend fun awaitTermination() {
         terminated.await()
         writeConsumer?.join()
+        resizeWorker?.join()
         kotlinx.coroutines.withContext(Dispatchers.IO) { killer?.join() }
     }
 

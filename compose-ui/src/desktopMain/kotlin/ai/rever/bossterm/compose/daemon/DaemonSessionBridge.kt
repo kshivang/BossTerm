@@ -332,7 +332,12 @@ class DaemonSessionBridge(
         pendingPaneCloses.removeAll { it !in sessionMetadata }
         val closingSessions = groups.filter { it.groupId in pendingGroupCloses }
             .flatMap { collectPaneIds(it.tree) }.toSet()
-        val visibleMetadata = sessionMetadata.filterKeys { it !in closingSessions }
+        val groupedSessionIds = groups.flatMap { collectPaneIds(it.tree) }.toSet()
+        // A flat MCP/CLI-created session has no group-close acknowledgement. Hide its
+        // pending pane close until SessionList confirms removal, including stale reconnect state.
+        val visibleMetadata = sessionMetadata.filterKeys {
+            it !in closingSessions && !(it in pendingPaneCloses && it !in groupedSessionIds)
+        }
         withContext(uiDispatcher) {
             val selected = controller.activeTab?.id
             val selectedGroup = groupTabs.entries.firstOrNull { it.value.id == selected }?.key
@@ -412,6 +417,13 @@ class DaemonSessionBridge(
     fun groupIdForTab(tabId: String): String? = groupTabs.entries.firstOrNull { it.value.id == tabId }?.key
 
     fun isDaemonSession(tab: TerminalTab): Boolean = tabs.values.any { it === tab }
+
+    /** Closing a GUI tab owns either a whole group or one ungrouped daemon session. */
+    fun closeTab(tabId: String): Boolean {
+        if (closeGroupForTab(tabId)) return true
+        val sessionId = tabs.entries.firstOrNull { it.value.id == tabId }?.key ?: return false
+        return closePane(sessionId)
+    }
 
     fun closeGroupForTab(tabId: String): Boolean {
         val groupId = groupIdForTab(tabId) ?: return false

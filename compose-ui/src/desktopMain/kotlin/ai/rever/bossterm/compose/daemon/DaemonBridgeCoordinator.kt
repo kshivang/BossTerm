@@ -66,14 +66,14 @@ object DaemonBridgeCoordinator {
     fun releaseAutoOpen() { autoOpenClaimed.set(false) }
 
     /** Record the daemon's attach endpoint after [DaemonClient.ensureConnected] succeeds (blocking STATUS). */
-    fun onConnected(client: DaemonClient) {
-        val ep = client.current ?: return
+    fun onConnected(client: DaemonClient): Boolean {
+        val ep = client.current ?: return false
         val resp = client.request(DaemonProtocol.STATUS)
-            ?: run { log.warn("daemon STATUS failed"); markAttachUnavailable(); return }
+            ?: run { log.warn("daemon STATUS failed"); markAttachUnavailable(); return false }
         val payload = resp.removePrefix("OK ").trim()
         val status = runCatching {
             DaemonProtocol.json.decodeFromString(DaemonProtocol.Status.serializer(), payload)
-        }.getOrNull() ?: run { log.warn("daemon STATUS unparseable: {}", resp); markAttachUnavailable(); return }
+        }.getOrNull() ?: run { log.warn("daemon STATUS unparseable: {}", resp); markAttachUnavailable(); return false }
         // MCP is hosted by the daemon in daemon mode (the in-process BossTermMcpManager isn't
         // started), so the GUI's MCP status indicator — which reads McpTerminalRegistry.runningPort —
         // would otherwise show "not running" even though the daemon serves it. Reflect the daemon's
@@ -81,13 +81,14 @@ object DaemonBridgeCoordinator {
         if (status.attachProtocolVersion != DaemonAttachProtocol.PROTOCOL_VERSION) {
             log.warn("Daemon attach protocol is incompatible (daemon={}, GUI={})", status.attachProtocolVersion, DaemonAttachProtocol.PROTOCOL_VERSION)
             markAttachUnavailable()
-            return
+            return false
         }
         status.mcpPort?.let { ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(it) }
         val ap = status.attachPort
-            ?: run { log.warn("daemon reported no attach port"); markAttachUnavailable(); return }
+            ?: run { log.warn("daemon reported no attach port"); markAttachUnavailable(); return false }
         attachState.value = AttachEndpoint.Ready(ap, ep.secret)
         log.info("Daemon attach endpoint: ws://127.0.0.1:{}/attach", ap)
+        return true
     }
 
     /**
@@ -174,6 +175,8 @@ object DaemonBridgeCoordinator {
     fun isDaemonSession(tab: TerminalTab): Boolean = bridge?.isDaemonSession(tab) ?: false
 
     fun closeGroupForTab(tabId: String): Boolean = bridge?.closeGroupForTab(tabId) ?: false
+
+    fun closeTab(tabId: String): Boolean = bridge?.closeTab(tabId) ?: false
 
     val isAttached: Boolean get() = bridge != null
 

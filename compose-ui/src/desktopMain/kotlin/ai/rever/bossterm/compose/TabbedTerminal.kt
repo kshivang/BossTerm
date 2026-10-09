@@ -341,7 +341,7 @@ fun TabbedTerminal(
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
             onTabClose = { tabId ->
-                if (daemonMode) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closeGroupForTab(tabId)
+                if (daemonMode) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closeTab(tabId)
                 onTabClose?.invoke(tabId)
             },
             platformServices = platformServices,
@@ -356,7 +356,7 @@ fun TabbedTerminal(
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
             onTabClose = { tabId ->
-                if (daemonMode) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closeGroupForTab(tabId)
+                if (daemonMode) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closeTab(tabId)
                 onTabClose?.invoke(tabId)
             },
             platformServices = platformServices,

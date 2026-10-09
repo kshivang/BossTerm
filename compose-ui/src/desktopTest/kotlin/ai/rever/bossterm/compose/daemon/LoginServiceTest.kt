@@ -104,6 +104,7 @@ class LoginServiceTest {
             System.setProperty("user.home", home.absolutePath)
             System.clearProperty(BossTermPaths.SETTINGS_DIR_PROPERTY)
             val defaultValue = LoginServiceManager.windowsRegFile(command)
+            val defaultTag = BossTermPaths.profileTag()
             val defaultDir = java.io.File(home, ".bossterm")
             defaultDir.mkdirs()
             System.setProperty(BossTermPaths.SETTINGS_DIR_PROPERTY, defaultDir.absolutePath)
@@ -117,6 +118,7 @@ class LoginServiceTest {
             if (linked) {
                 System.setProperty(BossTermPaths.SETTINGS_DIR_PROPERTY, alias.absolutePath)
                 assertEquals(defaultValue, LoginServiceManager.windowsRegFile(command))
+                assertEquals(defaultTag, BossTermPaths.profileTag(), "symlink aliases must share the same profile namespace")
             }
         } finally {
             if (previousHome == null) System.clearProperty("user.home") else System.setProperty("user.home", previousHome)

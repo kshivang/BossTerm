@@ -25,9 +25,19 @@ internal class ParsedOutputPublisher(private val source: TerminalDataStream) : T
         }
     }
 
-    fun mutate(operation: () -> Unit) = lock.withLock { operation() }
+    fun mutate(operation: () -> Unit) {
+        check(lock.tryLock(1, TimeUnit.SECONDS)) { "terminal parser is waiting for an incomplete escape sequence" }
+        try { operation() } finally { lock.unlock() }
+    }
 
-    fun add(listener: (String) -> Unit) = lock.withLock { listeners.addIfAbsent(listener); Unit }
+    /** Layout callbacks must not wait for a program to finish an escape sequence. */
+    fun tryMutate(operation: () -> Unit): Boolean {
+        if (!lock.tryLock()) return false
+        try { operation() } finally { lock.unlock() }
+        return true
+    }
+
+    fun add(listener: (String) -> Unit) = mutate { listeners.addIfAbsent(listener); Unit }
     // Removal must remain nonblocking when a parser waits inside an incomplete escape.
     fun remove(listener: (String) -> Unit) { listeners.remove(listener) }
 

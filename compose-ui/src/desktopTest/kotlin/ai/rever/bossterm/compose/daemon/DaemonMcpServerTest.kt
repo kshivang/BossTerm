@@ -135,6 +135,18 @@ class DaemonMcpServerTest {
             val blocked = tool.handler(InProcessClientConnection,
                 CallToolRequest(CallToolRequestParams(name = "send_input")))
             assertEquals(true, blocked.isError)
+            wrapper.syncDisabledTools()
+            assertFalse(server.tools.containsKey("send_input"), "live clients must stop advertising disabled tools")
+            assertFalse(server.tools.containsKey("open_session"))
+            disabled = emptySet()
+            wrapper.syncDisabledTools()
+            assertTrue(server.tools.containsKey("send_input"), "re-enable must restore the existing client without reconnect")
+            assertTrue(server.tools.containsKey("open_session"))
+            val enabled = server.tools["send_input"]!!.handler(InProcessClientConnection,
+                CallToolRequest(CallToolRequestParams(name = "send_input")))
+            assertFalse((enabled.content.first() as io.modelcontextprotocol.kotlin.sdk.types.TextContent).text.contains("Tool disabled"))
+            disabled = setOf("send_input", "open_session")
+            wrapper.syncDisabledTools()
             val refreshed = wrapper.createServer()
             try {
                 assertFalse(refreshed.tools.containsKey("send_input"))

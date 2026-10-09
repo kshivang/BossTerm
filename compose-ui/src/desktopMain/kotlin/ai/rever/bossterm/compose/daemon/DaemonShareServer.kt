@@ -100,7 +100,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * stays in [state] until [approveViewer]/[denyViewer] resolves it.
  */
 class DaemonShareServer(
-    private val host: SessionHost,
+    private val host: ShareSessionDirectory,
     private val settings: () -> TerminalSettings,
     private val mcpPort: () -> Int? = { null },
     private val readPersistedSettings: Boolean = false,
@@ -1368,7 +1368,7 @@ class DaemonShareServer(
             is ClientMessage.Input -> if (inScope(msg.paneId)) host.get(msg.paneId)?.writeInput(msg.data)
             is ClientMessage.ResizeHost -> if (inScope(msg.tabId) && msg.cols in 1..2000 && msg.rows in 1..2000) host.get(msg.tabId)?.resize(msg.cols, msg.rows)
             // NewTab carries no id, so it can't be scoped — opening a fresh shell escapes a SESSION share.
-            is ClientMessage.NewTab -> if (isAll) host.openSession()
+            is ClientMessage.NewTab -> if (isAll) host.openSharedSession()
             is ClientMessage.CloseTab -> if (inScope(msg.tabId)) host.closeSession(msg.tabId)
             is ClientMessage.ClosePane -> if (inScope(msg.paneId)) host.closeSession(msg.paneId)
             // SplitVertical/SplitHorizontal/LaunchAI/RenameTab/SetTabColor/DuplicateTab/CloseOtherTabs/

@@ -50,6 +50,9 @@ class DaemonSessionBridge(
     private val secret: String,
     private val uiScope: CoroutineScope,
     private val uiDispatcher: CoroutineDispatcher = Dispatchers.Main,
+    private val hosted: Boolean = false,
+    private val initialCwd: String? = null,
+    private val initialCommand: String? = null,
 ) {
     private val log = LoggerFactory.getLogger(DaemonSessionBridge::class.java)
     private val client = HttpClient(CIO) { install(WebSockets) }
@@ -75,6 +78,37 @@ class DaemonSessionBridge(
     @Volatile private var running = false
     var hasReceivedState by mutableStateOf(false)
         private set
+    private val pendingSplits = ConcurrentHashMap<String, DaemonAttachProtocol.Client.SplitPane>()
+    private val pendingOpens = ConcurrentHashMap<String, DaemonAttachProtocol.Client.Open>()
+    private val exitCallbacks = ConcurrentHashMap<String, () -> Unit>()
+    private val hostedFactory: (ai.rever.bossterm.compose.tabs.TerminalLaunchRequest) -> TerminalTab = { launch ->
+        val id = launch.tabId ?: java.util.UUID.randomUUID().toString()
+        require(controller.tabs.none { it.id == id }) { "Duplicate terminal ID: $id" }
+        val tab = tabs.getOrPut(id) { createLeafMirror(id) }
+        launch.onProcessExit?.let { exitCallbacks[id] = it }
+        launch.onInitialCommandComplete?.let { callback ->
+            val listener = object : ai.rever.bossterm.terminal.model.CommandStateListener {
+                private var started = false
+                override fun onCommandStarted() { started = true }
+                override fun onCommandFinished(exitCode: Int) {
+                    if (started) {
+                        tab.terminal.removeCommandStateListener(this)
+                        callback(exitCode == 0, exitCode)
+                    }
+                }
+            }
+            tab.terminal.addCommandStateListener(listener)
+            tab.commandStateListeners.add(listener)
+        }
+        pendingOpens[id] = DaemonAttachProtocol.Client.Open(cwd = launch.workingDir, id = id,
+            command = launch.command, arguments = launch.arguments, initialCommand = launch.initialCommand,
+            requestId = java.util.UUID.randomUUID().toString())
+        val selected = controller.activeTabIndex
+        controller.createTabFromExistingSession(tab)
+        if (!launch.activate && selected >= 0) controller.switchToTab(selected)
+        send(pendingOpens.getValue(id))
+        tab
+    }
     private val pendingGroupCloses = ConcurrentHashMap.newKeySet<String>()
     private val pendingPaneCloses = ConcurrentHashMap.newKeySet<String>()
     // Auto-open bookkeeping for the "empty daemon → open one session" path. issuedAutoOpen: this bridge
@@ -113,12 +147,13 @@ class DaemonSessionBridge(
     fun start() {
         if (running) return
         running = true
+        if (hosted) controller.daemonTabFactory = hostedFactory
         io.launch { runWithReconnect() }
         // Route MCP enable/disable to the daemon whenever the user changes the setting — from the
         // status pill, the Settings toggle, anywhere. This is the daemon-mode analog of how the
         // in-process BossTermMcpManager observes [TerminalSettings.mcpEnabled]; the daemon starts/stops
         // its MCP server and replies with McpState, which drives the status indicator.
-        io.launch {
+        if (!hosted) io.launch {
             SettingsManager.instance.settings
                 .map { it.mcpEnabled }
                 .distinctUntilChanged()
@@ -128,6 +163,7 @@ class DaemonSessionBridge(
 
     fun stop() {
         running = false
+        if (controller.daemonTabFactory === hostedFactory) controller.daemonTabFactory = null
         outbox?.close()
         outbox = null
         io.cancel() // reaps the resize-sampler collectors too
@@ -135,16 +171,36 @@ class DaemonSessionBridge(
         runCatching { client.close() }
     }
 
+    /** External UI-owner barrier, used before a plugin loader is closed. */
+    fun stopForUnload() {
+        stop()
+        kotlinx.coroutines.runBlocking { io.coroutineContext[kotlinx.coroutines.Job]?.join() }
+    }
+
     /** Ask the daemon to open a new session (the GUI's "new tab" when in daemon mode). Returns whether
      *  the request was actually enqueued (false → no live connection / outbox full). */
-    fun openSession(cwd: String? = null): Boolean =
-        send(DaemonAttachProtocol.Client.Open(cwd = cwd))
+    fun openSession(cwd: String? = null): Boolean {
+        if (hosted) {
+            hostedFactory(ai.rever.bossterm.compose.tabs.TerminalLaunchRequest(cwd, null, emptyList(), null, null, null, null, true))
+            return true
+        }
+        return send(DaemonAttachProtocol.Client.Open(cwd = cwd))
+    }
 
     /** Ask the daemon to split [sessionId] (a daemon-hosted pane) in [orientation] ("v"|"h"),
      *  inheriting [cwd] if known. Fire-and-forget like [openSession]; the new pane arrives via the
      *  next GroupList — no optimistic local splice. */
     fun splitPane(sessionId: String, orientation: String, cwd: String? = null): Boolean =
         send(DaemonAttachProtocol.Client.SplitPane(sessionId, orientation, cwd))
+
+    internal fun createHostedPane(anchor: String, orientation: String, cwd: String?, ratio: Float, command: String?): TerminalTab {
+        check(hosted && ownsSession(anchor))
+        val id = java.util.UUID.randomUUID().toString()
+        val tab = tabs.getOrPut(id) { createLeafMirror(id) }
+        pendingSplits[id] = DaemonAttachProtocol.Client.SplitPane(anchor, orientation, cwd, ratio, id, command)
+        send(pendingSplits.getValue(id))
+        return tab
+    }
 
     /** Ask the daemon to close one pane (session) — collapses its group if it has siblings, or
      *  closes the whole (1-pane) group if it doesn't. Fire-and-forget. */
@@ -205,10 +261,12 @@ class DaemonSessionBridge(
         try {
             client.webSocket(url, request = { header(DaemonAttachProtocol.TOKEN_HEADER, secret) }) {
                 outbox = out
-                DaemonShareClient.registerSender(shareSender)
+                DaemonShareClient.registerSender(shareSender, hosted)
                 // Settings observed while disconnected must be replayed on every live socket.
                 setMcpEnabled(SettingsManager.instance.settings.value.mcpEnabled)
                 resizeSamplers.replay()
+                pendingOpens.values.forEach { send(it) }
+                pendingSplits.values.forEach { send(it) }
                 pendingGroupCloses.forEach { send(DaemonAttachProtocol.Client.CloseGroup(it)) }
                 pendingPaneCloses.forEach { send(DaemonAttachProtocol.Client.ClosePane(it)) }
                 // Pump this connection's outbox → socket.
@@ -247,7 +305,7 @@ class DaemonSessionBridge(
             // daemon ever reported it back, the Open was likely lost — release the one-shot claim so the
             // reconnect's reconcile can retry (it won't double-open: if the session actually exists, the
             // reconnect's reconcile sees a non-empty list and skips auto-open).
-            if (running && issuedAutoOpen && !sawAnySession) {
+            if (!hosted && running && issuedAutoOpen && !sawAnySession) {
                 DaemonBridgeCoordinator.releaseAutoOpen()
                 issuedAutoOpen = false
             }
@@ -270,14 +328,21 @@ class DaemonSessionBridge(
             }
             is DaemonAttachProtocol.Server.Output -> tabs[msg.id]?.dataStream?.append(msg.data)
             is DaemonAttachProtocol.Server.Resized -> resizeMirror(msg.id, msg.cols, msg.rows)
-            is DaemonAttachProtocol.Server.Closed -> closeMirror(msg.id)
+            is DaemonAttachProtocol.Server.Opened -> { pendingOpens.remove(msg.id); pendingSplits.remove(msg.id) }
+            is DaemonAttachProtocol.Server.Closed -> {
+                pendingOpens.remove(msg.id)
+                pendingSplits.remove(msg.id)
+                closeMirror(msg.id)
+                exitCallbacks.remove(msg.id)?.let { callback -> withContext(uiDispatcher) { callback() } }
+            }
             is DaemonAttachProtocol.Server.Focus -> focusWindows()
             // Phase 2 daemon-share state — feed the process-wide hub the daemon-share window binds to.
             is DaemonAttachProtocol.Server.ShareState -> if (sender != null) DaemonShareClient.update(msg, sender)
             // Daemon MCP toggled on/off — reflect the bound port (or off) in the status indicator.
-            is DaemonAttachProtocol.Server.McpState ->
+            is DaemonAttachProtocol.Server.McpState -> if (!hosted) {
                 if (msg.port != null) ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(msg.port)
                 else ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setStopped()
+            }
         }
     }
 
@@ -351,11 +416,15 @@ class DaemonSessionBridge(
                     tabs.getOrPut(id) { createLeafMirror(id) }.let { applyMetadata(it, sessionMetadata.getValue(id)) }
                 }
                 val old = groupTabs[group.groupId]
-                val container = if (ids.size == 1) tabs.getValue(ids.single()) else {
+                // Hosted callers (runners/MCP) retain their tab ID through split/collapse,
+                // including when the original pane exits and a sibling survives.
+                val useLeaf = ids.size == 1 && (!hosted || ids.single() == group.groupId)
+                val container = if (useLeaf) tabs.getValue(ids.single()) else {
                     old?.takeIf { it.remotePaneId == null }
-                        ?: controller.createRemoteSession(title = tabs.getValue(ids.first()).title.value, feedsStream = false)
+                        ?: controller.createRemoteSession(title = tabs.getValue(ids.first()).title.value,
+                            feedsStream = false, tabId = if (hosted) group.groupId else null)
                 }
-                if (ids.size == 1) {
+                if (useLeaf) {
                     splitStates.remove(container.id)
                 } else {
                     val ss = splitStates.getOrPut(container.id) { SplitViewState(initialSession = container) }
@@ -398,7 +467,7 @@ class DaemonSessionBridge(
                 applyMetadata(tab, meta)
                 if (controller.tabs.none { it === tab }) controller.createTabFromExistingSession(tab)
             }
-            (tabs.keys - visibleMetadata.keys).toList().forEach { id ->
+            (tabs.keys - visibleMetadata.keys - pendingOpens.keys - pendingSplits.keys).toList().forEach { id ->
                 dropResizeSampler(id)
                 tabs.remove(id)?.let { tab ->
                     val index = controller.tabs.indexOfFirst { it === tab }
@@ -409,14 +478,22 @@ class DaemonSessionBridge(
             val targetId = selectedGroup?.let { groupTabs[it]?.id } ?: selected
             controller.tabs.indexOfFirst { it.id == targetId }.takeIf { it >= 0 }?.let { controller.switchToTab(it) }
         }
-        if (sessionMetadata.isEmpty() && DaemonBridgeCoordinator.claimAutoOpen()) {
-            if (openSession()) issuedAutoOpen = true else DaemonBridgeCoordinator.releaseAutoOpen()
+        if (sessionMetadata.isEmpty() && pendingOpens.isEmpty() &&
+            (if (hosted) !issuedAutoOpen && !sawAnySession else DaemonBridgeCoordinator.claimAutoOpen())) {
+            if (hosted) withContext(uiDispatcher) {
+                hostedFactory(ai.rever.bossterm.compose.tabs.TerminalLaunchRequest(initialCwd, null, emptyList(), null, initialCommand, null, null, true))
+                issuedAutoOpen = true
+            } else if (openSession()) issuedAutoOpen = true else DaemonBridgeCoordinator.releaseAutoOpen()
         }
     }
 
     fun groupIdForTab(tabId: String): String? = groupTabs.entries.firstOrNull { it.value.id == tabId }?.key
 
     fun isDaemonSession(tab: TerminalTab): Boolean = tabs.values.any { it === tab }
+
+    fun ownsSession(id: String): Boolean = tabs.containsKey(id)
+
+    fun startShare(scope: String, groupId: String?) { send(DaemonAttachProtocol.Client.StartShare(scope = scope, groupId = groupId)) }
 
     /** Closing a GUI tab owns either a whole group or one ungrouped daemon session. */
     fun closeTab(tabId: String): Boolean {
@@ -441,6 +518,7 @@ class DaemonSessionBridge(
         controller.createRemoteSession(
             title = "",
             remotePaneId = sessionId,
+            tabId = if (hosted) sessionId else null,
             onUserInput = { data -> send(DaemonAttachProtocol.Client.Input(sessionId, data)) },
         ).also { it.onRemoteFit = { cols, rows -> sendResizeSampled(sessionId, cols, rows) } }
 

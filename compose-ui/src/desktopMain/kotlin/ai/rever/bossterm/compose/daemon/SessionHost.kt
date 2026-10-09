@@ -21,7 +21,7 @@ class SessionHost(
     private val settingsProvider: () -> TerminalSettings = { settings },
     private val platformServices: PlatformServices = getPlatformServices(),
     private val environmentProvider: () -> Map<String, String> = { emptyMap() },
-) {
+) : ShareSessionDirectory {
     private val log = LoggerFactory.getLogger(SessionHost::class.java)
     private val sessions = ConcurrentHashMap<String, TerminalSessionCore>()
     private val sessionOrder = ConcurrentHashMap<String, Long>()
@@ -45,8 +45,8 @@ class SessionHost(
 
     /** Listeners notified when the session set changes (open/close/exit) — drives attach Layout pushes. */
     private val changeListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
-    fun addChangeListener(l: () -> Unit) { changeListeners.add(l) }
-    fun removeChangeListener(l: () -> Unit) { changeListeners.remove(l) }
+    override fun addChangeListener(l: () -> Unit) { changeListeners.add(l) }
+    override fun removeChangeListener(l: () -> Unit) { changeListeners.remove(l) }
 
     // Listeners snapshot-encode (DaemonAttachServer.beginLocked), which can be heavy; run them on a
     // dedicated single thread so a slow/back-pressured attach client never blocks the PTY-exit or
@@ -102,8 +102,10 @@ class SessionHost(
         rows: Int = 24,
         initialCommand: String? = null,
         notify: Boolean,
+        requestedId: String? = null,
     ): String {
         val core = TerminalSessionCore(
+            id = requestedId ?: java.util.UUID.randomUUID().toString(),
             settings = settingsProvider(),
             workingDir = cwd,
             command = command,
@@ -144,6 +146,11 @@ class SessionHost(
      *  path's "new window" (Client.Open). A single-pane group renders identically to a flat tab,
      *  so every attach-created session being grouped (even alone) lets callers treat "tab" and
      *  "group" uniformly. Returns (sessionId, groupId). */
+    fun defaultInitialCommand(): String? = settingsProvider().initialCommand
+
+    private val requestedWindows = mutableMapOf<String, Pair<String, String>>()
+
+    @Synchronized
     fun openWindow(
         cwd: String? = null,
         command: String? = null,
@@ -151,9 +158,18 @@ class SessionHost(
         cols: Int = 80,
         rows: Int = 24,
         initialCommand: String? = if (command == null && arguments.isEmpty()) settingsProvider().initialCommand else null,
+        requestedId: String? = null,
+        requestId: String? = null,
     ): Pair<String, String> {
-        val sessionId = openSessionInternal(cwd, command, arguments, cols, rows, initialCommand, notify = false)
-        val groupId = java.util.UUID.randomUUID().toString()
+        val requestKey = requestId ?: requestedId
+        requestId?.let { require(it.matches(Regex("[A-Za-z0-9_.:-]{1,160}"))) }
+        requestKey?.let { requestedWindows[it]?.let { result -> return result } }
+        requestedId?.let { id ->
+            require(id.matches(Regex("[A-Za-z0-9_.:-]{1,160}"))) { "Invalid requested session ID" }
+            require(!sessions.containsKey(id)) { "Session ID is already in use" }
+        }
+        val sessionId = openSessionInternal(cwd, command, arguments, cols, rows, initialCommand, notify = false, requestedId = requestedId)
+        val groupId = requestedId ?: java.util.UUID.randomUUID().toString()
         synchronized(groupLock) {
             if (sessions.containsKey(sessionId)) {
                 groups[groupId] = GroupNode.Pane(sessionId = sessionId)
@@ -161,7 +177,7 @@ class SessionHost(
             }
         }
         notifyChanged()
-        return sessionId to groupId
+        return (sessionId to groupId).also { result -> requestKey?.let { requestedWindows[it] = result } }
     }
 
     /**
@@ -170,12 +186,22 @@ class SessionHost(
      * session id, or null if [sessionId] isn't currently part of any live group (already closed,
      * raced, or ungrouped).
      */
+    private val requestedSplits = mutableSetOf<String>()
+
+    @Synchronized
     fun splitPane(
         sessionId: String,
         orientation: SplitOrientation,
         cwd: String? = null,
         ratio: Float = 0.5f,
+        requestedId: String? = null,
+        initialCommand: String? = null,
     ): String? {
+        requestedId?.let { id ->
+            require(id.matches(Regex("[A-Za-z0-9_.:-]{1,160}")))
+            if (id in requestedSplits) return id
+            require(!sessions.containsKey(id)) { "Session ID is already in use" }
+        }
         val groupId = synchronized(groupLock) { sessionToGroup[sessionId] } ?: return null
         if (sessions[sessionId] == null) {
             // Target vanished between the lookup above and here (race with PTY exit's
@@ -190,7 +216,9 @@ class SessionHost(
         // Spawn the new PTY OUTSIDE groupLock — openSession() does real process work and must not
         // run while holding the tree lock (would block every other group mutation/resync for the
         // duration of the spawn).
-        val newSessionId = openSessionInternal(cwd = inheritedCwd, notify = false)
+        val newSessionId = openSessionInternal(cwd = inheritedCwd, initialCommand = initialCommand,
+            requestedId = requestedId, notify = false)
+        requestedId?.let { requestedSplits.add(it) }
 
         // Graft into the tree under groupLock, re-validating the target pane is still there — it
         // could have been closed by a concurrent splitPane/closePane/exit while we were spawning.
@@ -200,7 +228,7 @@ class SessionHost(
             if (tree == null || targetPane == null || !sessions.containsKey(newSessionId) || !sessions.containsKey(sessionId)) {
                 false
             } else {
-                val newPane = GroupNode.Pane(sessionId = newSessionId)
+                val newPane = GroupNode.Pane(id = requestedId ?: java.util.UUID.randomUUID().toString(), sessionId = newSessionId)
                 val newTree = tree.replaceNode(targetPane.id) { pane ->
                     when (orientation) {
                         SplitOrientation.HORIZONTAL -> GroupNode.HorizontalSplit(top = pane, bottom = newPane, ratio = safeSplitRatio(ratio))
@@ -267,13 +295,17 @@ class SessionHost(
     }
 
     /** All current groups, as wire DTOs, for GroupList broadcast. */
-    fun listGroups(): List<GroupInfo> = synchronized(groupLock) {
+    override fun listGroups(): List<GroupInfo> = synchronized(groupLock) {
         groups.entries.sortedBy { (_, tree) ->
             tree.getAllSessionIds().minOfOrNull { sessionOrder[it] ?: Long.MAX_VALUE } ?: Long.MAX_VALUE
         }.map { (groupId, tree) -> GroupInfo(groupId, tree.toDto()) }
     }
 
-    fun get(id: String): TerminalSessionCore? = sessions[id]
+    override fun ownerOf(id: String): SessionHost? = if (get(id) != null) this else null
+
+    override fun openSharedSession(): String = openSession()
+
+    override fun get(id: String): TerminalSessionCore? = sessions[id]
 
     fun currentSettings(): TerminalSettings = settingsProvider()
 
@@ -283,7 +315,7 @@ class SessionHost(
         groups[groupId]?.getAllSessionIds().orEmpty()
     }
 
-    fun closeSession(id: String) {
+    override fun closeSession(id: String) {
         val core = synchronized(groupLock) {
             collapseFromGroup(id)
             sessionOrder.remove(id)
@@ -296,7 +328,7 @@ class SessionHost(
         }
     }
 
-    fun list(): List<SessionInfo> = sessions.values.sortedBy { sessionOrder[it.id] ?: Long.MAX_VALUE }.map { core ->
+    override fun list(): List<SessionInfo> = sessions.values.sortedBy { sessionOrder[it.id] ?: Long.MAX_VALUE }.map { core ->
         SessionInfo(
             id = core.id,
             title = core.iconTitle.value.ifBlank { labelFor(core.workingDirectory.value) },

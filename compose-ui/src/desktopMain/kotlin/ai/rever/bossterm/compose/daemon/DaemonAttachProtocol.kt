@@ -37,7 +37,8 @@ object DaemonAttachProtocol {
     // v3 moves Output/Snapshot from JSON text frames to binary websocket frames ([BinaryFrame]) —
     // a v2 client would ignore binary frames entirely and render nothing, so reject at connect.
     // v4 adds atomic CloseGroup and group-scoped share management.
-    const val PROTOCOL_VERSION = 4
+    // v5 adds stable request IDs, spawn options and acknowledgements for embedded clients.
+    const val PROTOCOL_VERSION = 5
 
     /** Header carrying the daemon control secret on the attach WS handshake (not a ?query= param, so
      *  it doesn't leak into request-line logs / proxies). Shared by the GUI client and the daemon. */
@@ -207,6 +208,10 @@ object DaemonAttachProtocol {
         @Serializable @SerialName("resized")
         data class Resized(val id: String, val cols: Int, val rows: Int) : Server()
 
+        /** The requested session exists (or already exited); replay never executes it twice. */
+        @Serializable @SerialName("opened")
+        data class Opened(val id: String) : Server()
+
         /** A session exited / was closed. */
         @Serializable @SerialName("closed")
         data class Closed(val id: String) : Server()
@@ -243,7 +248,12 @@ object DaemonAttachProtocol {
 
         /** Open a new daemon session; the daemon assigns the id and announces it via SessionList. */
         @Serializable @SerialName("open")
-        data class Open(val cwd: String? = null, val cols: Int = 80, val rows: Int = 24) : Client()
+        data class Open(
+            val cwd: String? = null, val cols: Int = 80, val rows: Int = 24,
+            val id: String? = null, val command: String? = null,
+            val arguments: List<String> = emptyList(), val initialCommand: String? = null,
+            val requestId: String? = null,
+        ) : Client()
 
         /** Close (kill) a session. */
         @Serializable @SerialName("close")
@@ -304,6 +314,8 @@ object DaemonAttachProtocol {
             val orientation: String, // "v" | "h"
             val cwd: String? = null,
             val ratio: Float = 0.5f,
+            val id: String? = null,
+            val initialCommand: String? = null,
         ) : Client()
 
         /** Close one pane's session, collapsing its group's tree if it has siblings (vs. closing

@@ -155,30 +155,48 @@ object DaemonBridgeCoordinator {
      * mid-reconnect (outbox cleared), so the caller can fall back to a local tab instead of dropping
      * the request silently.
      */
-    fun openSession(cwd: String? = null): Boolean = bridge?.openSession(cwd) ?: false
+    fun registerHosted(state: TabbedTerminalState, scope: CoroutineScope, port: Int, token: String,
+        cwd: String? = null, initialCommand: String? = null) = HostedDaemonBridges.register(state, scope, port, token, cwd, initialCommand)
+
+    internal fun hostedBridge(state: TabbedTerminalState): DaemonSessionBridge? = HostedDaemonBridges.bridge(state)
+
+    internal fun initializeHosted(state: TabbedTerminalState) = HostedDaemonBridges.initialize(state)
+
+    fun unregisterHosted(state: TabbedTerminalState) = HostedDaemonBridges.unregister(state)
+
+    /** Stable hosted tab ids are daemon group ids. */
+    fun isHostedTab(tabId: String): Boolean = HostedDaemonBridges.states().any { it.tabs.any { tab -> tab.id == tabId } }
+
+    fun openSession(cwd: String? = null, state: TabbedTerminalState? = null): Boolean =
+        (HostedDaemonBridges.bridge(state) ?: bridge)?.openSession(cwd) ?: false
 
     /** Ask the daemon to split [sessionId] (a daemon-hosted pane) — the GUI's "split pane" when in
      *  daemon mode. Fire-and-forget like [openSession]; the new pane arrives via the next
      *  GroupList, no optimistic local splice. */
     fun splitPane(sessionId: String, orientation: String, cwd: String? = null): Boolean =
-        bridge?.splitPane(sessionId, orientation, cwd) ?: false
+        (HostedDaemonBridges.bridges().firstOrNull { it.ownsSession(sessionId) } ?: bridge)?.splitPane(sessionId, orientation, cwd) ?: false
 
     /** Ask the daemon to close one pane (session) — does not affect siblings. Fire-and-forget. */
-    fun closePane(sessionId: String): Boolean = bridge?.closePane(sessionId) ?: false
+    fun closePane(sessionId: String): Boolean = (HostedDaemonBridges.bridges().firstOrNull { it.ownsSession(sessionId) } ?: bridge)?.closePane(sessionId) ?: false
 
-    fun isAttachPendingFor(state: TabbedTerminalState?): Boolean = state != null && activeState === state && !isAttachUnavailable
+    fun isAttachPendingFor(state: TabbedTerminalState?): Boolean = HostedDaemonBridges.contains(state) || (state != null && activeState === state && !isAttachUnavailable)
 
-    fun isAttachedTo(state: TabbedTerminalState?): Boolean = state != null && activeState === state && bridge?.hasReceivedState == true
+    fun isAttachedTo(state: TabbedTerminalState?): Boolean = HostedDaemonBridges.bridge(state)?.hasReceivedState == true || (state != null && activeState === state && bridge?.hasReceivedState == true)
 
-    fun groupIdForTab(tabId: String): String? = bridge?.groupIdForTab(tabId)
+    fun groupIdForTab(tabId: String): String? = HostedDaemonBridges.bridges().firstNotNullOfOrNull { it.groupIdForTab(tabId) } ?: bridge?.groupIdForTab(tabId)
 
-    fun isDaemonSession(tab: TerminalTab): Boolean = bridge?.isDaemonSession(tab) ?: false
+    fun isDaemonSession(tab: TerminalTab): Boolean = HostedDaemonBridges.bridges().any { it.isDaemonSession(tab) } || bridge?.isDaemonSession(tab) == true
 
-    fun closeGroupForTab(tabId: String): Boolean = bridge?.closeGroupForTab(tabId) ?: false
+    fun closeGroupForTab(tabId: String): Boolean = HostedDaemonBridges.bridges().firstOrNull { it.groupIdForTab(tabId) != null }?.closeGroupForTab(tabId) ?: bridge?.closeGroupForTab(tabId) ?: false
 
-    fun closeTab(tabId: String): Boolean = bridge?.closeTab(tabId) ?: false
+    fun closeTab(tabId: String): Boolean = HostedDaemonBridges.bridges().firstOrNull { it.groupIdForTab(tabId) != null || it.ownsSession(tabId) }?.closeTab(tabId) ?: bridge?.closeTab(tabId) ?: false
 
-    val isAttached: Boolean get() = bridge != null
+    fun startShare(state: TabbedTerminalState?, scope: String, groupId: String?) {
+        HostedDaemonBridges.bridge(state)?.startShare(scope, groupId)
+            ?: DaemonShareClient.startShare(scope, groupId = groupId)
+    }
+
+    val isAttached: Boolean get() = bridge != null || HostedDaemonBridges.bridges().isNotEmpty()
 
     /** Keep Open BossTerm routed to this app even after its last window unregisters. */
     fun registerGuiLifecycle(scope: CoroutineScope, onOpen: () -> Unit): kotlinx.coroutines.Job = scope.launch {

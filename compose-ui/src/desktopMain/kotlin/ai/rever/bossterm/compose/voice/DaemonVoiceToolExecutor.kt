@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.daemon.DaemonMcpTools
 import ai.rever.bossterm.compose.daemon.SessionHost
+import ai.rever.bossterm.compose.daemon.ShareSessionDirectory
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.serialization.json.JsonObject
@@ -20,14 +21,13 @@ import kotlinx.serialization.json.put
  * the daemon's (`session_id`).
  */
 internal class DaemonVoiceToolExecutor(
-    private val host: SessionHost,
+    private val host: ShareSessionDirectory,
     private val inScopeSessionIds: () -> Set<String>,
     /** Provider, not a value: an ALL-scoped share's fallback session changes as sessions come and go. */
     private val anchorSessionId: () -> String?,
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
 ) : VoiceToolExecutor {
 
-    private val tools = DaemonMcpTools(host)
 
     /**
      * The daemon's smaller surface, minus anything the user disabled.
@@ -109,6 +109,7 @@ internal class DaemonVoiceToolExecutor(
             args.forEach { (k, v) -> if (k != "tab_id" && k in allowed) put(k, v) }
             put("session_id", target)
         }
+        val tools = DaemonMcpTools(host.ownerOf(target) ?: throw VoiceToolException("Session is no longer available"))
         return when (name) {
             "read_scrollback" -> tools.readScrollback(daemonArgs)
             "send_input" -> tools.sendInput(daemonArgs)

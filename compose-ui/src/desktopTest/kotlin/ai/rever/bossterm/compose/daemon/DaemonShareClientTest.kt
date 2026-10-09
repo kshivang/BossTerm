@@ -28,4 +28,30 @@ class DaemonShareClientTest {
             DaemonShareClient.clearSender(old)
         }
     }
+    @Test
+    fun `hosted surfaces aggregate shares and route approvals to the owning service`() {
+        val firstMessages = mutableListOf<DaemonAttachProtocol.Client>()
+        val secondMessages = mutableListOf<DaemonAttachProtocol.Client>()
+        val first = DaemonShareClient.Sender { firstMessages.add(it) }
+        val second = DaemonShareClient.Sender { secondMessages.add(it) }
+        try {
+            DaemonShareClient.registerSender(first, hosted = true)
+            DaemonShareClient.registerSender(second, hosted = true)
+            DaemonShareClient.update(DaemonAttachProtocol.Server.ShareState(
+                pending = listOf(DaemonAttachProtocol.PendingApproval("first", "a"))), first)
+            DaemonShareClient.update(DaemonAttachProtocol.Server.ShareState(
+                pending = listOf(DaemonAttachProtocol.PendingApproval("second", "b"))), second)
+            assertEquals(2, DaemonShareClient.state.value.pending.size)
+            DaemonShareClient.approve("first", "a", false)
+            assertEquals(1, firstMessages.size)
+            assertTrue(secondMessages.isEmpty())
+            DaemonShareClient.clearSender(first)
+            assertEquals(listOf("second"), DaemonShareClient.state.value.pending.map { it.token })
+            DaemonShareClient.deny("first", "a")
+            assertTrue(secondMessages.isEmpty(), "a removed share must not target a different service")
+            DaemonShareClient.deny("second", "b")
+            assertEquals(1, secondMessages.size)
+        } finally { DaemonShareClient.clearSender(first); DaemonShareClient.clearSender(second) }
+    }
+
 }

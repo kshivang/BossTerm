@@ -222,6 +222,7 @@ class TabbedTerminalState(
      * After disposal, this state can be reused by calling TabbedTerminal again.
      */
     fun dispose() {
+        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.unregisterHosted(this)
         // Cancel reactive flow bridges
         flowScope?.cancel()
         flowScope = null
@@ -777,6 +778,17 @@ class TabbedTerminalState(
             splitState.getFocusedSession()?.workingDirectory?.value
         } else null
 
+        val hosted = ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.hostedBridge(this)
+        if (hosted != null) {
+            val anchor = splitState.getFocusedSession()?.id ?: return null
+            val newPaneRatio = (ratio ?: settings.splitDefaultRatio).coerceIn(0.05f, 0.95f)
+            val session = hosted.createHostedPane(anchor, if (orientation == SplitOrientation.HORIZONTAL) "h" else "v",
+                workingDir, 1f - newPaneRatio, initialCommand)
+            val paneId = splitState.splitFocusedPaneWithId(orientation, session, 1f - newPaneRatio, session.id)
+            if (focusToRestore != null) splitState.setFocusedPane(focusToRestore)
+            return paneId
+        }
+
         val newSession = controller.createSessionForSplit(
             workingDir = workingDir,
             initialCommand = initialCommand
@@ -834,6 +846,11 @@ class TabbedTerminalState(
                 return true
             }
             return false
+        }
+        if (ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.hostedBridge(this) != null) {
+            return splitState.getFocusedSession()?.id?.let {
+                ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closePane(it)
+            } ?: false
         }
         return splitState.closeFocusedPane()
     }

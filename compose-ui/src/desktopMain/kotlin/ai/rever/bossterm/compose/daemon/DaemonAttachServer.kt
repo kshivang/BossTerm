@@ -88,7 +88,7 @@ class DaemonAttachServer(
     @Synchronized
     fun start(desiredPort: Int = 7682): Int {
         if (engine != null) return boundPort
-        if (desiredPort !in 1..65535) {
+        if (desiredPort !in 0..65535) {
             log.error("attach: invalid port {}", desiredPort)
             return -1
         }
@@ -99,8 +99,9 @@ class DaemonAttachServer(
             log.error("attach: refusing to start with an empty secret")
             return -1
         }
+        val firstPort = if (desiredPort == 0) ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { it.localPort } else desiredPort
         for (offset in 0 until 10) {
-            val port = desiredPort + offset
+            val port = firstPort + offset
             if (port > 65535) break
             if (!portAvailable(port)) continue
             try {
@@ -364,14 +365,28 @@ class DaemonAttachServer(
                     // grouped-vs-flat distinction. Return value (sessionId, groupId) was already
                     // discarded for openSession() too; the GUI learns the result via SessionList/
                     // GroupList, not a reply.
-                    is DaemonAttachProtocol.Client.Open -> host.openWindow(cwd = msg.cwd, cols = msg.cols, rows = msg.rows)
+                    is DaemonAttachProtocol.Client.Open -> {
+                        val (id, _) = host.openWindow(cwd = msg.cwd, cols = msg.cols, rows = msg.rows,
+                            command = msg.command, arguments = msg.arguments,
+                            initialCommand = msg.initialCommand ?: if (msg.command == null && msg.arguments.isEmpty()) host.defaultInitialCommand() else null,
+                            requestedId = msg.id, requestId = msg.requestId)
+                        send(DaemonAttachProtocol.Server.Opened(id))
+                        resync()
+                        if (host.get(id) == null) send(DaemonAttachProtocol.Server.Closed(id))
+                    }
                     is DaemonAttachProtocol.Client.Close -> host.closeSession(msg.id)
-                    is DaemonAttachProtocol.Client.SplitPane -> host.splitPane(
-                        sessionId = msg.sessionId,
-                        orientation = if (msg.orientation == "h") SplitOrientation.HORIZONTAL else SplitOrientation.VERTICAL,
-                        cwd = msg.cwd,
-                        ratio = msg.ratio,
-                    )
+                    is DaemonAttachProtocol.Client.SplitPane -> {
+                        val id = host.splitPane(
+                            sessionId = msg.sessionId,
+                            orientation = if (msg.orientation == "h") SplitOrientation.HORIZONTAL else SplitOrientation.VERTICAL,
+                            cwd = msg.cwd, ratio = msg.ratio, requestedId = msg.id, initialCommand = msg.initialCommand,
+                        )
+                        msg.id?.let {
+                            send(DaemonAttachProtocol.Server.Opened(it))
+                            resync()
+                            if (id == null || host.get(it) == null) send(DaemonAttachProtocol.Server.Closed(it))
+                        }
+                    }
                     is DaemonAttachProtocol.Client.ClosePane -> host.closeGroupedSession(msg.sessionId)
                     is DaemonAttachProtocol.Client.CloseGroup -> host.closeGroup(msg.groupId)
                     is DaemonAttachProtocol.Client.UpdateSplitRatio -> host.updateSplitRatio(msg.groupId, msg.splitId, msg.ratio)

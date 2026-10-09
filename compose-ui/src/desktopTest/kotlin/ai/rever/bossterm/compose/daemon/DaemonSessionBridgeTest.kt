@@ -19,7 +19,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.net.ServerSocket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -32,12 +31,11 @@ class DaemonSessionBridgeTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val controller = TabController(TerminalSettings.DEFAULT, {}, parentScope = scope)
         val splits = mutableStateMapOf<String, SplitViewState>()
-        val port = ServerSocket(0).use { it.localPort }
         val closeRequest = CompletableDeferred<String>()
         val acknowledgeClose = CompletableDeferred<Unit>()
         val sessions = DaemonAttachProtocol.Server.SessionList(listOf(DaemonAttachProtocol.SessionMeta("mcp-session", "MCP shell")))
         val groups = DaemonAttachProtocol.Server.GroupList(emptyList())
-        val server = embeddedServer(CIO, host = "127.0.0.1", port = port) {
+        val server = embeddedServer(CIO, host = "127.0.0.1", port = 0) {
             install(WebSockets)
             routing {
                 webSocket("/attach") {
@@ -56,6 +54,8 @@ class DaemonSessionBridgeTest {
                 }
             }
         }
+        server.start(wait = false)
+        val port = server.engine.resolvedConnectors().first().port
         val bridge = DaemonSessionBridge(controller, splits, port, "test", scope, Dispatchers.Unconfined)
         try {
             bridge.dispatch(sessions)
@@ -68,7 +68,6 @@ class DaemonSessionBridgeTest {
             bridge.dispatch(groups)
             assertTrue(controller.tabs.isEmpty(), "stale topology must not resurrect a closed flat session")
             assertFalse(bridge.closeTab("local-tab"), "unrelated tabs must not send daemon closes")
-            server.start(wait = false)
             bridge.start()
             assertEquals("mcp-session", withTimeout(5000) { closeRequest.await() }, "the disconnected close must reach the next socket")
             assertTrue(controller.tabs.isEmpty(), "the reconnect's stale SessionList must remain hidden before acknowledgement")

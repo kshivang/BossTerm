@@ -92,7 +92,10 @@ object TerminalSnapshotEncoder {
         var end = runs.size
         while (end > 0 && runs[end - 1].let { it.text.toString().isBlank() && it.style.background == null }) end--
         for (i in 0 until end) {
-            sb.append(encodeStyle(runs[i].style)).append(runs[i].text.toString())
+            // DWC is an internal second-cell placeholder. A receiving terminal creates its own;
+            // transmitting it would render an extra glyph and shift CJK/emoji columns on reattach.
+            val text = runs[i].text.toString().filterNot { it == ai.rever.bossterm.terminal.util.CharUtils.DWC }
+            sb.append(encodeStyle(runs[i].style)).append(text)
         }
     }
 

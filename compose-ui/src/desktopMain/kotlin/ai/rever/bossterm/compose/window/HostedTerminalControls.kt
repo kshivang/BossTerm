@@ -33,6 +33,8 @@ fun HostedTerminalControls(
     val settings by SettingsManager.instance.settings.collectAsState()
     val port by McpTerminalRegistry.runningPort.collectAsState()
     val shared by SessionShareManager.sharedTabIds.collectAsState()
+    val daemonShares by ai.rever.bossterm.compose.daemon.DaemonShareClient.state.collectAsState()
+    var showDaemonShares by remember { mutableStateOf(false) }
     val pending by SessionShareManager.pendingRequests.collectAsState()
     val remoteUrl by SessionShareManager.remoteUrlFlow.collectAsState()
     val remoteCalls by RemoteVoiceCalls.active.collectAsState()
@@ -105,13 +107,16 @@ fun HostedTerminalControls(
                         onTurnOnRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = true) } },
                     ))
                 },
-                showSharing = true, sharingCount = shared.size, remoteCalls = remoteCalls,
+                showSharing = true, sharingCount = shared.size + daemonShares.shares.size, remoteCalls = remoteCalls,
                 onSharingClick = {
                     val id = activeTabId()
+                    val daemon = id?.let(ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator::isHostedTab) == true
                     val existing = sharing.existing(id)
                     if (existing != null) {
                         shareInfo = existing
                         shareTick++
+                    } else if (daemon) {
+                        showDaemonShares = true
                     } else {
                         menu.showMenu(0f, 0f, listOf(
                             ContextMenuController.MenuItem("share_tab", "Share This Tab", enabled = id != null,
@@ -141,6 +146,11 @@ fun HostedTerminalControls(
             )
         }
     }
+    if (showDaemonShares) ai.rever.bossterm.compose.daemon.DaemonShareWindow(
+        focusedSessionId = null, focusedGroupId = activeTabId()?.let(
+            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator::groupIdForTab),
+        onDismiss = { showDaemonShares = false }, callLabel = callLabel,
+    )
     if (shareUnavailable) GlassAlertDialog3(
         onDismissRequest = { shareUnavailable = false },
         title = { androidx.compose.material3.Text("Unable to share this terminal") },

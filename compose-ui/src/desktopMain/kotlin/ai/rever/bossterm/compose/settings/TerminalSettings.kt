@@ -1061,8 +1061,12 @@ data class TerminalSettings(
      * Enabled by default: the standalone GUI spawns/connects the daemon, hosts MCP there, and lets
      * sessions outlive the window. Disable to use in-process sessions, MCP, and sharing instead.
      * The GUI starts it on-demand if needed; [startDaemonAtLogin] also defaults to enabled.
+     * Existing profiles are enabled once during settings migration; later opt-outs are preserved.
      */
     val daemonEnabled: Boolean = true,
+
+    /** Records the one-time upgrade to daemon mode so later user choices remain authoritative. */
+    val daemonModeDefaultsVersion: Int = 1,
 
     /**
      * Install a per-OS login service (macOS LaunchAgent / Linux systemd user unit / Windows Run

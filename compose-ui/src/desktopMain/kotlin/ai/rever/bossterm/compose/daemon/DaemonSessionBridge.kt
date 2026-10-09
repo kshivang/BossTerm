@@ -174,7 +174,12 @@ class DaemonSessionBridge(
     /** External UI-owner barrier, used before a plugin loader is closed. */
     fun stopForUnload() {
         stop()
-        kotlinx.coroutines.runBlocking { io.coroutineContext[kotlinx.coroutines.Job]?.join() }
+        kotlinx.coroutines.runBlocking { awaitStopped() }
+    }
+
+    internal suspend fun awaitStopped() {
+        io.coroutineContext[kotlinx.coroutines.Job]?.join()
+        client.coroutineContext[kotlinx.coroutines.Job]?.join()
     }
 
     /** Ask the daemon to open a new session (the GUI's "new tab" when in daemon mode). Returns whether

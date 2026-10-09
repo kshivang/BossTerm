@@ -57,6 +57,7 @@ object TerminalRuntimeLifecycle {
      */
     fun shutdownForUnload() {
         checkExternalTerminalUnloadCaller()
+        ai.rever.bossterm.compose.daemon.HostedDaemonBridges.shutdownForUnload()
         val completion: CountDownLatch
         val snapshot: List<Pair<TerminalSessionEngine, Job>>?
         synchronized(lock) {

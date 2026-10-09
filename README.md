@@ -636,8 +636,9 @@ every built-in tool's JSON schema, the `manage_tools` meta-tool, the
 A tmux-style background process that **owns your terminal sessions, MCP server, and shares** so they
 keep running after you close the GUI - reopen BossTerm and it reattaches to the live sessions.
 **Enabled by default** for standalone BossTerm. You can disable it under Settings → Session Daemon;
-when off, MCP/sharing run in-process and sessions close with their window. Saved preferences remain
-authoritative, including an explicit choice to disable daemon mode.
+when off, MCP/sharing run in-process and sessions close with their window. Existing installations
+are enabled once on upgrade, including profiles that previously saved the old `false` default.
+After that migration, your choice to disable daemon mode stays saved across restarts.
 
 Local tabs, embedded terminals, and daemon sessions use one shared session engine for PTY launch,
 shell integration, ordered input and replies, resizing, output parsing, prompt commands, and final

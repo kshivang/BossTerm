@@ -227,7 +227,9 @@ class TerminalSessionEngine(
                 val env = buildEnvironment()
                 val config = PlatformServices.ProcessService.ProcessConfig(
                     command = effectiveCommand,
-                    arguments = effectiveArguments,
+                    arguments = ShellIntegrationInjector.argumentsForShell(
+                        effectiveCommand, effectiveArguments, env, settings.autoInjectShellIntegration,
+                    ),
                     environment = env,
                     workingDirectory = workingDir ?: System.getProperty("user.home"),
                 )

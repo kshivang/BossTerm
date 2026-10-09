@@ -59,7 +59,7 @@ class BlockingTerminalDataStream(
          * Sentinel value used to wake up blocking take() on close.
          * Uses a unique string that cannot appear in normal terminal output.
          */
-        private const val CLOSE_SENTINEL = "\u0000CLOSE_SENTINEL\u0000"
+        private val CLOSE_SENTINEL = String("\u0000CLOSE_SENTINEL\u0000".toCharArray())
     }
 
     // Requests run on the emulator thread between complete instructions. A marker wakes a
@@ -251,6 +251,10 @@ class BlockingTerminalDataStream(
     private val queuedChars = java.util.concurrent.atomic.AtomicLong()
     /** Pending chunks only; the emulator may additionally hold one bounded remote frame. */
     internal val queuedOutputChars: Long get() = queuedChars.get().coerceAtLeast(0)
+    // Identity keys keep barriers out of the byte protocol: arbitrary terminal output can contain
+    // every character, but cannot be the same JVM String instance as an internal queue marker.
+    private val actions = java.util.Collections.synchronizedMap(java.util.IdentityHashMap<String, () -> Unit>())
+    private var pendingAction: (() -> Unit)? = null
 
     /**
      * Arrival timestamps for the chunks in [dataQueue], one per entry, in the same order.
@@ -272,8 +276,8 @@ class BlockingTerminalDataStream(
 
     /** Pair every successful take from [dataQueue] with its arrival stamp. */
     private fun took(chunk: String?): String? {
-        if (chunk != null && chunk != CLOSE_SENTINEL && chunk !== checkpointMarker && !queuedCheckpointMarkers.contains(chunk)) queuedChars.addAndGet(-chunk.length.toLong())
-        if (FrameLatencyProbe.enabled && chunk != null && chunk != CLOSE_SENTINEL && chunk !== checkpointMarker && !queuedCheckpointMarkers.contains(chunk)) {
+        if (chunk != null && chunk !== CLOSE_SENTINEL && chunk !== checkpointMarker && !queuedCheckpointMarkers.contains(chunk)) queuedChars.addAndGet(-chunk.length.toLong())
+        if (FrameLatencyProbe.enabled && chunk != null && chunk !== CLOSE_SENTINEL && chunk !== checkpointMarker && !queuedCheckpointMarkers.contains(chunk)) {
             arrivalNanos.poll()?.let { stamped ->
                 FrameLatencyProbe.markArrival(stamped)
                 FrameLatencyProbe.markDequeued(stamped, chunk.length)
@@ -344,7 +348,7 @@ class BlockingTerminalDataStream(
     }
 
     private fun notifyRawOutput(data: String) {
-        for (l in rawOutputListeners) l(data)
+        for (l in rawOutputListeners) runCatching { l(data) }
     }
 
     /**
@@ -380,6 +384,7 @@ class BlockingTerminalDataStream(
      * This ensures surrogate pairs, emoji sequences, and combining characters
      * are never split across chunk boundaries.
      */
+    @Synchronized
     fun append(data: String) {
         if (closed) return
 
@@ -409,14 +414,42 @@ class BlockingTerminalDataStream(
         }
     }
 
+    /** Enqueue an emulator-thread action after all preceding bytes and before following bytes.
+     * Plain-text bulk reads stop at the barrier so the action cannot run ahead of their model write. */
+    @Synchronized
+    fun appendAction(action: () -> Unit) {
+        if (closed) return
+        if (incompleteGraphemeBuffer.isNotEmpty()) {
+            val tail = incompleteGraphemeBuffer
+            incompleteGraphemeBuffer = ""
+            enqueue(tail)
+            runCatching { debugCallback?.invoke(tail) }
+            notifyRawOutput(tail)
+        }
+        val marker = String(charArrayOf(0.toChar()))
+        actions[marker] = action
+        enqueue(marker)
+    }
+
     /**
      * Signal that no more data will be appended.
      * Offers a sentinel value to wake any blocking take() call.
      */
+    @Synchronized
     fun close() {
+        if (closed) return
         closed = true
         failCheckpoints()
-        // Wake up any blocking take() call immediately
+        // No following chunk can complete a trailing grapheme now. Retain every received code
+        // unit; the terminal decides how to display an incomplete final scalar/ZWJ sequence.
+        if (incompleteGraphemeBuffer.isNotEmpty()) {
+            val tail = incompleteGraphemeBuffer
+            incompleteGraphemeBuffer = ""
+            enqueue(tail)
+            runCatching { debugCallback?.invoke(tail) }
+            notifyRawOutput(tail)
+        }
+        // Enqueued under the same producer monitor as append, so data never follows EOF.
         dataQueue.offer(CLOSE_SENTINEL)
     }
 
@@ -427,6 +460,8 @@ class BlockingTerminalDataStream(
             if (pushBackStack.isNotEmpty()) {
                 return pushBackStack.removeAt(pushBackStack.size - 1)
             }
+
+            pendingAction?.let { pendingAction = null; it() }
 
             // If we have data in the buffer, return it
             while (position >= buffer.length) {
@@ -466,9 +501,14 @@ class BlockingTerminalDataStream(
                     if (readingInstructionStart) runCheckpoints()
                     continue
                 }
+                val action = chunk?.let { actions.remove(it) }
+                if (action != null) {
+                    action()
+                    continue
+                }
 
                 // Check for close sentinel
-                if (chunk == CLOSE_SENTINEL) {
+                if (chunk === CLOSE_SENTINEL) {
                     throw TerminalDataStream.EOF()
                 }
 
@@ -512,6 +552,7 @@ class BlockingTerminalDataStream(
 
             // Check if we need more data - timeout depends on performance mode
             if (position >= buffer.length) {
+                if (pendingAction != null) break
                 // Compact buffer to prevent memory leak (issue #179)
                 compactBuffer()
 
@@ -525,7 +566,12 @@ class BlockingTerminalDataStream(
                 })
                 if (consumeQueuedCheckpoint(chunk)) break
                 if (chunk === checkpointMarker) continue
-                if (chunk != null && chunk != CLOSE_SENTINEL) {
+                val action = chunk?.let { actions.remove(it) }
+                if (action != null) {
+                    pendingAction = action
+                    break
+                }
+                if (chunk != null && chunk !== CLOSE_SENTINEL) {
                     buffer.append(chunk)
                 } else {
                     break // No data available or stream closed
@@ -558,7 +604,7 @@ class BlockingTerminalDataStream(
     }
 
     override val isEmpty: Boolean
-        get() = pushBackStack.isEmpty() &&
+        get() = pendingAction == null && pushBackStack.isEmpty() &&
                position >= buffer.length &&
                (closed || dataQueue.isEmpty())
 }

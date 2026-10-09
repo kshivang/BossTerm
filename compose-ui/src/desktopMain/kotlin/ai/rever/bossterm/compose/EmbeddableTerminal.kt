@@ -1,5 +1,8 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.session.TerminalSessionEngine
+import ai.rever.bossterm.compose.session.TerminalSessionStack
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,11 +26,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.window.GlassDialog as Dialog
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
@@ -35,7 +35,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
 import ai.rever.bossterm.compose.ai.AIAssistantDetector
@@ -52,15 +51,12 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
-import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
-import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.features.shouldUseNativeMenus
 import ai.rever.bossterm.compose.ime.IMEState
-import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsLoader
 import ai.rever.bossterm.compose.settings.TerminalSettings
@@ -69,11 +65,8 @@ import ai.rever.bossterm.compose.settings.withOverrides
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
-import ai.rever.bossterm.compose.tabs.ShellIntegrationInjector
 import ai.rever.bossterm.compose.tabs.TerminalTab
-import ai.rever.bossterm.terminal.emulator.BossEmulator
 import ai.rever.bossterm.terminal.model.BossTerminal
-import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.terminal.model.StyleState
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 
@@ -640,10 +633,10 @@ class EmbeddableTerminalState(
             ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
         )
 
-        // Start process in session's coroutine scope
-        session?.coroutineScope?.launch {
+        // Install the shared engine before returning so immediate programmatic input is queued.
+        session?.let { created ->
             initializeProcess(
-                session = session!!,
+                session = created,
                 settings = settings,
                 command = command,
                 workingDirectory = workingDirectory,
@@ -959,7 +952,8 @@ private fun createTerminalSession(
         textBuffer.endBatch()
     }
 
-    val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
+    val stack = TerminalSessionStack.create(settings, display, textBuffer, terminal, dataStream)
+    val emulator = stack.emulator
     val coroutineScope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(kotlinx.coroutines.Job)) + kotlinx.coroutines.Dispatchers.Default)
 
     return TerminalTab(
@@ -995,13 +989,13 @@ private fun createTerminalSession(
         ),
         hyperlinks = mutableStateOf(emptyList()),
         hoveredHyperlink = mutableStateOf(null)
-    )
+    ).apply { sessionStack = stack }
 }
 
 /**
  * Initialize PTY process for the session.
  */
-private suspend fun initializeProcess(
+private fun initializeProcess(
     session: TerminalTab,
     settings: TerminalSettings,
     command: String,
@@ -1012,223 +1006,34 @@ private suspend fun initializeProcess(
     onExit: ((Int) -> Unit)?,
     platformServices: PlatformServices = getPlatformServices()
 ) {
-    // True while this function owns a TerminalSessionSlots reservation that no
-    // completion hook will release — the outer catch must return it on failure.
-    var slotsHeld = false
-    // Set once spawned; lets the catch blocks reap a half-started process whose
-    // exit monitor was never armed (killing it also unwinds any reader/emulator
-    // loops already launched against it, freeing their dispatcher permits).
-    var spawnedHandle: PlatformServices.ProcessService.ProcessHandle? = null
-    try {
-        // Determine shell arguments (login shell)
-        val args = if (command.endsWith("/zsh") || command.endsWith("/bash") ||
-            command == "zsh" || command == "bash") {
-            listOf("-l")
-        } else {
-            emptyList()
-        }
-
-        // Build environment (filter out PWD/OLDPWD to avoid inheriting stale values)
-        val effectiveWorkingDir = workingDirectory ?: System.getProperty("user.home")
-        val terminalEnvironment = mutableMapOf<String, String>().apply {
-            putAll(System.getenv().filterKeys { it != "PWD" && it != "OLDPWD" })
-            put("TERM", "xterm-256color")
-            put("COLORTERM", "truecolor")
-            put("TERM_PROGRAM", "BossTerm")
-            putBossTermGraphicsEnvironment(session.id)
-            // Authenticates OSC 1341;OpenTarget requests from the open/xdg-open
-            // shim — see OpenTargetToken.
-            put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
-            // Identify the local Boss/BossTerm MCP server so in-shell programs
-            // (e.g. Claude Code) pick the matching `mcp__<name>__*` toolset. An
-            // explicit override in `environment` still wins (applied last).
-            put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
-            // Live port for Claude Code's ${VAR:-default} URL expansion — see
-            // McpTerminalRegistry.mcpPortEnvVar. Skipped while the server is
-            // down; the registered default takes over.
-            McpTerminalRegistry.runningPort.value?.let {
-                put(McpTerminalRegistry.mcpPortEnvVar, it.toString())
+    lateinit var engine: TerminalSessionEngine
+    engine = TerminalSessionEngine(
+        id = session.id,
+        settings = settings,
+        workingDir = workingDirectory,
+        command = command,
+        stack = checkNotNull(session.sessionStack),
+        platformServices = platformServices,
+        initialCommand = initialCommand,
+        environmentOverrides = localSessionEnvironment(settings, environment.orEmpty()),
+        parentScope = session.coroutineScope,
+        onStateChanged = { state ->
+            if (state is TerminalSessionEngine.State.Error) {
+                session.connectionState.value = ConnectionState.Error(state.message, state.cause)
             }
-            // Set PWD to match actual working directory (required for Starship and other prompts)
-            put("PWD", effectiveWorkingDir)
-            environment?.let { putAll(it) }
-        }
-
-        // Inject shell integration for command completion notifications (OSC 133)
-        ShellIntegrationInjector.injectForShell(
-            shell = command,
-            env = terminalEnvironment,
-            enabled = settings.autoInjectShellIntegration
-        )
-
-        // Create process config
-        val processConfig = PlatformServices.ProcessService.ProcessConfig(
-            command = command,
-            arguments = args,
-            environment = terminalEnvironment,
-            workingDirectory = effectiveWorkingDir
-        )
-
-        // Reserve the session's three long-lived threads (reader, emulator, waitFor)
-        // before spawning — a refused session must not spawn a process it can never
-        // read from. Released when the exit monitor below completes.
-        if (!TerminalSessionSlots.tryReserve()) {
-            session.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
-            return
-        }
-        slotsHeld = true
-
-        // Spawn PTY process
-        val processHandle = platformServices.getProcessService().spawnProcess(processConfig)
-
-        if (processHandle == null) {
-            slotsHeld = false
-            TerminalSessionSlots.release()
-            session.connectionState.value = ConnectionState.Error("Failed to spawn process")
-            return
-        }
-        spawnedHandle = processHandle
-
-        session.attachProcess(processHandle)
-        session.connectionState.value = ConnectionState.Connected(processHandle)
-
-        // Start emulator coroutine. Blocks in dataStream.char between chunks, so it
-        // must not hold one of Dispatchers.Default's nCPU permits.
-        val emulatorJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
-            drainTerminalEmulator(
-                emulator = session.emulator,
-                dataStream = session.dataStream,
-                terminal = session.terminal,
-                shouldContinue = processHandle::isAlive,
-                onProcessingError = { e ->
-                    println("WARNING: Error processing terminal output: ${e.message}")
-                },
-            )
-        }
-
-        // Start output reader coroutine — blocks in processHandle.read() for the
-        // session's whole life, kept off the shared Dispatchers.IO permits.
-        val readerJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
-            while (processHandle.isAlive()) {
-                val output = processHandle.read()
-                if (output != null) {
-                    session.dataStream.append(output)
-                }
-            }
-            session.dataStream.close()
-        }
-
-        // Send initial command if provided (after terminal is ready)
-        // Uses OSC 133;A (prompt started) signal for proper synchronization,
-        // with configurable fallback delay for shells without OSC 133 support
-        if (initialCommand != null) {
-            session.coroutineScope.launch(Dispatchers.IO) {
-                // Create a deferred that will be completed when first prompt appears
-                val promptReady = CompletableDeferred<Unit>()
-
-                // Add a temporary listener to detect OSC 133;A (prompt started)
-                val promptListener = object : CommandStateListener {
-                    override fun onPromptStarted() {
-                        promptReady.complete(Unit)
-                    }
-                }
-                session.terminal.addCommandStateListener(promptListener)
-
-                try {
-                    // Wait for either OSC 133;A signal OR fallback timeout
-                    val result = withTimeoutOrNull(settings.initialCommandDelayMs.toLong()) {
-                        promptReady.await()
-                    }
-
-                    if (result != null) {
-                        // OSC 133;A received - shell is ready
-                        // Small delay to ensure prompt is fully rendered
-                        delay(50)
-                    }
-                    // If result is null, timeout occurred - proceed with fallback delay
-                    // (already waited initialCommandDelayMs)
-
-                    // Register one-shot listener BEFORE sending command
-                    // (must be registered before command executes to catch fast commands)
-                    // Important: Track B->D sequence to avoid false positives from shell startup
-                    if (onInitialCommandComplete != null) {
-                        val completionListener = object : CommandStateListener {
-                            @Volatile
-                            private var commandStarted = false
-
-                            override fun onCommandStarted() {
-                                // Only count the first B after we send the command
-                                if (!commandStarted) {
-                                    commandStarted = true
-                                }
-                            }
-
-                            override fun onCommandFinished(exitCode: Int) {
-                                // Only fire callback if we saw a B first (command actually started)
-                                if (!commandStarted) {
-                                    return
-                                }
-                                try {
-                                    // Fire callback once with success status and exit code
-                                    onInitialCommandComplete(exitCode == 0, exitCode)
-                                } finally {
-                                    // Always unregister, even if callback throws
-                                    session.terminal.removeCommandStateListener(this)
-                                }
-                            }
-                        }
-                        session.terminal.addCommandStateListener(completionListener)
-                    }
-
-                    // Send the command followed by Enter (CR — see submitLine)
-                    processHandle.write(submitLine(initialCommand))
-                } finally {
-                    // Clean up the temporary listener
-                    session.terminal.removeCommandStateListener(promptListener)
-                }
-            }
-        }
-
-        // Monitor process exit (waitFor parks a TerminalSessionDispatcher thread).
-        val exitMonitorJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
-            val exitCode = processHandle.waitFor()
+        },
+        onConnected = { actual, _, _ ->
+            val handle = engine.processHandleAdapter(actual)
+            session.processHandle.value = handle
+            session.connectionState.value = ConnectionState.Connected(handle)
+        },
+        onInitialCommandComplete = onInitialCommandComplete,
+        onProcessExit = { code ->
+            val exitCode = code ?: -1
             session.connectionState.value = ConnectionState.Error("Process exited with code $exitCode")
             onExit?.invoke(exitCode)
-        }
-
-        // Release the reservation only after ALL three session loops have completed —
-        // normal exit or scope cancellation on dispose — so the accounting never runs
-        // ahead of the physically occupied permits during a mass close.
-        // invokeOnCompletion fires even for already-completed or never-started jobs.
-        val remainingLoops = java.util.concurrent.atomic.AtomicInteger(3)
-        listOf(emulatorJob, readerJob, exitMonitorJob).forEach { job ->
-            job.invokeOnCompletion {
-                if (remainingLoops.decrementAndGet() == 0) TerminalSessionSlots.release()
-            }
-        }
-        // Ownership transferred: the loop-completion countdown releases from here on.
-        slotsHeld = false
-
-    } catch (e: CancellationException) {
-        // Dispose mid-init — not an error. Reap the half-started process (so any
-        // reader/emulator loops already launched unwind and free their permits),
-        // return the reservation, and propagate instead of logging a spurious Error.
-        if (slotsHeld) {
-            spawnedHandle?.let { h -> withContext(NonCancellable) { runCatching { h.kill() } } }
-            TerminalSessionSlots.release()
-        }
-        throw e
-    } catch (e: Exception) {
-        // Anything thrown between reserving and arming the exit monitor (e.g.
-        // spawnProcess throwing instead of returning null) lands here. Kill the
-        // half-started process FIRST so the reader/emulator loops launched above
-        // unwind — isAlive() flips false and their permits free — instead of
-        // running orphaned, then return the reservation or capacity shrinks
-        // permanently.
-        if (slotsHeld) {
-            spawnedHandle?.let { h -> runCatching { h.kill() } }
-            TerminalSessionSlots.release()
-        }
-        session.connectionState.value = ConnectionState.Error(e.message ?: "Failed to start process")
-    }
+        },
+    )
+    session.attachEngine(engine)
+    engine.start()
 }

@@ -82,4 +82,14 @@ class ResizeSamplerTest {
         assertEquals(listOf(100 to 40), sent.filter { it.key == "b" }.map { it.cols to it.rows },
             "other keys are unaffected by a drop")
     }
+    @Test
+    fun `reconnect replays an unchanged latest grid`() = runBlocking {
+        val sent = ConcurrentLinkedQueue<Sent>()
+        val sampler = ResizeSampler(scope, minIntervalMs = 20) { k, c, r -> sent.add(Sent(k, c, r)) }
+        sampler.request("s", 100, 30)
+        withTimeout(2_000) { while (sent.isEmpty()) delay(5) }
+        sampler.replay()
+        assertEquals(listOf(100 to 30, 100 to 30), sent.map { it.cols to it.rows })
+    }
+
 }

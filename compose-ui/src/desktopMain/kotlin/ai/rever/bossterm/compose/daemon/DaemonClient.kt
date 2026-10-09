@@ -6,6 +6,7 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.io.RandomAccessFile
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.nio.channels.FileChannel
@@ -35,13 +36,18 @@ class DaemonClient {
      * to its in-process path).
      */
     fun ensureConnected(spawnIfAbsent: Boolean = true): DaemonControlChannel.Companion.Endpoint? {
+        endpoint = null
         probeExisting()?.let { endpoint = it; return it }
         if (!spawnIfAbsent) return null
+        // A live incompatible daemon still owns the profile and its sessions. Spawning a second
+        // process cannot repair the protocol mismatch and only delays the GUI's fallback.
+        DaemonControlChannel.readEndpoint()?.let { if (ping(it)) return null }
         return spawnRaceGuarded()?.also { endpoint = it }
     }
 
     /** Send one control verb; returns the response line (`OK …`/`ERR …`) or null on failure. */
     fun request(verb: String, arg: String = ""): String? {
+        if (verb.any { it.isWhitespace() } || arg.contains('\n') || arg.contains('\r')) return null
         val ep = endpoint ?: return null
         return rawRequest(ep, if (arg.isEmpty()) "${ep.secret} $verb" else "${ep.secret} $verb $arg")
     }
@@ -60,7 +66,7 @@ class DaemonClient {
                 // strand it (discovery-less) and trigger a spurious extra spawn. Same guard as stop().
                 runCatching {
                     val cur = DaemonControlChannel.readEndpoint()
-                    if (cur == null || cur.secret == ep.secret) BossTermPaths.daemonPortFile().delete()
+                    if (cur?.secret == ep.secret) BossTermPaths.daemonPortFile().delete()
                 }
             } else {
                 log.warn("Daemon proto {} != client proto {}; not attaching", ep.protocolVersion, DaemonControlChannel.PROTOCOL_VERSION)
@@ -169,12 +175,21 @@ class DaemonClient {
     }
 
     private fun rawRequest(ep: DaemonControlChannel.Companion.Endpoint, line: String): String? = try {
-        Socket(InetAddress.getLoopbackAddress(), ep.port).use { sock ->
+        Socket().use { sock ->
+            sock.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), ep.port), 1000)
             sock.soTimeout = 3000
             OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8).apply {
                 write(line); write("\n"); flush()
             }
-            BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8)).readLine()
+            val reader = BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8))
+            val response = StringBuilder()
+            var consumed = 0
+            while (consumed++ <= 1024 * 1024) {
+                val ch = reader.read()
+                if (ch == -1 || ch == '\n'.code) return@use response.toString().takeIf { it.isNotEmpty() }
+                if (ch != '\r'.code) response.append(ch.toChar())
+            }
+            null
         }
     } catch (e: Exception) {
         null

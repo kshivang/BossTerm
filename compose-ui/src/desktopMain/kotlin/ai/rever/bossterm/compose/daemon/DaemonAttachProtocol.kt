@@ -36,7 +36,8 @@ object DaemonAttachProtocol {
     // into a clean connect-time reject via the existing ?v= handshake instead of a decode crash.
     // v3 moves Output/Snapshot from JSON text frames to binary websocket frames ([BinaryFrame]) —
     // a v2 client would ignore binary frames entirely and render nothing, so reject at connect.
-    const val PROTOCOL_VERSION = 3
+    // v4 adds atomic CloseGroup and group-scoped share management.
+    const val PROTOCOL_VERSION = 4
 
     /** Header carrying the daemon control secret on the attach WS handshake (not a ?query= param, so
      *  it doesn't leak into request-line logs / proxies). Shared by the GUI client and the daemon. */
@@ -82,6 +83,7 @@ object DaemonAttachProtocol {
         }
 
         fun encodeSnapshot(sessionId: String, cols: Int, rows: Int, data: String): ByteArray {
+            require(cols in 1..2000 && rows in 1..2000) { "invalid snapshot grid: ${cols}x${rows}" }
             val id = idBytes(sessionId)
             val payload = data.toByteArray(Charsets.UTF_8)
             val out = ByteArray(2 + id.size + 4 + payload.size)
@@ -100,6 +102,7 @@ object DaemonAttachProtocol {
         fun decode(bytes: ByteArray): Server? {
             if (bytes.size < 2) return null
             val idLen = bytes[1].toInt() and 0xFF
+            if (idLen == 0) return null
             val idEnd = 2 + idLen
             return when (bytes[0]) {
                 TYPE_OUTPUT -> {
@@ -111,11 +114,14 @@ object DaemonAttachProtocol {
                 }
                 TYPE_SNAPSHOT -> {
                     if (bytes.size < idEnd + 4) return null
+                    val cols = ((bytes[idEnd].toInt() and 0xFF) shl 8) or (bytes[idEnd + 1].toInt() and 0xFF)
+                    val rows = ((bytes[idEnd + 2].toInt() and 0xFF) shl 8) or (bytes[idEnd + 3].toInt() and 0xFF)
+                    if (cols !in 1..2000 || rows !in 1..2000) return null
                     Server.Snapshot(
                         String(bytes, 2, idLen, Charsets.UTF_8),
                         String(bytes, idEnd + 4, bytes.size - idEnd - 4, Charsets.UTF_8),
-                        cols = ((bytes[idEnd].toInt() and 0xFF) shl 8) or (bytes[idEnd + 1].toInt() and 0xFF),
-                        rows = ((bytes[idEnd + 2].toInt() and 0xFF) shl 8) or (bytes[idEnd + 3].toInt() and 0xFF),
+                        cols = cols,
+                        rows = rows,
                     )
                 }
                 else -> null
@@ -128,7 +134,7 @@ object DaemonAttachProtocol {
         // can't overread; only a producer minting a >255-byte id would ever trip this.
         private fun idBytes(sessionId: String): ByteArray =
             sessionId.toByteArray(Charsets.UTF_8).also {
-                require(it.size <= 255) { "session id too long for binary framing: ${it.size} bytes" }
+                require(it.size in 1..255) { "session id too long for binary framing: ${it.size} bytes" }
             }
     }
 
@@ -139,6 +145,7 @@ object DaemonAttachProtocol {
     object ShareScopeKind {
         const val ALL = "all"
         const val SESSION = "session"
+        const val GROUP = "group"
     }
 
     /**
@@ -162,6 +169,7 @@ object DaemonAttachProtocol {
         val remoteStatus: String = "off",
         val remoteAttempt: Int = 0,
         val remoteMaxAttempts: Int = 0,
+        val groupId: String? = null,
     )
 
     /** A viewer awaiting the host's approval (surfaced to attached GUIs; honors sessionSharingApprovalScope). */
@@ -255,6 +263,7 @@ object DaemonAttachProtocol {
             val scope: String = ShareScopeKind.ALL,
             val sessionId: String? = null,
             val remoteMode: String? = null,
+            val groupId: String? = null,
         ) : Client()
 
         /** Stop a daemon-hosted share (kills its tunnel; frees the port if it was the last share). */
@@ -302,6 +311,10 @@ object DaemonAttachProtocol {
          *  might be grouped — the daemon looks up group membership itself. */
         @Serializable @SerialName("closePane")
         data class ClosePane(val sessionId: String) : Client()
+
+        /** Atomically close every pane belonging to a daemon group. */
+        @Serializable @SerialName("closeGroup")
+        data class CloseGroup(val groupId: String) : Client()
 
         /** Divider-drag ratio update for a split within a group's tree (sent on drag commit, not
          *  per-pixel, to keep the wire quiet during a live drag). */

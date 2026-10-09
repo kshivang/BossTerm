@@ -54,9 +54,22 @@ object DaemonLauncher {
     /** Prefix for `--prop:key=value` program args carrying system props into a native-launcher daemon. */
     const val PROP_ARG_PREFIX = "--prop:"
 
+    internal const val GUI_DOCK_ICON_PROPERTY = "bossterm.gui.dock.icon"
+
+    /** Preserve Gradle's Dock icon across the headless daemon's JVM launch. */
+    fun captureGuiBranding(inputArguments: List<String> =
+        java.lang.management.ManagementFactory.getRuntimeMXBean().inputArguments +
+            ProcessHandle.current().info().arguments().orElse(emptyArray()).toList(),
+    ) {
+        inputArguments.firstOrNull { it.startsWith("-Xdock:icon=") }
+            ?.substringAfter("-Xdock:icon=")?.takeIf { it.isNotBlank() }
+            ?.let { System.setProperty(GUI_DOCK_ICON_PROPERTY, it) }
+    }
+
     /** Props the daemon must agree with the GUI on; forwarded by both launch recipes when set. */
     private val PASSTHROUGH_PROPS = listOf(
         BossTermPaths.SETTINGS_DIR_PROPERTY, "bossterm.version", "compose.application.resources.dir",
+        GUI_DOCK_ICON_PROPERTY,
     )
 
     /**
@@ -122,7 +135,7 @@ object DaemonLauncher {
             // and GUI agree on settings dir, bundled-resource location, and reported version.
             PASSTHROUGH_PROPS.forEach { key -> passthroughProp(key)?.let { add(it) } }
             add("-cp")
-            add(classpath)
+            add(absoluteClasspath(classpath))
             add(mainClass)
             addAll(extraArgs)
         }
@@ -140,7 +153,7 @@ object DaemonLauncher {
             add(launcher.absolutePath)
             add(DAEMON_ARG)
             PASSTHROUGH_PROPS.forEach { key ->
-                System.getProperty(key)?.takeIf { it.isNotBlank() }?.let { add("$PROP_ARG_PREFIX$key=$it") }
+                forwardedProperty(key)?.let { add("$PROP_ARG_PREFIX$key=$it") }
             }
             addAll(extraArgs)
         }
@@ -231,13 +244,20 @@ object DaemonLauncher {
      * Dev / other platforms: spawn a fresh GUI instance via the same JRE + classpath (it attaches
      * to the daemon and renders its sessions). Best-effort; logs on failure.
      */
+    private var launchedGui: Process? = null
+
+    @Synchronized
     fun openGui() {
         macAppBundlePath()?.let { app ->
-            runCatching { ProcessBuilder("open", app).start() }
+            val props = PASSTHROUGH_PROPS.mapNotNull { key -> forwardedProperty(key)?.let { "$PROP_ARG_PREFIX$key=$it" } }
+            runCatching { ProcessBuilder(listOf("open", "-a", app, "--args") + props).start() }
                 .onSuccess { log.info("openGui: focused/launched {}", app) }
                 .onFailure { log.warn("openGui: `open {}` failed: {}", app, it.message) }
             return
         }
+        // The app-level activation connection takes over once startup finishes. Before that,
+        // repeated menu-bar clicks must still refer to the same child process.
+        launchedGui?.takeIf { it.isAlive }?.let { activatePid(it.pid()); return }
         val cmd = buildGuiCommand() ?: run { log.warn("openGui: cannot build GUI launch command"); return }
         val logFile = prepareLogFile()
         runCatching {
@@ -245,7 +265,7 @@ object DaemonLauncher {
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
                 .redirectError(ProcessBuilder.Redirect.appendTo(logFile))
                 .start()
-        }.onSuccess { log.info("openGui: spawned GUI pid={}", it.pid()) }
+        }.onSuccess { launchedGui = it; log.info("openGui: spawned GUI pid={}", it.pid()) }
             .onFailure { log.warn("openGui: spawn failed: {}", it.message) }
     }
 
@@ -323,33 +343,50 @@ object DaemonLauncher {
     }
 
     /** Launch the GUI in a normal (non-headless, non-agent) JVM via the same JRE + classpath. */
-    private fun buildGuiCommand(): List<String>? {
+    internal fun buildGuiCommand(): List<String>? {
         val javaBin = resolveJavaBinary()
         if (javaBin == null) {
             // Packaged Windows/Linux: no bin/java (the same gap the daemon spawn has) — relaunch
             // the native launcher as a plain GUI; its cfg re-applies the packaged java-options and
-            // --add-opens. Like the macOS `open <bundle>` path above, a runtime-set settings-dir
-            // profile is not forwarded (the GUI facade only parses --prop: args after --daemon).
-            return packagedLauncherBinary()?.let { listOf(it.absolutePath) }
+            // --add-opens. Forward the profile as program args parsed by the GUI facade.
+            return packagedLauncherBinary()?.let { launcher ->
+                listOf(launcher.absolutePath) + PASSTHROUGH_PROPS.mapNotNull { key ->
+                    forwardedProperty(key)?.let { "$PROP_ARG_PREFIX$key=$it" }
+                }
+            }
         }
         val classpath = System.getProperty("java.class.path")?.takeIf { it.isNotBlank() } ?: return null
         return buildList {
             add(javaBin.absolutePath)
             // GUI is a normal foreground app: do NOT pass headless or UIElement.
+            if (ShellCustomizationUtils.isMacOS()) {
+                add("-Xdock:name=BossTerm")
+                forwardedProperty(GUI_DOCK_ICON_PROPERTY)?.let { add("-Xdock:icon=$it") }
+            }
             PASSTHROUGH_PROPS.forEach { key -> passthroughProp(key)?.let { add(it) } }
             // Mirror the GUI launcher's AWT --add-opens (global hotkeys / window integration).
             add("--add-opens"); add("java.desktop/java.awt=ALL-UNNAMED")
             if (ShellCustomizationUtils.isMacOS()) { add("--add-opens"); add("java.desktop/sun.lwawt.macosx=ALL-UNNAMED") }
             if (ShellCustomizationUtils.isLinux()) { add("--add-opens"); add("java.desktop/sun.awt.X11=ALL-UNNAMED") }
             add("-cp")
-            add(classpath)
+            add(absoluteClasspath(classpath))
             add(GUI_MAIN_CLASS)
         }
     }
 
     /** `-Dkey=value` for a currently-set system property, or null if unset/blank. */
     private fun passthroughProp(key: String): String? =
-        System.getProperty(key)?.takeIf { it.isNotBlank() }?.let { "-D$key=$it" }
+        forwardedProperty(key)?.let { "-D$key=$it" }
+
+    private fun forwardedProperty(key: String): String? =
+        if (key == BossTermPaths.SETTINGS_DIR_PROPERTY) BossTermPaths.dir().absolutePath
+        else System.getProperty(key)?.takeIf { it.isNotBlank() }
+
+    /** Login managers do not inherit the GUI's working directory. */
+    internal fun absoluteClasspath(classpath: String): String =
+        classpath.split(File.pathSeparatorChar).joinToString(File.pathSeparator) { entry ->
+            File(entry.ifEmpty { "." }).absolutePath
+        }
 
     /** The bundled JRE's launcher binary, or null if not found. */
     private fun resolveJavaBinary(): File? {

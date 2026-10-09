@@ -85,7 +85,8 @@ class HeadlessTerminalDisplay(
     override val selection: TerminalSelection? get() = null
 
     override fun terminalMouseModeSet(mouseMode: MouseMode) { _mouseMode.value = mouseMode }
-    override fun setMouseFormat(mouseFormat: MouseFormat) { /* daemon does not need the format */ }
+    @Volatile var mouseFormat: MouseFormat = MouseFormat.MOUSE_FORMAT_XTERM; private set
+    override fun setMouseFormat(mouseFormat: MouseFormat) { this.mouseFormat = mouseFormat }
     override fun ambiguousCharsAreDoubleWidth(): Boolean = false
 
     override fun setBracketedPasteMode(bracketedPasteModeEnabled: Boolean) {

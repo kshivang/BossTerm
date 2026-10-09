@@ -39,6 +39,8 @@ class DaemonControlChannel(
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var secret: String = ""
     @Volatile private var running = false
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    private var publishedFile: java.io.File? = null
 
     // Bounded worker pool for per-connection request handling — caps concurrent threads so a local
     // actor can't spawn unbounded short-lived threads ahead of the bad-secret rejection. SynchronousQueue
@@ -58,36 +60,55 @@ class DaemonControlChannel(
      * Bind the loopback socket, write [BossTermPaths.daemonPortFile], and start accepting.
      * Idempotent-ish: throws if already started. Returns the bound port.
      */
-    fun start(): Int {
+    @Synchronized
+    fun start(publishEndpoint: Boolean = true): Int {
         check(serverSocket == null) { "DaemonControlChannel already started" }
+        check(!requestPool.isShutdown) { "DaemonControlChannel has been stopped" }
         secret = newSecret()
         val socket = ServerSocket(0, 64, InetAddress.getLoopbackAddress())
         serverSocket = socket
         running = true
-        writePortFile(socket.localPort, secret)
+        try {
+            if (publishEndpoint) publishEndpoint()
+        } catch (e: Exception) {
+            running = false
+            serverSocket = null
+            socket.close()
+            throw e
+        }
         thread(name = "bossterm-daemon-control", isDaemon = true) { acceptLoop(socket) }
         log.info("Daemon control channel on 127.0.0.1:{} (v{} proto{})", socket.localPort, version, protocolVersion)
         return socket.localPort
     }
 
+    /** Publish readiness only once all daemon services (especially GUI attach) are listening. */
+    @Synchronized
+    fun publishEndpoint() {
+        check(running) { "DaemonControlChannel is not running" }
+        writePortFile(port, secret)
+        publishedFile = BossTermPaths.daemonPortFile()
+    }
+
     /** Stop accepting and remove the port file (only if it's still ours). Safe to call more than once. */
+    @Synchronized
     fun stop() {
         running = false
         runCatching { requestPool.shutdownNow() }
         runCatching { serverSocket?.close() }
+        clients.forEach { runCatching { it.close() } }
         serverSocket = null
         // Only delete daemon.port if it still belongs to THIS instance. Under a shutdown/start race,
         // another daemon may already have overwritten it with its own port+secret — deleting that would
         // strand a live daemon with no discovery file (and the GUI would spawn yet another).
         val mySecret = secret
         runCatching {
-            val ep = readEndpoint()
-            if (ep == null || ep.secret == mySecret) BossTermPaths.daemonPortFile().delete()
+            val file = publishedFile
+            if (file != null && readEndpoint(file)?.secret == mySecret) file.delete()
         }
         // daemon.pid is diagnostics-only; delete it only if it still records OUR pid, so the same
         // shutdown/start race can't blow away a newer daemon's pid marker.
         runCatching {
-            val pidFile = BossTermPaths.daemonPidFile()
+            val pidFile = publishedFile?.parentFile?.let { java.io.File(it, "daemon.pid") } ?: return@runCatching
             if (pidFile.readText(StandardCharsets.UTF_8).trim().toLongOrNull() == currentPid()) pidFile.delete()
         }
     }
@@ -103,10 +124,14 @@ class DaemonControlChannel(
             // One short-lived request per connection; handle on a bounded worker pool so a slow/hung
             // client never blocks the accept loop and a flood can't spawn unbounded threads.
             try {
-                requestPool.execute { handle(client) }
+                clients.add(client)
+                requestPool.execute {
+                    try { handle(client) } finally { clients.remove(client) }
+                }
             } catch (e: java.util.concurrent.RejectedExecutionException) {
                 if (running) log.warn("control: request pool saturated; rejecting connection")
                 runCatching { client.close() }
+                clients.remove(client)
             }
         }
     }
@@ -145,7 +170,7 @@ class DaemonControlChannel(
             }
             runCatching {
                 OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8).apply {
-                    write(response)
+                    write(response.replace('\r', ' ').replace('\n', ' '))
                     write("\n")
                     flush()
                 }
@@ -203,21 +228,14 @@ class DaemonControlChannel(
         val tmp = java.io.File.createTempFile(".daemon.port", ".tmp", file.parentFile)
         restrictToOwner(tmp)
         tmp.writeText("$port\n$secret\n$version $protocolVersion\n", StandardCharsets.UTF_8)
-        runCatching {
+        try {
             java.nio.file.Files.move(
                 tmp.toPath(), file.toPath(),
                 java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
             )
-        }.onFailure {
-            // Filesystems without atomic rename (rare): write in place, but create the file owner-only
-            // FIRST so the secret never lands in a world-readable file (a restrictToOwner AFTER writeText
-            // would leave a window; restrictToOwner on a not-yet-existing file is a no-op).
-            runCatching { file.delete() }
-            BossTermPaths.createOwnerOnly(file)
-            file.writeText("$port\n$secret\n$version $protocolVersion\n", StandardCharsets.UTF_8)
-            restrictToOwner(file)
-            runCatching { tmp.delete() }
-        }
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(tmp.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        } finally { tmp.delete() }
         restrictToOwner(file)
         // Deliberately NO deleteOnExit() here: the JVM exit hook deletes unconditionally, which under a
         // shutdown/start race would let THIS daemon's exit delete a newer daemon's freshly-written
@@ -262,13 +280,17 @@ class DaemonControlChannel(
          */
         data class Endpoint(val port: Int, val secret: String, val version: String, val protocolVersion: Int)
 
-        fun readEndpoint(): Endpoint? {
-            val file = BossTermPaths.daemonPortFile()
+        fun readEndpoint(): Endpoint? = readEndpoint(BossTermPaths.daemonPortFile())
+
+        private fun readEndpoint(file: java.io.File): Endpoint? {
             if (!file.exists()) return null
             return runCatching {
+                if (file.length() > 8192) return null
                 val lines = file.readText(StandardCharsets.UTF_8).lines()
                 val port = lines.getOrNull(0)?.trim()?.toInt() ?: return null
+                if (port !in 1..65535) return null
                 val secret = lines.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+                if (secret.any { it.isWhitespace() }) return null
                 val verParts = lines.getOrNull(2)?.trim()?.split(' ') ?: emptyList()
                 val ver = verParts.getOrNull(0) ?: "0.0.0"
                 val proto = verParts.getOrNull(1)?.toIntOrNull() ?: 0

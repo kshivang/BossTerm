@@ -21,7 +21,8 @@ object LoginServiceManager {
     private val log = LoggerFactory.getLogger(LoginServiceManager::class.java)
 
     private val isDefaultProfile: Boolean
-        get() = System.getProperty(BossTermPaths.SETTINGS_DIR_PROPERTY).isNullOrBlank()
+        get() = BossTermPaths.resolvedDirectory(BossTermPaths.dir()) ==
+            BossTermPaths.resolvedDirectory(File(System.getProperty("user.home"), ".bossterm"))
 
     /** Base id, suffixed with the profile tag for non-default settings dirs. */
     private fun serviceId(): String =
@@ -38,6 +39,7 @@ object LoginServiceManager {
         }
     }.getOrDefault(false)
 
+    @Synchronized
     fun install(): Result<Unit> = runCatching {
         val command = DaemonLauncher.buildCommand()
             ?: error("Could not resolve the daemon launch command (JRE/classpath unavailable)")
@@ -49,6 +51,7 @@ object LoginServiceManager {
         }
     }.onFailure { log.warn("Login service install failed: {}", it.message) }
 
+    @Synchronized
     fun uninstall(): Result<Unit> = runCatching {
         when {
             ShellCustomizationUtils.isMacOS() -> uninstallMac()
@@ -65,8 +68,10 @@ object LoginServiceManager {
     private fun installMac(command: List<String>) {
         val file = macPlistFile()
         file.parentFile?.mkdirs()
+        BossTermPaths.createOwnerOnly(BossTermPaths.daemonLogFile())
         val content = macPlist(serviceId(), command, BossTermPaths.daemonLogFile().absolutePath)
         val uid = uid()
+        if (uid != null) runChecked("launchctl", "enable", "gui/$uid/${serviceId()}")
         // Never bootout a service that's currently registered: bootout KILLS a running daemon (and
         // every session it owns), and with RunAtLoad the follow-up bootstrap starts a fresh daemon
         // immediately — the pair used to race the GUI's own spawn into two live daemons. When the
@@ -85,14 +90,14 @@ object LoginServiceManager {
             val (code, _) = runCapture("launchctl", "bootstrap", "gui/$uid", file.absolutePath)
             if (code == 0) return
         }
-        run("launchctl", "unload", file.absolutePath)
-        run("launchctl", "load", "-w", file.absolutePath)
+        runChecked("launchctl", "load", "-w", file.absolutePath)
     }
 
     private fun uninstallMac() {
         val file = macPlistFile()
-        uid()?.let { run("launchctl", "bootout", "gui/$it", file.absolutePath) }
-        run("launchctl", "unload", "-w", file.absolutePath) // older-OS fallback
+        // Disabling future starts does not kill the daemon (and every session it owns), unlike
+        // bootout/unload. installMac re-enables the registration when the user opts back in.
+        uid()?.let { runChecked("launchctl", "disable", "gui/$it/${serviceId()}") }
         file.delete()
     }
 
@@ -133,7 +138,7 @@ object LoginServiceManager {
             // No systemd now, but a unit may linger from a prior systemd-enabled state — disable +
             // remove it so we don't schedule the daemon twice (XDG here + the stale systemd unit).
             if (systemdUnitFile().exists()) {
-                run("systemctl", "--user", "disable", "--now", systemdUnitName())
+                run("systemctl", "--user", "disable", systemdUnitName())
                 runCatching { systemdUnitFile().delete() }
                 run("systemctl", "--user", "daemon-reload")
             }
@@ -145,7 +150,7 @@ object LoginServiceManager {
 
     private fun uninstallLinux() {
         if (systemdUnitFile().exists()) {
-            run("systemctl", "--user", "disable", "--now", systemdUnitName())
+            runChecked("systemctl", "--user", "disable", systemdUnitName())
             systemdUnitFile().delete()
             run("systemctl", "--user", "daemon-reload")
         }
@@ -163,11 +168,11 @@ object LoginServiceManager {
         // which on Windows re-quotes any arg containing spaces — so the already-inner-quoted value
         // would be stored DOUBLE-escaped and fail to launch at login. A .reg file isn't re-quoted.
         val regFile = File(BossTermPaths.dir(), ".bossterm-login.reg")
-        runCatching {
+        try {
             writeRegFileUtf16(regFile, windowsRegFile(command))
-            run("reg", "import", regFile.absolutePath)
-        }.onFailure { log.warn("Windows login-service install failed: {}", it.message) }
-        runCatching { regFile.delete() }
+            runChecked("reg", "import", regFile.absolutePath)
+            check(queryWindowsRunValue() == windowsRunValue(command)) { "Windows login command was not stored correctly" }
+        } finally { regFile.delete() }
     }
 
     private fun uninstallWindows() {
@@ -240,7 +245,7 @@ object LoginServiceManager {
 
         [Service]
         Type=simple
-        ExecStart=${command.joinToString(" ") { unitQuote(it) }.replace("%", "%%")}
+        ExecStart=${command.joinToString(" ") { unitQuote(it) }.replace("%", "%%").replace("$", "$$")}
         Restart=on-failure
         RestartSec=2
 
@@ -252,7 +257,7 @@ object LoginServiceManager {
         [Desktop Entry]
         Type=Application
         Name=BossTerm Daemon
-        Exec=${command.joinToString(" ") { unitQuote(it) }.replace("%", "%%")}
+        Exec=${command.joinToString(" ") { desktopQuote(it) }.replace("%", "%%")}
         X-GNOME-Autostart-enabled=true
         NoDisplay=true
     """.trimIndent() + "\n"
@@ -301,21 +306,61 @@ object LoginServiceManager {
         if (arg.isNotEmpty() && arg.all { it.isLetterOrDigit() || it in "-_./:=" }) arg
         else "\"" + arg.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
-    // ---- process helpers ----
-
-    private fun run(vararg cmd: String) {
-        runCatching {
-            val p = ProcessBuilder(*cmd).redirectErrorStream(true).start()
-            // Drain the merged stream before waitFor() so a command that emits more than the OS pipe
-            // buffer can't deadlock (the same hazard runCapture avoids); we don't need the output here.
-            p.inputStream.bufferedReader().readText()
-            p.waitFor()
-        }.onFailure { log.debug("{} failed: {}", cmd.firstOrNull(), it.message) }
+    /** Desktop Exec has two escaping passes: the string value, then command-line quotes. */
+    internal fun desktopQuote(arg: String): String {
+        require(arg.none { it == '\n' || it == '\r' || it == '\u0000' })
+        if (arg.isNotEmpty() && arg.all { it.isLetterOrDigit() || it in "-_./:=" }) return arg
+        val escaped = buildString {
+            arg.forEach { c ->
+                if (c == '\\' || c == '"' || c == '$' || c == '`') append('\\')
+                append(c)
+            }
+        }.replace("\\", "\\\\")
+        return "\"$escaped\""
     }
 
-    private fun runCapture(vararg cmd: String): Pair<Int, String> = runCatching {
-        val p = ProcessBuilder(*cmd).redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        p.waitFor() to out
-    }.getOrDefault(-1 to "")
+    // ---- process helpers ----
+
+    private fun runChecked(vararg cmd: String) {
+        val (code, output) = runCapture(*cmd)
+        check(code == 0) { "${cmd.firstOrNull()} failed (exit $code): ${output.trim().take(300)}" }
+    }
+
+    private fun run(vararg cmd: String) {
+        val (code, output) = runCapture(*cmd)
+        if (code != 0) log.debug("{} failed (exit {}): {}", cmd.firstOrNull(), code, output.take(300))
+    }
+
+    private fun runCapture(vararg cmd: String): Pair<Int, String> {
+        var process: Process? = null
+        return try {
+            val p = ProcessBuilder(*cmd).redirectErrorStream(true).start().also { process = it }
+            p.outputStream.close()
+            val output = StringBuilder()
+            val reader = kotlin.concurrent.thread(isDaemon = true, name = "bossterm-login-command") {
+                runCatching {
+                    p.inputStream.bufferedReader().use { stream ->
+                        val buffer = CharArray(4096)
+                        while (true) {
+                            val count = stream.read(buffer)
+                            if (count < 0) break
+                            synchronized(output) {
+                                output.append(buffer, 0, count.coerceAtMost((64 * 1024 - output.length).coerceAtLeast(0)))
+                            }
+                        }
+                    }
+                }
+            }
+            val exited = p.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+            if (!exited) p.destroyForcibly()
+            reader.join(1000)
+            if (!exited) runCatching { p.inputStream.close() }
+            (if (exited) p.exitValue() else -1) to synchronized(output) { output.toString() }
+        } catch (e: Exception) {
+            if (e is InterruptedException) Thread.currentThread().interrupt()
+            -1 to (e.message ?: "command failed")
+        } finally {
+            process?.takeIf { it.isAlive }?.let { runCatching { it.destroyForcibly() } }
+        }
+    }
 }

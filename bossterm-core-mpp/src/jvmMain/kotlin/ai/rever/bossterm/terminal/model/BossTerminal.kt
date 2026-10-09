@@ -1607,6 +1607,15 @@ class BossTerminal(
         setModeEnabled(TerminalMode.CursorVisible, true)
     }
 
+    /** Saved DECSC position in one-based terminal coordinates, for faithful mirror baselines. */
+    val savedCursorPosition: Pair<Int, Int>?
+        get() = myStoredCursor?.let { (it.cursorX + 1) to it.cursorY }
+
+    val savedCursorStyle: TextStyle? get() = myStoredCursor?.textStyle
+    val savedCursorAutoWrap: Boolean? get() = myStoredCursor?.isAutoWrap
+    val savedCursorOriginMode: Boolean? get() = myStoredCursor?.isOriginMode
+    val scrollRegion: Pair<Int, Int> get() = myScrollRegionTop to myScrollRegionBottom
+
     fun isModelEnabled(terminalMode: TerminalMode): Boolean {
         return myModes.contains(terminalMode)
     }

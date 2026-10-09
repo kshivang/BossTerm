@@ -86,6 +86,18 @@ class DaemonClientTest {
 
     // ---- helpers ----
 
+    @Test
+    fun `failed rediscovery clears the previously cached endpoint`() = withSettingsDir {
+        val channel = DaemonControlChannel("1", DaemonControlChannel.PROTOCOL_VERSION) { _, _ -> "OK" }
+        channel.start()
+        val client = DaemonClient()
+        assertNotNull(client.ensureConnected(false))
+        channel.stop()
+        assertNull(client.ensureConnected(false))
+        assertNull(client.current)
+        assertNull(client.request(DaemonProtocol.PING))
+    }
+
     /** A currently-free loopback port number (the socket is closed before returning). */
     private fun freeEphemeralPort(): Int = ServerSocket(0).use { it.localPort }
 

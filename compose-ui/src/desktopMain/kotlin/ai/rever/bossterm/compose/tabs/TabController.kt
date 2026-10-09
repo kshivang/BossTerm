@@ -1,12 +1,13 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.session.TerminalSessionEngine
+import ai.rever.bossterm.compose.session.TerminalSessionStack
+import ai.rever.bossterm.compose.session.resolveSessionCommand
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.emulator.BossEmulator
 import ai.rever.bossterm.terminal.model.BossTerminal
 import ai.rever.bossterm.terminal.model.StyleState
-import ai.rever.bossterm.terminal.model.TerminalApplicationTitleListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,9 +18,9 @@ import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.notificationTitle
+import ai.rever.bossterm.compose.localSessionEnvironment
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
-import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.TerminalSessionDispatcher
 import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.debug.ChunkSource
@@ -28,21 +29,16 @@ import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.getPlatformServices
-import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.ime.IMEState
-import ai.rever.bossterm.compose.osc.WorkingDirectoryOSCListener
 import ai.rever.bossterm.compose.settings.TerminalSettings
-import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.typeahead.ComposeTypeAheadModel
 import ai.rever.bossterm.compose.typeahead.CoroutineDebouncer
 import ai.rever.bossterm.compose.notification.CommandNotificationHandler
 import ai.rever.bossterm.compose.clipboard.ClipboardHandler
-import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import ai.rever.bossterm.core.typeahead.TypeAheadTerminalModel
-import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -467,26 +463,7 @@ class TabController(
 
         // On macOS, optionally use 'login -fp $USER' to properly register the session
         // This shows "Last login" message and registers in utmp/wtmp like iTerm2
-        val isMacOS = ShellCustomizationUtils.isMacOS()
-        val username = System.getProperty("user.name")
-
-        val (effectiveCommand, effectiveArguments) = if (command == null && arguments.isEmpty() && isMacOS && username != null && settings.useLoginSession && workingDir == null) {
-            // Use login command on macOS for proper session registration
-            // NOTE: Only when workingDir is null - login command ignores workingDirectory parameter
-            "/usr/bin/login" to listOf("-fp", username)
-        } else {
-            // Use provided command or fall back to a valid shell
-            val shellCommand = command ?: ShellCustomizationUtils.getValidShell(settings.windowsShell)
-            // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
-            val shellArgs = if (arguments.isEmpty() &&
-                (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||
-                 shellCommand == "zsh" || shellCommand == "bash")) {
-                listOf("-l")  // Login shell flag
-            } else {
-                arguments
-            }
-            shellCommand to shellArgs
-        }
+        val (effectiveCommand, effectiveArguments) = resolveSessionCommand(settings, workingDir, command, arguments)
 
         // Initialize terminal components
         val styleState = StyleState()
@@ -520,9 +497,6 @@ class TabController(
         // Create working directory state
         val workingDirectoryState = mutableStateOf<String?>(workingDir)
 
-        // Register OSC 7 listener for working directory tracking (Phase 4)
-        val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
-        terminal.addCustomCommandListener(oscListener)
 
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
@@ -531,15 +505,6 @@ class TabController(
         )
 
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
-        terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
-            override fun onApplicationTitleChanged(newApplicationTitle: String) {
-                display.windowTitle = newApplicationTitle
-            }
-
-            override fun onApplicationIconTitleChanged(newIconTitle: String) {
-                display.iconTitle = newIconTitle
-            }
-        })
 
         // Register command state listener for notifications (OSC 133 shell integration).
         // Also captured in `tab.commandStateListeners` after construction so dispose()
@@ -557,7 +522,8 @@ class TabController(
         terminal.addClipboardListener(clipboardHandler)
 
         // Create emulator with terminal
-        val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
+        val sessionStack = TerminalSessionStack.create(settings, display, textBuffer, terminal, dataStream)
+        val emulator = sessionStack.emulator
 
         // Always create debug collector (so it's available when user enables debug mode in settings)
         val debugCollector = ai.rever.bossterm.compose.debug.DebugDataCollector(
@@ -628,6 +594,8 @@ class TabController(
             typeAheadManager = typeAheadManager,
             modelListener = modelListener
         )
+
+        tab.sessionStack = sessionStack
 
         // Register MCP last-command tracker (OSC 133). Additive — does not
         // affect the notification handler registered earlier. Both listeners
@@ -863,26 +831,7 @@ class TabController(
         }
 
         // On macOS, optionally use 'login -fp $USER' for proper session registration
-        val isMacOS = ShellCustomizationUtils.isMacOS()
-        val username = System.getProperty("user.name")
-
-        val (effectiveCommand, effectiveArguments) = if (command == null && arguments.isEmpty() && isMacOS && username != null && settings.useLoginSession && workingDir == null) {
-            // Use login command on macOS for proper session registration
-            // NOTE: Only when workingDir is null - login command ignores workingDirectory parameter
-            "/usr/bin/login" to listOf("-fp", username)
-        } else {
-            // Use provided command or fall back to a valid shell
-            val shellCommand = command ?: ShellCustomizationUtils.getValidShell(settings.windowsShell)
-            // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
-            val shellArgs = if (arguments.isEmpty() &&
-                (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||
-                 shellCommand == "zsh" || shellCommand == "bash")) {
-                listOf("-l")  // Login shell flag
-            } else {
-                arguments
-            }
-            shellCommand to shellArgs
-        }
+        val (effectiveCommand, effectiveArguments) = resolveSessionCommand(settings, workingDir, command, arguments)
 
         // Initialize terminal components (same as createTab)
         val styleState = StyleState()
@@ -911,9 +860,6 @@ class TabController(
         // Create working directory state
         val workingDirectoryState = mutableStateOf<String?>(workingDir)
 
-        // Register OSC 7 listener for working directory tracking
-        val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
-        terminal.addCustomCommandListener(oscListener)
 
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
@@ -922,15 +868,6 @@ class TabController(
         )
 
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
-        terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
-            override fun onApplicationTitleChanged(newApplicationTitle: String) {
-                display.windowTitle = newApplicationTitle
-            }
-
-            override fun onApplicationIconTitleChanged(newIconTitle: String) {
-                display.iconTitle = newIconTitle
-            }
-        })
 
         // Register command state listener for notifications (OSC 133 shell integration)
         val notificationTitleProvider = NotificationTitleProvider(display, sessionTitle)
@@ -946,7 +883,8 @@ class TabController(
         terminal.addClipboardListener(clipboardHandler)
 
         // Create emulator with terminal
-        val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
+        val sessionStack = TerminalSessionStack.create(settings, display, textBuffer, terminal, dataStream)
+        val emulator = sessionStack.emulator
 
         // Always create debug collector (so it's available when user enables debug mode)
         val debugCollector = ai.rever.bossterm.compose.debug.DebugDataCollector(
@@ -1016,6 +954,8 @@ class TabController(
             typeAheadManager = typeAheadManager,
             modelListener = modelListener
         )
+
+        session.sessionStack = sessionStack
 
         // Register MCP last-command tracker (OSC 133). Additive — does not
         // affect the notification handler registered earlier. Both listeners
@@ -1162,8 +1102,6 @@ class TabController(
         )
         val workingDirectoryState = mutableStateOf<String?>(null)
 
-        val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
-        terminal.addCustomCommandListener(oscListener)
 
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
@@ -1171,15 +1109,6 @@ class TabController(
             ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
         )
 
-        terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
-            override fun onApplicationTitleChanged(newApplicationTitle: String) {
-                display.windowTitle = newApplicationTitle
-            }
-
-            override fun onApplicationIconTitleChanged(newIconTitle: String) {
-                display.iconTitle = newIconTitle
-            }
-        })
 
         // Register command state listener for notifications (OSC 133 shell integration)
         val notificationTitleProvider = NotificationTitleProvider(display, "BossTerm")
@@ -1194,7 +1123,8 @@ class TabController(
         val clipboardHandler = ClipboardHandler(settings)
         terminal.addClipboardListener(clipboardHandler)
 
-        val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
+        val sessionStack = TerminalSessionStack.create(settings, display, textBuffer, terminal, dataStream)
+        val emulator = sessionStack.emulator
 
         // Always create debug collector (so it's available when user enables debug mode in settings)
         val debugCollector = ai.rever.bossterm.compose.debug.DebugDataCollector(
@@ -1236,6 +1166,8 @@ class TabController(
             typeAheadManager = null,
             modelListener = modelListener
         )
+
+        tab.sessionStack = sessionStack
 
         // Register MCP last-command tracker (OSC 133). Additive — does not
         // affect the notification handler registered earlier. Both listeners
@@ -1316,10 +1248,9 @@ class TabController(
                     workingDirectoryState.value = config.workingDir
                 }
 
-                // Initialize terminal session with collected config. Passing this session
-                // coroutine's scope makes the reader/emulator loops its CHILDREN, so
-                // launchSessionCoroutine's release fires only after they unwind.
-                initializeTerminalSessionWithConfig(this, tab, config)
+                // Initialize the shared runtime and retain this pre-connect reservation until
+                // its reader/emulator loops have actually unwound.
+                initializeTerminalSessionWithConfig(tab, config)
 
             } catch (e: Exception) {
                 tab.connectionState.value = ConnectionState.Error(
@@ -1336,202 +1267,23 @@ class TabController(
      * Initialize terminal session with pre-collected configuration.
      */
     private suspend fun initializeTerminalSessionWithConfig(
-        sessionScope: CoroutineScope,
         tab: TerminalTab,
         config: PreConnectConfig
     ) {
+        val engine = startSessionEngine(tab, config.workingDir, config.command, config.arguments,
+            environmentOverrides = config.environment, reserveThreads = false)
+        // Pre-connect already reserved two threads. Hold that reservation until the shared
+        // engine's blocking loops actually unwind, including during cancellation.
         try {
-            // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
-            // This is critical for GUI apps that don't inherit terminal environment
-            val effectiveArguments = if (config.arguments.isEmpty() &&
-                (config.command.endsWith("/zsh") || config.command.endsWith("/bash") ||
-                 config.command == "zsh" || config.command == "bash")) {
-                listOf("-l")  // Login shell flag
-            } else {
-                config.arguments
+            engine.awaitTermination()
+        } finally {
+            withContext(NonCancellable) {
+                engine.close()
+                engine.awaitTermination()
             }
-
-            // Set TERM environment variables for TUI compatibility
-            val terminalEnvironment = buildMap {
-                putAll(filterEnvironmentVariables(System.getenv()))
-                put("TERM", "xterm-256color")
-                put("COLORTERM", "truecolor")
-                put("TERM_PROGRAM", "BossTerm")
-                putBossTermGraphicsEnvironment(tab.id)
-                put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
-                // Authenticates OSC 1341;OpenTarget requests from the open/
-                // xdg-open shim — see OpenTargetToken.
-                put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
-                // Tells programs in the shell (e.g. Claude Code) which Boss/BossTerm
-                // MCP server is local to THIS host, so they pick the matching
-                // `mcp__<name>__*` toolset instead of a sibling app's. "boss" in
-                // BossConsole, "bossterm" standalone — derived from the embedder's
-                // BossTermMcpConfig.serverName. An explicit override in
-                // config.environment still wins (it is applied last).
-                put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
-                // This instance's actually-bound MCP port, consumed by Claude
-                // Code's ${VAR:-default} URL expansion (see McpTerminalRegistry.
-                // mcpPortEnvVar) so in-terminal sessions dial the right instance
-                // even after a fallback-port walk. Omitted when the server isn't
-                // up yet — the registered default takes over.
-                McpTerminalRegistry.runningPort.value?.let {
-                    put(McpTerminalRegistry.mcpPortEnvVar, it.toString())
-                }
-                // Set PWD to match actual working directory (required for Starship and other prompts)
-                put("PWD", config.workingDir ?: System.getProperty("user.home"))
-                putAll(config.environment)
-            }.toMutableMap()
-
-            // Inject shell integration for command completion notifications (OSC 133)
-            ShellIntegrationInjector.injectForShell(
-                shell = config.command,
-                env = terminalEnvironment,
-                enabled = settings.autoInjectShellIntegration
-            )
-
-            val processConfig = PlatformServices.ProcessService.ProcessConfig(
-                command = config.command,
-                arguments = effectiveArguments,
-                environment = terminalEnvironment,
-                workingDirectory = config.workingDir ?: System.getProperty("user.home")
-            )
-
-            val handle = platformServices.getProcessService().spawnProcess(processConfig)
-
-            if (handle == null) {
-                tab.connectionState.value = ConnectionState.Error(
-                    message = "Failed to spawn process",
-                    cause = null
-                )
-                return
-            }
-
-            tab.attachProcess(handle)
-            tab.connectionState.value = ConnectionState.Connected(handle)
-
-            // Connect terminal output to PTY
-            tab.terminal.setTerminalOutput(ProcessTerminalOutput(handle, tab))
-
-            // Configure type-ahead if enabled
-            if (settings.typeAheadEnabled) {
-                val typeAheadModel = ComposeTypeAheadModel(
-                    terminal = tab.terminal,
-                    textBuffer = tab.textBuffer,
-                    display = tab.display,
-                    settings = settings
-                ).also { model ->
-                    val shellType = TypeAheadTerminalModel.commandLineToShellType(
-                        (listOf(config.command) + effectiveArguments).toMutableList()
-                    )
-                    model.setShellType(shellType)
-                }
-
-                val typeAheadManager = TerminalTypeAheadManager(typeAheadModel).also { manager ->
-                    val debouncer = CoroutineDebouncer(
-                        action = manager::debounce,
-                        delayNanos = TerminalTypeAheadManager.MAX_TERMINAL_DELAY,
-                        scope = tab.coroutineScope
-                    )
-                    manager.setClearPredictionsDebouncer(debouncer)
-                }
-
-                tab.dataStream.onTerminalStateChanged = {
-                    typeAheadManager.onTerminalStateChanged()
-                }
-            }
-
-            // Wire up chunk batching to prevent intermediate state flickering
-            tab.dataStream.onChunkStart = {
-                tab.textBuffer.beginBatch()
-            }
-            tab.dataStream.onChunkEnd = {
-                tab.textBuffer.endBatch()
-            }
-
-            // Start emulator processing coroutine. Blocks in dataStream.char between
-            // chunks, so it must not hold one of Dispatchers.Default's nCPU permits.
-            // Launched in sessionScope — a CHILD of the session coroutine, not a
-            // sibling on tab.coroutineScope — so launchSessionCoroutine's release
-            // fires only after this loop unwinds and the accounting never runs
-            // ahead of the physically occupied permits.
-            sessionScope.launch(TerminalSessionDispatcher) {
-                drainTerminalEmulator(
-                    emulator = tab.emulator,
-                    dataStream = tab.dataStream,
-                    terminal = tab.terminal,
-                    shouldContinue = handle::isAlive,
-                    onProcessingError = { e ->
-                        println("WARNING: Error processing terminal output: ${e.message}")
-                    },
-                )
-            }
-
-            // Read PTY output in background (uses shared helper to eliminate duplication)
-            startPtyReaderCoroutine(sessionScope, tab, handle)
-
-            // Start debug state capture coroutine if enabled
-            tab.debugCollector?.let { collector ->
-                sessionScope.launch(Dispatchers.IO) {
-                    try {
-                        while (handle.isAlive() && isActive) {
-                            delay(settings.debugCaptureInterval)
-                            collector.captureState()
-                        }
-                    } catch (e: CancellationException) {
-                        throw e // normal tab close — nothing to log
-                    } catch (e: Exception) {
-                        println("DEBUG: State capture coroutine stopped: ${e.message}")
-                    }
-                }
-            }
-
-            // Monitor process exit
-            handle.waitFor()
-            println("INFO: Shell process exited for tab: ${tab.title.value}")
-
-            // Call onProcessExit callback - this handles split pane closure
-            // If callback exists, it handles the exit (e.g., closing just the pane in a split)
-            val hasCallback = tab.onProcessExit != null
-            withContext(Dispatchers.Main) {
-                tab.onProcessExit?.invoke()
-            }
-
-            // Auto-close tab only if no callback is set
-            // (tabs in splits have callbacks that handle pane closure)
-            if (!hasCallback) {
-                withContext(Dispatchers.Main) {
-                    val tabIndex = tabs.indexOf(tab)
-                    if (tabIndex != -1) {
-                        closeTab(tabIndex)
-                    }
-                }
-            }
-
-        } catch (e: CancellationException) {
-            throw e // normal tab close / dispose — not an initialization failure
-        } catch (e: Exception) {
-            tab.connectionState.value = ConnectionState.Error(
-                message = "Terminal initialization failed: ${e.message ?: "Unknown error"}",
-                cause = e
-            )
-            println("ERROR: Terminal initialization failed for tab ${tab.title.value}: ${e.message}")
-            e.printStackTrace()
         }
     }
 
-    /**
-     * Initialize a terminal session for a tab.
-     * This spawns the PTY process and starts background coroutines for:
-     * - Emulator processing (reads from dataStream, processes escape sequences)
-     * - PTY output reading (reads from process, feeds dataStream)
-     * - Process exit monitoring (auto-closes tab when shell exits)
-     *
-     * @param tab The tab to initialize
-     * @param workingDir Working directory for the shell
-     * @param command Shell command to execute
-     * @param arguments Command-line arguments
-     * @param initialCommand Optional command to execute after terminal is ready
-     */
     private fun initializeTerminalSession(
         tab: TerminalTab,
         workingDir: String?,
@@ -1540,271 +1292,86 @@ class TabController(
         initialCommand: String? = null,
         onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null
     ) {
-        // On TerminalSessionDispatcher: this coroutine ends in handle.waitFor()
-        // and so lives as long as the shell.
-        launchSessionCoroutine(tab) {
-            try {
-                // Set TERM environment variables for TUI compatibility
-                val terminalEnvironment = buildMap {
-                    putAll(filterEnvironmentVariables(System.getenv()))
-                    put("TERM", "xterm-256color")
-                    put("COLORTERM", "truecolor")
-                    put("TERM_PROGRAM", "BossTerm")
-                    putBossTermGraphicsEnvironment(tab.id)
-                    put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
-                    // Authenticates OSC 1341;OpenTarget requests from the open/
-                    // xdg-open shim — see OpenTargetToken.
-                    put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
-                    // Identify the local Boss/BossTerm MCP server so in-shell
-                    // programs (e.g. Claude Code) pick the matching `mcp__<name>__*`
-                    // toolset. (This pre-connect path takes no caller-supplied
-                    // environment, so there is nothing to override here.)
-                    put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
-                    // Live port for Claude Code's ${VAR:-default} URL expansion —
-                    // see McpTerminalRegistry.mcpPortEnvVar.
-                    McpTerminalRegistry.runningPort.value?.let {
-                        put(McpTerminalRegistry.mcpPortEnvVar, it.toString())
-                    }
-                    // Set PWD to match actual working directory (required for Starship and other prompts)
-                    put("PWD", workingDir ?: System.getProperty("user.home"))
-                }.toMutableMap()
-
-                // Inject shell integration for command completion notifications (OSC 133)
-                ShellIntegrationInjector.injectForShell(
-                    shell = command,
-                    env = terminalEnvironment,
-                    enabled = settings.autoInjectShellIntegration
-                )
-
-                val config = PlatformServices.ProcessService.ProcessConfig(
-                    command = command,
-                    arguments = arguments,
-                    environment = terminalEnvironment,
-                    workingDirectory = workingDir ?: System.getProperty("user.home")
-                )
-
-                val handle = platformServices.getProcessService().spawnProcess(config)
-
-                if (handle == null) {
-                    tab.connectionState.value = ConnectionState.Error(
-                        message = "Failed to spawn process",
-                        cause = null
-                    )
-                    return@launchSessionCoroutine
-                }
-
-                tab.attachProcess(handle)
-                tab.connectionState.value = ConnectionState.Connected(handle)
-
-                // Connect terminal output to PTY for bidirectional communication
-                tab.terminal.setTerminalOutput(ProcessTerminalOutput(handle, tab))
-
-                // Pre-register the OSC 133;A (prompt-started) listener BEFORE the
-                // emulator/PTY-reader coroutines start. Otherwise a fast shell can
-                // print its prompt and the emulator can dispatch onPromptStarted()
-                // before the (originally-inline) registration coroutine runs —
-                // causing the deferred to time out on `initialCommandDelayMs`
-                // instead of firing on the actual signal.
-                val initialPromptReady: CompletableDeferred<Unit>? =
-                    if (initialCommand != null) CompletableDeferred() else null
-                val initialPromptListener: CommandStateListener? = initialPromptReady?.let { ready ->
-                    object : CommandStateListener {
-                        override fun onPromptStarted() {
-                            ready.complete(Unit)
-                        }
-                    }.also { tab.terminal.addCommandStateListener(it) }
-                }
-
-                // Start emulator processing coroutine. Blocks in dataStream.char between
-                // chunks, so it must not hold one of Dispatchers.Default's nCPU permits.
-                // Note: Initial prompt will display via ModelListener → requestImmediateRedraw()
-                // when buffer content changes. No need for premature redraw here.
-                launch(TerminalSessionDispatcher) {
-                    drainTerminalEmulator(
-                        emulator = tab.emulator,
-                        dataStream = tab.dataStream,
-                        terminal = tab.terminal,
-                        shouldContinue = handle::isAlive,
-                        onProcessingError = { e ->
-                            println("WARNING: Error processing terminal output: ${e.message}")
-                        },
-                    )
-                }
-
-                // Read PTY output in background (uses shared helper to eliminate duplication)
-                startPtyReaderCoroutine(this, tab, handle)
-
-                // Start debug state capture coroutine if enabled
-                tab.debugCollector?.let { collector ->
-                    launch(Dispatchers.IO) {
-                        try {
-                            while (handle.isAlive() && isActive) {
-                                delay(settings.debugCaptureInterval)
-                                collector.captureState()
-                            }
-                        } catch (e: CancellationException) {
-                            throw e // normal tab close — nothing to log
-                        } catch (e: Exception) {
-                            println("DEBUG: State capture coroutine stopped: ${e.message}")
-                        }
-                    }
-                }
-
-                // Send initial command if provided (after terminal is ready).
-                // The OSC 133;A listener was already registered above (before the
-                // emulator loop launched) so we can't miss the prompt-started signal.
-                // This coroutine just waits on the pre-registered deferred and writes
-                // the command when the shell is ready (or after the fallback delay).
-                if (initialCommand != null) {
-                    val promptReady = checkNotNull(initialPromptReady)
-                    val promptListener = checkNotNull(initialPromptListener)
-                    launch(Dispatchers.IO) {
-                        try {
-                            // Wait for either OSC 133;A signal OR fallback timeout
-                            val result = withTimeoutOrNull(settings.initialCommandDelayMs.toLong()) {
-                                promptReady.await()
-                            }
-
-                            if (result != null) {
-                                // OSC 133;A received - shell is ready
-                                // Small delay to ensure prompt is fully rendered
-                                delay(50)
-                            }
-                            // If result is null, timeout occurred - proceed with fallback delay
-                            // (already waited initialCommandDelayMs)
-
-                            // Register one-shot listener BEFORE sending command
-                            // (must be registered before command executes to catch fast commands)
-                            // Important: Track B->D sequence to avoid false positives from shell startup
-                            if (onInitialCommandComplete != null) {
-                                val completionListener = object : CommandStateListener {
-                                    @Volatile
-                                    private var commandStarted = false
-
-                                    override fun onCommandStarted() {
-                                        // Only count the first B after we send the command
-                                        if (!commandStarted) {
-                                            commandStarted = true
-                                        }
-                                    }
-
-                                    override fun onCommandFinished(exitCode: Int) {
-                                        // Only fire callback if we saw a B first (command actually started)
-                                        if (!commandStarted) {
-                                            return
-                                        }
-                                        try {
-                                            // Fire callback once with success status and exit code
-                                            onInitialCommandComplete(exitCode == 0, exitCode)
-                                        } finally {
-                                            // Always unregister, even if callback throws
-                                            tab.terminal.removeCommandStateListener(this)
-                                        }
-                                    }
-                                }
-                                tab.terminal.addCommandStateListener(completionListener)
-                            }
-
-                            // Send the command followed by Enter (CR — see submitLine)
-                            handle.write(submitLine(initialCommand))
-                        } finally {
-                            // Clean up the pre-registered listener
-                            tab.terminal.removeCommandStateListener(promptListener)
-                        }
-                    }
-                }
-
-                // Monitor process exit
-                handle.waitFor()  // Blocks until process exits
-                println("INFO: Shell process exited for tab: ${tab.title.value}")
-
-                // Call onProcessExit callback - this handles split pane closure
-                // If callback exists, it handles the exit (e.g., closing just the pane in a split)
-                val hasCallback = tab.onProcessExit != null
-                withContext(Dispatchers.Main) {
-                    tab.onProcessExit?.invoke()
-                }
-
-                // Auto-close tab only if no callback is set
-                // (tabs in splits have callbacks that handle pane closure)
-                if (!hasCallback) {
-                    withContext(Dispatchers.Main) {
-                        val tabIndex = tabs.indexOf(tab)
-                        if (tabIndex != -1) {
-                            closeTab(tabIndex)
-                        }
-                    }
-                }
-
-            } catch (e: CancellationException) {
-                throw e // normal tab close / dispose — not an initialization failure
-            } catch (e: Exception) {
-                tab.connectionState.value = ConnectionState.Error(
-                    message = "Terminal initialization failed: ${e.message ?: "Unknown error"}",
-                    cause = e
-                )
-                println("ERROR: Terminal initialization failed for tab ${tab.title.value}: ${e.message}")
-                e.printStackTrace()
-            }
-        }
+        startSessionEngine(tab, workingDir, command, arguments, initialCommand, onInitialCommandComplete)
     }
 
-    /**
-     * Helper function to start PTY reader coroutine.
-     * Reads from PTY handle and appends to terminal data stream.
-     *
-     * CRITICAL: Must handle IOException gracefully to prevent silent death.
-     * Extracted to eliminate code duplication between preConnect and initializeTerminalSession.
-     *
-     * @param scope The coroutine scope to launch the reader in
-     * @param tab The terminal tab to read for
-     * @param handle The PTY process handle to read from
-     */
-    private fun startPtyReaderCoroutine(
-        scope: kotlinx.coroutines.CoroutineScope,
+    /** UI adaptation only: the shared engine owns spawning, FIFO writes, initial commands,
+     * chunking, EOF draining, resize forwarding, and process lifetime. */
+    private fun startSessionEngine(
         tab: TerminalTab,
-        handle: PlatformServices.ProcessService.ProcessHandle
-    ) {
-        // Blocks in handle.read() (JNA pty poll) for the session's whole life —
-        // one pinned thread per session, kept off the shared Dispatchers.IO permits.
-        scope.launch(TerminalSessionDispatcher) {
-            val maxChunkSize = 64 * 1024
-
-            try {
-                while (handle.isAlive()) {
-                    try {
-                        val output: String? = handle.read()
-                        if (output != null) {
-                            val processedOutput: String = if (output.length > maxChunkSize) {
-                                // Find the last complete grapheme boundary before maxChunkSize
-                                // to avoid splitting emoji, surrogate pairs, or ZWJ sequences
-                                val safeBoundary = GraphemeBoundaryUtils.findLastCompleteGraphemeBoundary(output, maxChunkSize)
-
-                                println("WARNING: Process output chunk (${output.length} chars) exceeds limit, " +
-                                        "truncating at grapheme boundary (safe: $safeBoundary chars, " +
-                                        "buffering ${output.length - safeBoundary} chars for next chunk)")
-
-                                output.substring(0, safeBoundary)
-                            } else {
-                                output
-                            }
-
-                            tab.dataStream.append(processedOutput)
+        workingDir: String?,
+        command: String,
+        arguments: List<String>,
+        initialCommand: String? = null,
+        onInitialCommandComplete: ((Boolean, Int) -> Unit)? = null,
+        environmentOverrides: Map<String, String> = emptyMap(),
+        reserveThreads: Boolean = true,
+    ): TerminalSessionEngine {
+        val stack = checkNotNull(tab.sessionStack) { "Local terminal stack was not initialized" }
+        lateinit var engine: TerminalSessionEngine
+        engine = TerminalSessionEngine(
+            id = tab.id,
+            settings = settings,
+            workingDir = workingDir,
+            command = command,
+            arguments = arguments,
+            stack = stack,
+            platformServices = platformServices,
+            initialCommand = initialCommand,
+            environmentOverrides = localSessionEnvironment(settings, environmentOverrides),
+            reserveThreads = reserveThreads,
+            parentScope = tab.coroutineScope,
+            onInitialCommandComplete = onInitialCommandComplete,
+            onStateChanged = { state ->
+                when (state) {
+                    is TerminalSessionEngine.State.Error -> {
+                        tab.connectionState.value = ConnectionState.Error(state.message, state.cause)
+                        if (state.message == TerminalSessionSlots.EXHAUSTED_MESSAGE) _showSessionCapacityDialog.value = true
+                    }
+                    else -> Unit
+                }
+            },
+            onConnected = { handle, resolvedCommand, resolvedArguments ->
+                val proxy = engine.processHandleAdapter(handle)
+                tab.processHandle.value = proxy
+                tab.connectionState.value = ConnectionState.Connected(proxy)
+                tab.terminal.setTerminalOutput(ProcessTerminalOutput(engine, tab))
+                if (settings.typeAheadEnabled) {
+                    val model = tab.typeAheadModel ?: ComposeTypeAheadModel(tab.terminal, tab.textBuffer, tab.display, settings)
+                    model.setShellType(TypeAheadTerminalModel.commandLineToShellType((listOf(resolvedCommand) + resolvedArguments).toMutableList()))
+                    val manager = tab.typeAheadManager ?: TerminalTypeAheadManager(model).also {
+                        it.setClearPredictionsDebouncer(CoroutineDebouncer(it::debounce,
+                            TerminalTypeAheadManager.MAX_TERMINAL_DELAY, tab.coroutineScope))
+                    }
+                    tab.typeAheadModel = model
+                    tab.typeAheadManager = manager
+                    tab.dataStream.onTerminalStateChanged = manager::onTerminalStateChanged
+                }
+                tab.dataStream.onChunkStart = tab.textBuffer::beginBatch
+                tab.dataStream.onChunkEnd = tab.textBuffer::endBatch
+                tab.debugCollector?.let { collector ->
+                    tab.coroutineScope.launch(Dispatchers.IO) {
+                        while (isActive && handle.isAlive()) {
+                            delay(settings.debugCaptureInterval)
+                            collector.captureState()
                         }
-                    } catch (e: java.io.IOException) {
-                        // PTY disconnected - expected during tab close or process exit
-                        logTabError(tab, "INFO: PTY read ended: ${e.message}")
-                        break
                     }
                 }
-            } catch (e: Exception) {
-                // Unexpected error - log but don't crash
-                logTabError(tab, "ERROR: PTY reader crashed", e)
-            } finally {
-                // Use runCatching to make double-close safe (defensive programming)
-                kotlin.runCatching { tab.dataStream.close() }
-            }
+            },
+            onProcessExit = {
+                tab.coroutineScope.launch(Dispatchers.Main) {
+                    val callback = tab.onProcessExit
+                    if (callback != null) callback()
+                    else tabs.indexOfFirst { it === tab }.takeIf { it >= 0 }?.let { closeTab(it) }
+                }
+            },
+        )
+        tab.attachEngine(engine)
+        tab.coroutineScope.launch {
+            engine.workingDirectory.collect { tab.workingDirectory.value = it }
         }
+        engine.start()
+        return engine
     }
 
     /**
@@ -2066,27 +1633,11 @@ class TabController(
     }
 
     /**
-     * Filter environment variables to remove potentially problematic ones.
-     * (e.g., parent terminal's TERM variables that shouldn't be inherited,
-     * and PWD/OLDPWD which would reflect the parent's directory instead of
-     * the requested working directory)
-     */
-    private fun filterEnvironmentVariables(env: Map<String, String>): Map<String, String> {
-        return env.filterKeys { key ->
-            !key.startsWith("ITERM_") &&
-            !key.startsWith("KITTY_") &&
-            key != "TERM_SESSION_ID" &&
-            key != "PWD" &&
-            key != "OLDPWD"
-        }
-    }
-
-    /**
      * Routes terminal responses back to the PTY process.
      * Also records emulator-generated output in debug mode.
      */
     private class ProcessTerminalOutput(
-        private val processHandle: PlatformServices.ProcessService.ProcessHandle,
+        private val engine: TerminalSessionEngine,
         private val tab: TerminalTab
     ) : ai.rever.bossterm.terminal.TerminalOutputStream {
         override fun sendBytes(response: ByteArray, userInput: Boolean) {
@@ -2098,9 +1649,7 @@ class TabController(
                 )
             }
 
-            kotlinx.coroutines.runBlocking {
-                processHandle.write(String(response, Charsets.UTF_8))
-            }
+            engine.writeBytes(response)
         }
 
         override fun sendString(string: String, userInput: Boolean) {
@@ -2112,9 +1661,7 @@ class TabController(
                 )
             }
 
-            kotlinx.coroutines.runBlocking {
-                processHandle.write(string)
-            }
+            engine.writeInput(string)
         }
     }
 }

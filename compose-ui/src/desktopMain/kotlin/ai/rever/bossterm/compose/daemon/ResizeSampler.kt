@@ -46,6 +46,12 @@ internal class ResizeSampler(
         entry.grid.value = cols to rows
     }
 
+    /** Re-send the current grids after reconnect; unchanged layout callbacks are value-deduped,
+     * so they cannot repair a Resize that was sampled while the socket was absent. */
+    fun replay() {
+        entries.forEach { (key, entry) -> entry.grid.value?.let { (cols, rows) -> send(key, cols, rows) } }
+    }
+
     /** Stop and forget [key]'s sampler (its session/mirror closed). */
     fun drop(key: String) {
         entries.remove(key)?.job?.cancel()

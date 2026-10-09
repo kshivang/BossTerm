@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.tabs.TerminalTab
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,23 +66,29 @@ object DaemonBridgeCoordinator {
     fun releaseAutoOpen() { autoOpenClaimed.set(false) }
 
     /** Record the daemon's attach endpoint after [DaemonClient.ensureConnected] succeeds (blocking STATUS). */
-    fun onConnected(client: DaemonClient) {
-        val ep = client.current ?: return
+    fun onConnected(client: DaemonClient): Boolean {
+        val ep = client.current ?: return false
         val resp = client.request(DaemonProtocol.STATUS)
-            ?: run { log.warn("daemon STATUS failed"); markAttachUnavailable(); return }
+            ?: run { log.warn("daemon STATUS failed"); markAttachUnavailable(); return false }
         val payload = resp.removePrefix("OK ").trim()
         val status = runCatching {
             DaemonProtocol.json.decodeFromString(DaemonProtocol.Status.serializer(), payload)
-        }.getOrNull() ?: run { log.warn("daemon STATUS unparseable: {}", resp); markAttachUnavailable(); return }
+        }.getOrNull() ?: run { log.warn("daemon STATUS unparseable: {}", resp); markAttachUnavailable(); return false }
         // MCP is hosted by the daemon in daemon mode (the in-process BossTermMcpManager isn't
         // started), so the GUI's MCP status indicator — which reads McpTerminalRegistry.runningPort —
         // would otherwise show "not running" even though the daemon serves it. Reflect the daemon's
         // bound MCP port so the indicator is accurate.
+        if (status.attachProtocolVersion != DaemonAttachProtocol.PROTOCOL_VERSION) {
+            log.warn("Daemon attach protocol is incompatible (daemon={}, GUI={})", status.attachProtocolVersion, DaemonAttachProtocol.PROTOCOL_VERSION)
+            markAttachUnavailable()
+            return false
+        }
         status.mcpPort?.let { ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(it) }
         val ap = status.attachPort
-            ?: run { log.warn("daemon reported no attach port"); markAttachUnavailable(); return }
+            ?: run { log.warn("daemon reported no attach port"); markAttachUnavailable(); return false }
         attachState.value = AttachEndpoint.Ready(ap, ep.secret)
         log.info("Daemon attach endpoint: ws://127.0.0.1:{}/attach", ap)
+        return true
     }
 
     /**
@@ -159,7 +166,27 @@ object DaemonBridgeCoordinator {
     /** Ask the daemon to close one pane (session) — does not affect siblings. Fire-and-forget. */
     fun closePane(sessionId: String): Boolean = bridge?.closePane(sessionId) ?: false
 
+    fun isAttachPendingFor(state: TabbedTerminalState?): Boolean = state != null && activeState === state && !isAttachUnavailable
+
+    fun isAttachedTo(state: TabbedTerminalState?): Boolean = state != null && activeState === state && bridge?.hasReceivedState == true
+
+    fun groupIdForTab(tabId: String): String? = bridge?.groupIdForTab(tabId)
+
+    fun isDaemonSession(tab: TerminalTab): Boolean = bridge?.isDaemonSession(tab) ?: false
+
+    fun closeGroupForTab(tabId: String): Boolean = bridge?.closeGroupForTab(tabId) ?: false
+
+    fun closeTab(tabId: String): Boolean = bridge?.closeTab(tabId) ?: false
+
     val isAttached: Boolean get() = bridge != null
+
+    /** Keep Open BossTerm routed to this app even after its last window unregisters. */
+    fun registerGuiLifecycle(scope: CoroutineScope, onOpen: () -> Unit): kotlinx.coroutines.Job = scope.launch {
+        val endpoint = attachState.first { it !is AttachEndpoint.Pending } as? AttachEndpoint.Ready
+            ?: return@launch
+        val activation = DaemonGuiBridge(endpoint.port, endpoint.secret, this, onOpen).start()
+        try { activation.join() } finally { activation.cancel() }
+    }
 
     /** Single deadline for endpoint + controller readiness (matches the old 60×250ms poll window;
      *  cold daemon spawn + handshake fits well inside it, and it stays under the window's ~16s

@@ -32,20 +32,26 @@ object DaemonShareClient {
     val state: StateFlow<DaemonAttachProtocol.Server.ShareState> = _state.asStateFlow()
 
     /** The active bridge registers its outbox here on connect so UI calls reach this socket. */
+    @Synchronized
     fun registerSender(sender: Sender) {
         this.sender = sender
     }
 
     /** Clear the sender on disconnect/stop; UI calls become no-ops until a bridge reattaches. */
+    @Synchronized
     fun clearSender(sender: Sender) {
         // Only the registering bridge may clear, so a late teardown of an old bridge doesn't
         // wipe a freshly-attached one.
-        if (this.sender === sender) this.sender = null
+        if (this.sender === sender) {
+            this.sender = null
+            _state.value = DaemonAttachProtocol.Server.ShareState()
+        }
     }
 
     /** Push the daemon's latest share state into the flow the UI observes. */
-    fun update(state: DaemonAttachProtocol.Server.ShareState) {
-        _state.value = state
+    @Synchronized
+    fun update(state: DaemonAttachProtocol.Server.ShareState, sender: Sender) {
+        if (this.sender === sender) _state.value = state
     }
 
     private fun send(message: DaemonAttachProtocol.Client) {
@@ -57,8 +63,8 @@ object DaemonShareClient {
         s.send(message)
     }
 
-    fun startShare(scope: String, sessionId: String?, remoteMode: String?) =
-        send(DaemonAttachProtocol.Client.StartShare(scope, sessionId, remoteMode))
+    fun startShare(scope: String, sessionId: String? = null, remoteMode: String? = null, groupId: String? = null) =
+        send(DaemonAttachProtocol.Client.StartShare(scope, sessionId, remoteMode, groupId))
 
     fun stopShare(token: String) = send(DaemonAttachProtocol.Client.StopShare(token))
 

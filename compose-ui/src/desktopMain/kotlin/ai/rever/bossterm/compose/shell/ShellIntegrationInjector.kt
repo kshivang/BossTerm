@@ -1,4 +1,4 @@
-package ai.rever.bossterm.compose.tabs
+package ai.rever.bossterm.compose.shell
 
 import ai.rever.bossterm.compose.settings.SettingsManager
 import org.slf4j.LoggerFactory

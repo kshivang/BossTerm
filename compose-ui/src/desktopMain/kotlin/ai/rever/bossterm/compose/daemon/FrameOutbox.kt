@@ -63,7 +63,14 @@ internal class FrameOutbox(
     // Output lane: a plain deque under a lock (not a Channel) so eviction can report WHICH session
     // lost data ([onOutputDropped]) and so [takeCoalesced] can peek/merge same-session runs.
     private val outputLock = Any()
-    private val outputQueue = ArrayDeque<Frame.Output>()
+    private sealed interface OrderedFrame {
+        val sessionId: String
+        data class Output(val frame: Frame.Output) : OrderedFrame { override val sessionId get() = frame.sessionId }
+        data class Control(override val sessionId: String, val frame: Frame) : OrderedFrame
+    }
+    private val outputQueue = ArrayDeque<OrderedFrame>()
+    private val orderedControlCapacity = controlCapacity.coerceAtLeast(1)
+    private var orderedControlCount = 0
     private var outputChars = 0
     private val outputCapacity = outputCapacityChars.coerceAtLeast(1)
 
@@ -201,17 +208,51 @@ internal class FrameOutbox(
         enqueueOutput(sessionId, data, repaint = true)
     }
 
+    /** A non-droppable pane barrier: preceding bytes must be interpreted on the old grid,
+     * and following bytes on the new grid. Unlike global layout controls, a Resize cannot jump
+     * ahead of already-queued output without changing wrapping/cursor semantics. */
+    fun sendOrderedControl(sessionId: String, frame: Frame) {
+        if (closed) return
+        val bytes = estimatedBytes(frame)
+        if (!reserveControl(bytes)) { close(); return }
+        var accepted = false
+        synchronized(outputLock) {
+            if (!closed && orderedControlCount < orderedControlCapacity) {
+                outputQueue.addLast(OrderedFrame.Control(sessionId, frame))
+                orderedControlCount++
+                accepted = true
+            }
+        }
+        if (!accepted) {
+            controlBytes.addAndGet(-bytes)
+            close()
+        } else wake.trySend(Unit)
+    }
+
     private fun enqueueOutput(sessionId: String, data: String, repaint: Boolean) {
         if (closed || data.isEmpty()) return
         var dropped: MutableSet<String>? = null
         synchronized(outputLock) {
-            outputQueue.addLast(Frame.Output(sessionId, data, repaint))
+            if (closed) return
+            outputQueue.addLast(OrderedFrame.Output(Frame.Output(sessionId, data, repaint)))
             outputChars += data.length
             // Evict oldest-first past either bound (chars for payload heap, frames for object
             // count), but always keep the newest chunk — a single over-budget chunk must still go
             // out (it's bounded upstream by the PTY reader anyway).
-            while ((outputChars > outputCapacity || outputQueue.size > MAX_OUTPUT_FRAMES) && outputQueue.size > 1) {
-                val evicted = outputQueue.removeFirst()
+            while (outputChars > outputCapacity || outputQueue.size > MAX_OUTPUT_FRAMES) {
+                // Ordered controls are barriers and never evicted. Keep at least the newest
+                // output chunk even if it alone exceeds the payload budget.
+                val iterator = outputQueue.iterator()
+                var evicted: Frame.Output? = null
+                while (iterator.hasNext()) {
+                    val candidate = iterator.next()
+                    if (candidate is OrderedFrame.Output && candidate !== outputQueue.lastOrNull()) {
+                        evicted = candidate.frame
+                        iterator.remove()
+                        break
+                    }
+                }
+                if (evicted == null) break
                 outputChars -= evicted.data.length
                 (dropped ?: mutableSetOf<String>().also { dropped = it }).add(evicted.sessionId)
             }
@@ -231,9 +272,15 @@ internal class FrameOutbox(
      */
     fun dropQueuedOutput(sessionId: String) {
         synchronized(outputLock) {
-            var removed = 0
-            outputQueue.removeAll { c -> (c.sessionId == sessionId).also { if (it) removed += c.data.length } }
-            outputChars -= removed
+            outputQueue.removeAll { queued ->
+                if (queued.sessionId != sessionId) false else {
+                    when (queued) {
+                        is OrderedFrame.Output -> outputChars -= queued.frame.data.length
+                        is OrderedFrame.Control -> { orderedControlCount--; releaseControl(queued.frame) }
+                    }
+                    true
+                }
+            }
         }
     }
 
@@ -241,15 +288,21 @@ internal class FrameOutbox(
      * Take the head output chunk plus every immediately-queued successor for the SAME session,
      * merged into one [Frame.Output]. Never waits for more data. Null if the lane is empty.
      */
-    private fun takeCoalesced(): Frame.Output? = synchronized(outputLock) {
-        val first = outputQueue.removeFirstOrNull() ?: return null
+    private fun takeCoalesced(): Frame? = synchronized(outputLock) {
+        val queued = outputQueue.removeFirstOrNull() ?: return null
+        if (queued is OrderedFrame.Control) {
+            orderedControlCount--
+            releaseControl(queued.frame)
+            return queued.frame
+        }
+        val first = (queued as OrderedFrame.Output).frame
         outputChars -= first.data.length
         if (first.repaint) return first
-        val queuedNext = outputQueue.firstOrNull()
+        val queuedNext = (outputQueue.firstOrNull() as? OrderedFrame.Output)?.frame
         if (queuedNext?.sessionId != first.sessionId || queuedNext.repaint) return first
         val sb = StringBuilder(first.data)
         while (sb.length < MAX_COALESCED_CHARS) {
-            val next = outputQueue.firstOrNull() ?: break
+            val next = (outputQueue.firstOrNull() as? OrderedFrame.Output)?.frame ?: break
             if (next.sessionId != first.sessionId || next.repaint) break
             outputQueue.removeFirst()
             outputChars -= next.data.length

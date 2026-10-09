@@ -175,6 +175,18 @@ macOS: `FontFamily.Default`. Linux: bundled `NotoSansSymbols2-Regular.ttf`.
 ### Blocking Data Stream
 Single `BossEmulator` with `BlockingTerminalDataStream` prevents CSI truncation.
 
+### Shared Session Engine
+`compose-ui/.../session/TerminalSessionEngine.kt` owns common PTY launch, shell integration,
+ordered input/replies/resizes, output parsing, prompt commands, metadata, and EOF draining.
+`TerminalSessionStack.create()` builds the model/parser or accepts a host's existing display/model.
+Local tabs and the single-terminal embedder install the engine before starting it; daemon sessions
+wrap it in `TerminalSessionCore`. Keep Compose display/listeners, daemon registry/lifecycle, and
+WebSocket/MCP/share transport policy in their adapters. Supply host-specific environment variables
+through `environmentOverrides`, never import GUI or daemon registries into the engine.
+
+Regression tests live under `compose-ui/src/desktopTest/.../session/`,
+`tabs/LocalSessionEngineTest.kt`, `EmbeddedSessionEngineTest.kt`, and `daemon/`.
+
 ### Platform Detection
 Use `ShellCustomizationUtils` for platform checks - never raw `System.getProperty("os.name")`:
 - `ShellCustomizationUtils.isWindows()`

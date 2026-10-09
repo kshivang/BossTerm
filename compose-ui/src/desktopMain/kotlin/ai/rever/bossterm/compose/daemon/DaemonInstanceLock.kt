@@ -34,7 +34,7 @@ object DaemonInstanceLock {
             // another local user can open()+lock the file and wedge daemon startup.
             BossTermPaths.createOwnerOnly(file)
             val ch = RandomAccessFile(file, "rw").channel
-            val lock = ch.tryLock()
+            val lock = try { ch.tryLock() } catch (e: Exception) { ch.close(); throw e }
             if (lock != null) {
                 channel = ch
                 held = lock

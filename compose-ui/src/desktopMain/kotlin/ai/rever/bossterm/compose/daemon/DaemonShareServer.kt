@@ -1,9 +1,6 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.settings.TerminalSettings
-import ai.rever.bossterm.compose.settings.theme.ColorPalette
-import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
-import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.CloudflaredExposer
 import ai.rever.bossterm.compose.share.DeferredPaneRepaint
@@ -62,6 +59,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
@@ -103,9 +103,17 @@ class DaemonShareServer(
     private val host: SessionHost,
     private val settings: () -> TerminalSettings,
     private val mcpPort: () -> Int? = { null },
+    private val readPersistedSettings: Boolean = false,
 ) {
     private val log = LoggerFactory.getLogger(DaemonShareServer::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val appearance = DaemonShareAppearance()
+    private val liveSettings = StampCachedValue(
+        stamp = { VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath()) },
+        read = { SettingsManager.instance.readFromDisk() },
+    )
+    private fun currentSettings(): TerminalSettings =
+        if (readPersistedSettings) liveSettings.get() ?: settings() else settings()
 
     /** Current shares + viewers awaiting approval. The attach server forwards this to GUIs. */
     data class Snapshot(
@@ -122,6 +130,16 @@ class DaemonShareServer(
     @Volatile private var boundHost: String? = null
     @Volatile private var stopped = false
 
+    private val onHostChanged: () -> Unit = {
+        shares.toList().filter { def ->
+            when (def.scope) {
+                DaemonAttachProtocol.ShareScopeKind.GROUP -> scopedGroupIds(def).isEmpty()
+                DaemonAttachProtocol.ShareScopeKind.SESSION -> host.get(def.sessionId.orEmpty()) == null
+                else -> false
+            }
+        }.forEach { stopShare(it.viewToken) }
+    }
+
     // ---- approval grants (24h rolling access keys) ----
     private val grants = ConcurrentHashMap<String, Grant>()
     private val pending = CopyOnWriteArrayList<DaemonPendingViewer>()
@@ -130,7 +148,15 @@ class DaemonShareServer(
     // Two tokens (view + control) resolve to the SAME ShareDef, differing only in granted control.
     private val sharesByToken = ConcurrentHashMap<String, TokenRef>()
     private val shares = CopyOnWriteArrayList<ShareDef>()
+    private val retiringShares = CopyOnWriteArrayList<ShareDef>()
     private val mutex = Any() // guards engine start/stop + the shares list (start/stop are infrequent)
+    // Serve/Funnel expose the one server port, even when several shares request them. A stopped
+    // share must not disable a surviving share's mapping, including a new share reusing the port.
+    private val tailscaleLock = Any()
+    private val tailscaleUsers = HashMap<ShareDef, Pair<String, Int>>()
+    @Volatile private var tailscaleExposure: Pair<String, Int>? = null
+
+    init { host.addChangeListener(onHostChanged) }
 
     internal companion object {
         /**
@@ -139,8 +165,22 @@ class DaemonShareServer(
          * controller must not type into / resize / close another session by id); ALL covers everything.
          * Extracted + internal so [handleClient]'s scope gate is unit-testable.
          */
-        fun mutationInScope(scope: String, defSessionId: String?, targetId: String): Boolean =
-            scope == DaemonAttachProtocol.ShareScopeKind.ALL || targetId == defSessionId
+        fun mutationInScope(
+            scope: String,
+            defSessionId: String?,
+            targetId: String,
+            groupSessionIds: Set<String> = emptySet(),
+        ): Boolean = when (scope) {
+            DaemonAttachProtocol.ShareScopeKind.ALL -> true
+            DaemonAttachProtocol.ShareScopeKind.SESSION -> targetId == defSessionId
+            DaemonAttachProtocol.ShareScopeKind.GROUP -> targetId in groupSessionIds
+            else -> false
+        }
+
+        internal fun groupSessionIds(tree: GroupTreeDto): Set<String> = when (tree) {
+            is GroupTreeDto.Pane -> setOf(tree.sessionId)
+            is GroupTreeDto.Split -> groupSessionIds(tree.a) + groupSessionIds(tree.b)
+        }
 
         const val MAX_PORT_FALLBACK = 10
         const val GRANT_TTL_MS = 24L * 60 * 60 * 1000
@@ -167,8 +207,6 @@ class DaemonShareServer(
         const val MAX_CONNECTED_VIEWERS = 16
         /** Hard ceiling on a grant key's life, independent of the sliding 24h window. */
         const val GRANT_MAX_LIFETIME_MS = 7L * 24 * 60 * 60 * 1000
-        /** Cap on the per-viewer prelude buffer (output racing a snapshot encode) — bounds heap. */
-        const val MAX_PRELUDE_CHARS = 1_000_000
         /** Delay before re-snapshotting a pane whose output was dropped under back-pressure —
          *  long enough to coalesce a burst of drops into one heal, short enough to feel instant. */
         const val RESNAPSHOT_DELAY_MS = 500L
@@ -208,6 +246,7 @@ class DaemonShareServer(
     private inner class ShareDef(
         val scope: String,
         val sessionId: String?,
+        val groupId: String?,
     ) {
         val viewToken: String = secureToken()
         val controlToken: String = secureToken()
@@ -226,18 +265,13 @@ class DaemonShareServer(
         @Volatile var activeRemoteMode: String = "off"
         // Monotonic token serializing this share's remote ops (mirror SessionShareManager.remoteOp):
         // a long establish bails if a newer op (switch/refresh/stop) supersedes it.
+        val remoteLock = Mutex()
         private val remoteOp = AtomicInteger(0)
         fun claimRemoteOp(): Int = remoteOp.incrementAndGet()
         fun isCurrentRemoteOp(op: Int): Boolean = remoteOp.get() == op
 
         val viewers = CopyOnWriteArrayList<DaemonShareConnection>()
         val viewerSeq = AtomicInteger(0)
-
-        /** See [StampCachedValue]: the only path by which a GUI-side toggle reaches this share. */
-        private val settingsCache = StampCachedValue(
-            stamp = { VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath()) },
-            read = { SettingsManager.instance.readFromDisk() },
-        )
 
         /**
          * Same class, same reasoning — a cleared key has to reach this share too, and it used to be a
@@ -249,12 +283,14 @@ class DaemonShareServer(
             read = { VoiceAgentStorage.keyPresent() },
         )
 
-        fun freshSettings(): TerminalSettings = settingsCache.get() ?: settings()
+        fun freshSettings(): TerminalSettings = currentSettings()
 
         fun cachedKeyPresent(): Boolean = keyPresentCache.get() ?: false
 
         /** Last voiceStatus pushed, so [watchVoiceStatus] only broadcasts real changes. */
         @Volatile var lastVoiceStatus: ServerMessage.VoiceStatus? = null
+        @Volatile var lastTheme: ServerMessage.Theme? = null
+        @Volatile var lastMcpStatus: ServerMessage.McpStatus? = null
         @Volatile var voiceWatchJob: Job? = null
         val voiceWatchLock = Any()
 
@@ -266,7 +302,8 @@ class DaemonShareServer(
                 executor = DaemonVoiceToolExecutor(
                     host = host,
                     inScopeSessionIds = { inScopeCores(this).map { it.id }.toSet() },
-                    anchorSessionId = { sessionId ?: host.list().firstOrNull()?.id },
+                    anchorSessionId = { inScopeCores(this).firstOrNull()?.id },
+                    settings = { freshSettings() },
                 ),
                 scope = this@DaemonShareServer.scope,
                 // Stamp-cached: the poller runs every few seconds, and re-decoding voice.json each
@@ -322,6 +359,7 @@ class DaemonShareServer(
                 remoteStatus = remoteStatus.wire,
                 remoteAttempt = remoteAttempt,
                 remoteMaxAttempts = remoteMaxAttempts,
+                groupId = groupId,
             )
         }
     }
@@ -335,28 +373,34 @@ class DaemonShareServer(
      * proceeds async and is reflected in [state]. Returns the share's VIEW token, or null on failure
      * (sharing disabled / server can't bind / SESSION scope without a session id).
      */
-    fun startShare(scope: String, sessionId: String? = null, remoteMode: String? = null): String? {
-        if (stopped) return null
-        if (!settings().sessionSharingEnabled) return null
-        val kind = if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION)
-            DaemonAttachProtocol.ShareScopeKind.SESSION else DaemonAttachProtocol.ShareScopeKind.ALL
-        if (kind == DaemonAttachProtocol.ShareScopeKind.SESSION && sessionId.isNullOrBlank()) {
-            log.warn("startShare(SESSION) requires a sessionId")
-            return null
-        }
+    fun startShare(
+        scope: String,
+        sessionId: String? = null,
+        remoteMode: String? = null,
+        groupId: String? = null,
+    ): String? {
+        if (scope !in setOf(DaemonAttachProtocol.ShareScopeKind.ALL,
+                DaemonAttachProtocol.ShareScopeKind.SESSION, DaemonAttachProtocol.ShareScopeKind.GROUP)) return null
+        val kind = scope
+        val targetSession = sessionId.takeIf { kind == DaemonAttachProtocol.ShareScopeKind.SESSION }
+        val targetGroup = groupId.takeIf { kind == DaemonAttachProtocol.ShareScopeKind.GROUP }
         synchronized(mutex) {
-            // Idempotent per scope: a whole-daemon (ALL) share and per-session shares coexist, but a
-            // re-share of the same scope/session returns the existing one rather than minting a dupe.
-            shares.firstOrNull { it.scope == kind && it.sessionId == sessionId }?.let { existing ->
+            if (stopped || !currentSettings().sessionSharingEnabled) return null
+            if (kind == DaemonAttachProtocol.ShareScopeKind.SESSION &&
+                (targetSession.isNullOrBlank() || host.get(targetSession) == null)) return null
+            if (kind == DaemonAttachProtocol.ShareScopeKind.GROUP &&
+                (targetGroup.isNullOrBlank() || host.listGroups().none { it.groupId == targetGroup })) return null
+            // Normalize irrelevant ids before matching, so ALL shares remain idempotent.
+            shares.firstOrNull { it.scope == kind && it.sessionId == targetSession && it.groupId == targetGroup }?.let { existing ->
                 remoteMode?.let { setRemoteMode(existing.viewToken, it) }
                 return existing.viewToken
             }
             if (!ensureEngineLocked()) return null
-            val def = ShareDef(kind, if (kind == DaemonAttachProtocol.ShareScopeKind.SESSION) sessionId else null)
+            val def = ShareDef(kind, targetSession, targetGroup)
             sharesByToken[def.viewToken] = TokenRef(def, canControl = false)
             sharesByToken[def.controlToken] = TokenRef(def, canControl = true)
             shares.add(def)
-            val mode = remoteMode ?: settings().shareTailscaleMode
+            val mode = (remoteMode ?: currentSettings().shareTailscaleMode).takeIf { it in setOf("off", "serve", "funnel", "cloudflare") } ?: "off"
             if (mode != "off") startRemote(def, mode)
             publishState()
             log.info("daemon share started (scope={}, session={})", kind, sessionId ?: "-")
@@ -370,6 +414,7 @@ class DaemonShareServer(
             sharesByToken.remove(def.viewToken)
             sharesByToken.remove(def.controlToken)
             shares.remove(def)
+            def.voiceWatchJob?.cancel()
             grants.values.removeIf { it.shareToken == def.viewToken }
             failPendingFor(def.viewToken)
             def.viewers.forEach {
@@ -388,7 +433,11 @@ class DaemonShareServer(
             runCatching { def.voiceService.closeCalls() }
             val op = def.claimRemoteOp() // supersede any in-flight establish so it self-cleans
             val port = boundPort // capture BEFORE stopEngineLocked() may null it (else serve/funnel teardown is skipped)
-            scope.launch(Dispatchers.IO) { teardownRemote(def, port, op) }
+            retiringShares.add(def)
+            scope.launch(Dispatchers.IO) {
+                try { def.remoteLock.withLock { teardownRemote(def, port, op) } }
+                finally { retiringShares.remove(def) }
+            }
             if (shares.isEmpty()) stopEngineLocked()
             publishState()
             log.info("daemon share stopped")
@@ -399,6 +448,7 @@ class DaemonShareServer(
         // Under [mutex] like startShare/stopShare: it reads boundPort and mutates share state, which a
         // concurrent stopShare/stop (nulling boundPort via stopEngineLocked) would otherwise race.
         synchronized(mutex) {
+            if (mode !in setOf("off", "serve", "funnel", "cloudflare")) return
             val def = sharesByToken[token]?.share ?: return
             def.remoteMode = mode
             // Tear down the current exposure and establish the new one in place (same server + viewers,
@@ -407,9 +457,12 @@ class DaemonShareServer(
             val op = def.claimRemoteOp()
             val port = boundPort
             scope.launch(Dispatchers.IO) {
-                teardownRemote(def, port, op)
-                if (mode != "off") establishRemote(def, mode)
-                publishState()
+                def.remoteLock.withLock {
+                    if (!def.isCurrentRemoteOp(op)) return@withLock
+                    teardownRemote(def, port, op)
+                    if (mode != "off") establishRemote(def, mode, op)
+                    publishState()
+                }
             }
             publishState()
         }
@@ -454,15 +507,21 @@ class DaemonShareServer(
         synchronized(mutex) {
             if (stopped) return
             stopped = true
-            shares.toList().forEach { def ->
-                def.viewers.forEach { runCatching { it.outbox.close() } }
+            host.removeChangeListener(onHostChanged)
+            // A just-stopped share can still have a tunnel teardown queued on scope. Drain those
+            // too before cancelling the scope, otherwise shutdown abandons its tunnel process.
+            (shares.toList() + retiringShares.toList()).distinct().forEach { def ->
+                def.voiceWatchJob?.cancel()
+                runCatching { def.voiceService.closeCalls() }
+                def.viewers.forEach { it.voiceCallToken = null; runCatching { it.outbox.close() } }
                 def.viewers.clear()
                 val op = def.claimRemoteOp()
                 // Synchronous teardown — the coroutine scope won't drain at process exit. Engine is
                 // still up here (stopEngineLocked runs after this loop), so boundPort is valid.
-                runCatching { runBlocking { teardownRemote(def, boundPort, op) } }
+                runCatching { runBlocking { def.remoteLock.withLock { teardownRemote(def, boundPort, op) } } }
             }
             shares.clear()
+            retiringShares.clear()
             sharesByToken.clear()
             grants.clear()
             failAllPending()
@@ -536,9 +595,10 @@ class DaemonShareServer(
     /** Start the engine if not already running. Returns true if running afterwards. Caller holds [mutex]. */
     private fun ensureEngineLocked(): Boolean {
         if (engine != null) return true
-        val s = settings()
+        val s = currentSettings()
         val host = resolveBindHost(s)
         val desiredPort = s.sessionSharingPort
+        if (desiredPort !in 1..65535) return false
         for (offset in 0 until MAX_PORT_FALLBACK) {
             val port = desiredPort + offset
             if (port > 65535) break
@@ -626,6 +686,7 @@ class DaemonShareServer(
             }
         }
 
+        if (!currentSettings().sessionSharingEnabled) { ws.close(); return }
         val token = ws.call.parameters["token"]
         val ref = token?.let { sharesByToken[it] }
         if (ref == null) {
@@ -647,7 +708,7 @@ class DaemonShareServer(
         if (kex != null) {
             if (kex.v != 1) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Unsupported encryption version")); return }
             val saltC = runCatching { SessionCrypto.decodeSecretB64Url(kex.salt) }.getOrNull()
-            if (saltC == null) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Bad handshake")); return }
+            if (saltC == null || saltC.size != 16) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Bad handshake")); return }
             val saltS = SessionCrypto.randomSalt()
             val keys = SessionCrypto.deriveKeys(def.secret, saltC, saltS)
             serverCipher = SessionCrypto.FrameCipher(keys.kS2c, SessionCrypto.DIR_S2C)
@@ -681,6 +742,11 @@ class DaemonShareServer(
             } as? ClientMessage.Hello
         }
 
+        if (hello == null) {
+            ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Expected Hello"))
+            return
+        }
+
         // Send helper: encrypted binary frames when a cipher was negotiated, else plaintext text frames.
         suspend fun send(m: ServerMessage) {
             val text = ShareProtocol.encodeServer(m)
@@ -708,10 +774,14 @@ class DaemonShareServer(
             if (existing != null && existing.shareToken == shareToken && existing.clientId == clientId &&
                 existing.expiresAtMs > now && now < existing.issuedAtMs + GRANT_MAX_LIFETIME_MS) {
                 existing.expiresAtMs = now + GRANT_TTL_MS
-                canControl = existing.canControl
+                canControl = ref.canControl && existing.canControl
                 send(ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))
             } else {
-                hello?.key?.let { grants.remove(it) } // drop a stale/expired/foreign key
+                // A replay with the wrong device/share must not revoke somebody else's live key.
+                if (existing != null && existing.shareToken == shareToken && existing.clientId == clientId &&
+                    (existing.expiresAtMs <= now || now >= existing.issuedAtMs + GRANT_MAX_LIFETIME_MS)) {
+                    grants.remove(existing.key, existing)
+                }
                 val public = isPublicInternet(def)
                 val pendingCap = if (public) MAX_PENDING_VIEWERS_PUBLIC else MAX_PENDING_VIEWERS
                 // Cap parked viewers so a public share can't be flooded with sockets that each hold a
@@ -742,11 +812,17 @@ class DaemonShareServer(
                     return
                 }
                 publishState()
-                runCatching { send(ServerMessage.Pending) }
-                val approved = withTimeoutOrNull(if (public) PENDING_PARK_PUBLIC_MS else PENDING_PARK_MS) {
-                    req.decision.await()
-                } ?: false
-                if (pending.remove(req)) publishState() // timed out without a decision
+                val approved = try {
+                    send(ServerMessage.Pending)
+                    withTimeoutOrNull(if (public) PENDING_PARK_PUBLIC_MS else PENDING_PARK_MS) {
+                        select<Boolean> {
+                            req.decision.onAwait { it }
+                            ws.closeReason.onAwait { false }
+                        }
+                    } ?: false
+                } finally {
+                    if (pending.remove(req)) publishState()
+                }
                 if (!approved) {
                     runCatching { send(ServerMessage.Denied("Not approved")) }
                     ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Not approved"))
@@ -757,7 +833,13 @@ class DaemonShareServer(
                 canControl = req.grantedControl
                 val key = newKey()
                 val issuedAt = System.currentTimeMillis()
-                grants[key] = Grant(key, shareToken, canControl, issuedAt + GRANT_TTL_MS, clientId, issuedAt)
+                val active = synchronized(mutex) {
+                    if (def !in shares) false else {
+                        grants[key] = Grant(key, shareToken, canControl, issuedAt + GRANT_TTL_MS, clientId, issuedAt)
+                        true
+                    }
+                }
+                if (!active) { ws.close(); return }
                 send(ServerMessage.Grant(key, issuedAt + GRANT_TTL_MS, canControl))
             }
         }
@@ -845,14 +927,6 @@ class DaemonShareServer(
 
         fun beginLocked(core: TerminalSessionCore) {
             if (attachments.containsKey(core.id)) return
-            val sz = core.display.termSizeFlow.value
-            // Register the tap BEFORE encoding the snapshot so output produced during encode isn't lost
-            // (old order — snapshot then listener — dropped that window). Output racing the snapshot is
-            // buffered in [prelude] and flushed right after, so the viewer sees PaneSnapshot before
-            // PaneOutput (at worst a small duplicated region, never a gap).
-            val preludeLock = Any()
-            var prelude: ArrayList<String>? = ArrayList()
-            var preludeChars = 0
             val graphicsOutputFilter = GraphicsOutputFilter()
             val graphics = PaneGraphicsTracker(core.id, core.textBuffer, core.terminal.getImageDataCache())
             lateinit var attachment: Attachment
@@ -867,29 +941,19 @@ class DaemonShareServer(
                 } else {
                     d
                 }
-                val held = synchronized(preludeLock) {
-                    val p = prelude
-                    when {
-                        p == null -> false // snapshot already enqueued → send live
-                        output.isEmpty() -> true // filtered graphics payload: retain no empty chunks
-                        // Cap the buffer (bounds heap if a session floods output during a slow
-                        // large-scrollback encode — the one path that bypasses outbox backpressure).
-                        // Past the cap, drop; a small gap heals on the next resync.
-                        preludeChars + output.length > MAX_PRELUDE_CHARS -> true
-                        else -> { p.add(output); preludeChars += output.length; true }
-                    }
-                }
-                // Raw chunk, not a pre-encoded PaneOutput: the writer encodes at drain time, so the
-                // outbox can coalesce queued same-pane chunks into ONE PaneOutput (concatenated pane
-                // bytes are protocol-equivalent, and a backlog collapses into few frames).
-                if (!held) vc.outbox.sendOutput(core.id, output)
+                vc.outbox.sendOutput(core.id, output)
+            }
+            val sizeTap: (Int, Int) -> Unit = { cols, rows ->
+                vc.outbox.sendOrderedControl(core.id, FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
+                    ServerMessage.PaneResize(core.id, cols, rows)
+                )))
             }
             val modelListener = object : TerminalModelListener {
                 override fun modelChanged() {
                     if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
                 }
             }
-            attachment = Attachment(core, tap, modelListener, graphics)
+            attachment = Attachment(core, tap, sizeTap, modelListener, graphics)
             attachment.repaintSender = DeferredPaneRepaint(
                 scope = ws,
                 admit = { repaint ->
@@ -907,46 +971,50 @@ class DaemonShareServer(
                 },
             )
             attachments[core.id] = attachment
-            core.addRawOutputListener(tap)
             core.textBuffer.addModelListener(modelListener)
-            // One-time styled initial paint (identical encoder to the attach server / MirrorShare).
-            // sendSnapshot, not sendControl: beginning every pane of a window/global share at once
-            // can outrun a slow writer, and that backlog must defer into the re-snapshot heal rather
-            // than close the connection (which would also burn one auto-reconnect attempt).
-            vc.outbox.sendSnapshot(core.id, FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
-                core.id,
-                TerminalSnapshotEncoder.encode(
-                    snapshot = core.textBuffer.createSnapshot(),
-                    cursorX = core.terminal.cursorX,
-                    cursorY = core.terminal.cursorY,
-                    maxHistoryLines = webViewerScrollbackLines(core.textBuffer),
-                    cursorVisible = core.display.cursorVisible,
-                    cursorShape = core.display.cursorShape,
-                ),
-                sz.columns, sz.rows,
-                webViewerScrollbackLines(core.textBuffer),
-            ))))
-            if (vc.supportsPaneGraphics) {
-                val initialGraphics = graphics.fullMessage()
-                enqueueGraphics(vc.outbox, initialGraphics)
-                // A resyncRequired marker means the capture overlapped DEC 2026; keep the host-side
-                // poll loop alive so the stable frame is retried without waiting for the viewer's
-                // own graphicsResync round-trip.
-                if (initialGraphics.requiredImageIds.isNotEmpty() || initialGraphics.resyncRequired) {
-                    attachment.monitoringGraphics.set(true)
+            // Capture the baseline and register the parsed-output tap in one emulator step.
+            // Every subsequent chunk is absent from the baseline, so there is neither a gap nor
+            // duplicated output when a busy session is shared or re-snapshotted.
+            try {
+                core.attachOutputListener(tap) {
+                    // Purge under the parsed lock: a removed tap's in-flight publication must
+                    // finish before this baseline, never leave old bytes behind its snapshot.
+                    vc.outbox.dropQueuedOutput(core.id)
+                    val cols = core.textBuffer.width
+                    val rows = core.textBuffer.height
+                    // Backlogged snapshots heal through onOutputDropped instead of closing a viewer.
+                    vc.outbox.sendSnapshot(core.id, FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
+                        core.id,
+                        TerminalSnapshotEncoder.encode(
+                            snapshot = core.textBuffer.createSnapshot(),
+                            cursorX = core.terminal.cursorX,
+                            cursorY = core.terminal.cursorY,
+                            maxHistoryLines = webViewerScrollbackLines(core.textBuffer),
+                            cursorVisible = core.display.cursorVisible,
+                            cursorShape = core.display.cursorShape,
+                        ),
+                        cols, rows,
+                        webViewerScrollbackLines(core.textBuffer),
+                    ))))
+                    // A synchronous resize tap shares the baseline/publication lock. Its pane
+                    // barrier keeps old-grid output before the resize and new-grid output after.
+                    core.addResizeListener(sizeTap)
+                    if (vc.supportsPaneGraphics) {
+                        val initialGraphics = graphics.fullMessage()
+                        enqueueGraphics(vc.outbox, initialGraphics)
+                        if (initialGraphics.requiredImageIds.isNotEmpty() || initialGraphics.resyncRequired) {
+                            attachment.monitoringGraphics.set(true)
+                        }
+                    }
                 }
+            } catch (failure: Throwable) {
+                attachments.remove(core.id)
+                core.removeRawOutputListener(tap)
+                core.removeResizeListener(sizeTap)
+                core.textBuffer.removeModelListener(modelListener)
+                attachment.repaintSender.cancel()
+                throw failure
             }
-            synchronized(preludeLock) {
-                prelude?.forEach { vc.outbox.sendOutput(core.id, it) }
-                prelude = null
-            }
-            // Push PaneResize whenever the grid changes (a TUI resizing it), so the viewer's xterm.js follows.
-            val sizeJob = ws.launch {
-                core.display.termSizeFlow.collect {
-                    vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneResize(core.id, it.columns, it.rows))))
-                }
-            }
-            attachment.sizeJob = sizeJob
             attachment.ready.set(true)
             if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
         }
@@ -954,10 +1022,10 @@ class DaemonShareServer(
             attachments.remove(id)?.let { a ->
                 // Remove the tap from the core directly — host.get(id) is null once a session exited.
                 a.core.removeRawOutputListener(a.tap)
+                a.core.removeResizeListener(a.sizeTap)
                 a.core.textBuffer.removeModelListener(a.modelListener)
                 a.graphicsSyncJob?.cancel()
                 a.repaintSender.cancel()
-                a.sizeJob?.cancel()
                 vc.graphicsResyncLimiter.remove(id)
             }
         }
@@ -1001,8 +1069,6 @@ class DaemonShareServer(
         }
 
         val onChange: () -> Unit = { resync() }
-        host.addChangeListener(onChange)
-
         // Register the viewer UNDER [mutex] and verify the share is still live + under the viewer cap.
         // stopShare clears def.viewers under the lock, so adding outside it could orphan a viewer that
         // keeps streaming a "stopped" share; and an uncapped connected count is a DoS on a public share.
@@ -1014,7 +1080,6 @@ class DaemonShareServer(
             }
         }
         if (rejection != null) {
-            host.removeChangeListener(onChange)
             runCatching { vc.outbox.close() }
             runCatching {
                 if (rejection == "full") {
@@ -1026,43 +1091,49 @@ class DaemonShareServer(
             }
             return
         }
-        def.broadcast(ServerMessage.Presence(def.viewerCount))
-        publishState() // viewer count changed
-        // AFTER viewers.add: the poll loop's guard is `viewers.isNotEmpty()`, so arming it during
-        // the admit preamble made it exit immediately for a share's first (usually only) viewer.
-        watchVoiceStatus(def)
-
-        send(ServerMessage.Control(granted = canControl))
-
-        val sc = serverCipher
-        val writer = ws.launch {
-            try {
-                vc.outbox.drainTo { f ->
-                    val text = when (f) {
-                        is FrameOutbox.Frame.Text -> f.text
-                        // Ordered pane bytes are encoded here at drain time; repaint barriers stay
-                        // distinct so the browser can preserve its scroll position.
-                        is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(
-                            if (f.repaint) ServerMessage.PaneRepaint(f.sessionId, f.data)
-                            else ServerMessage.PaneOutput(f.sessionId, f.data)
-                        )
-                        is FrameOutbox.Frame.Binary -> {
-                            // Never enqueued on the share path — loud skip so a future mis-wiring
-                            // surfaces instead of silently dropping a frame.
-                            log.warn("share viewer {}: dropping unexpected binary control frame", vc.id)
-                            return@drainTo
-                        }
-                    }
-                    sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
-                }
-            } catch (e: Throwable) {
-                // Usually just the socket going away — but log it so an encode/encrypt failure
-                // doesn't read as a bare viewer drop.
-                if (e !is kotlinx.coroutines.CancellationException) log.debug("share writer {} ended: {}", vc.id, e.toString())
-            }
-        }
-
+        var writer: Job? = null
         try {
+            host.addChangeListener(onChange)
+            def.broadcast(ServerMessage.Presence(def.viewerCount))
+            publishState() // viewer count changed
+            // AFTER viewers.add: the poll loop's guard is `viewers.isNotEmpty()`, so arming it during
+            // the admit preamble made it exit immediately for a share's first (usually only) viewer.
+            watchVoiceStatus(def)
+
+            send(ServerMessage.Control(granted = canControl))
+
+            val sc = serverCipher
+            writer = ws.launch {
+                try {
+                    vc.outbox.drainTo { f ->
+                        val text = when (f) {
+                            is FrameOutbox.Frame.Text -> f.text
+                            // Ordered pane bytes are encoded here at drain time; repaint barriers stay
+                            // distinct so the browser can preserve its scroll position.
+                            is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(
+                                if (f.repaint) ServerMessage.PaneRepaint(f.sessionId, f.data)
+                                else ServerMessage.PaneOutput(f.sessionId, f.data)
+                            )
+                            is FrameOutbox.Frame.Binary -> {
+                                // Never enqueued on the share path — loud skip so a future mis-wiring
+                                // surfaces instead of silently dropping a frame.
+                                log.warn("share viewer {}: dropping unexpected binary control frame", vc.id)
+                                return@drainTo
+                            }
+                        }
+                        sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
+                    }
+                } catch (e: Throwable) {
+                    // Usually just the socket going away — but log it so an encode/encrypt failure
+                    // doesn't read as a bare viewer drop.
+                    if (e !is kotlinx.coroutines.CancellationException) log.debug("share writer {} ended: {}", vc.id, e.toString())
+                } finally {
+                    // A stopped/overflowed outbox must also end the receive loop, otherwise taps and
+                    // live voice calls remain attached to a socket that can no longer send replies.
+                    runCatching { ws.close() }
+                }
+            }
+
             synchronized(attachLock) { inScopeCores(def).forEach { beginLocked(it) } } // initial paint
             for (frame in ws.incoming) {
                 val msg = decodeIncoming(frame) ?: continue
@@ -1105,12 +1176,12 @@ class DaemonShareServer(
                 viewerClosed = true
                 attachments.keys.toList().forEach { endLocked(it) }
             }
-            writer.cancel()
+            writer?.cancel()
+            // Cleanup also runs when stopShare already removed the viewer from its list.
+            def.voiceService.closeCall(vc.voiceCallToken)
+            vc.voiceCallToken = null
+            runCatching { vc.outbox.close() }
             if (def.viewers.remove(vc)) {
-                // Same as a hangup: a dropped viewer's call handle must not outlive its socket.
-                def.voiceService.closeCall(vc.voiceCallToken)
-                vc.voiceCallToken = null
-                runCatching { vc.outbox.close() }
                 def.broadcast(ServerMessage.Presence(def.viewerCount))
                 publishState()
             }
@@ -1133,6 +1204,7 @@ class DaemonShareServer(
     private class Attachment(
         val core: TerminalSessionCore,
         val tap: (String) -> Unit,
+        val sizeTap: (Int, Int) -> Unit,
         val modelListener: TerminalModelListener,
         val graphics: PaneGraphicsTracker,
     ) {
@@ -1142,7 +1214,6 @@ class DaemonShareServer(
         val graphicsSyncAgain = AtomicBoolean(false)
         val textSnapshotLimiter = GraphicsResyncLimiter(1_000_000_000L)
         @Volatile var graphicsSyncJob: Job? = null
-        @Volatile var sizeJob: Job? = null
         lateinit var repaintSender: DeferredPaneRepaint
     }
 
@@ -1161,14 +1232,22 @@ class DaemonShareServer(
         synchronized(def.voiceWatchLock) {
             if (def.voiceWatchJob?.isActive == true) return
             lateinit var job: Job
-            job = scope.launch { pollVoiceStatus(def) { job } }
+            job = scope.launch(start = CoroutineStart.LAZY) { pollVoiceStatus(def) { job } }
             def.voiceWatchJob = job
+            job.start()
         }
     }
 
     private suspend fun pollVoiceStatus(def: ShareDef, self: () -> Job) {
         try {
             while (def.viewers.isNotEmpty()) {
+                if (!currentSettings().sessionSharingEnabled) { stopShare(def.viewToken); return }
+                val theme = themeMessage()
+                if (def.lastTheme != null && def.lastTheme != theme) def.broadcast(theme)
+                def.lastTheme = theme
+                val mcp = mcpStatusMessage()
+                if (def.lastMcpStatus != null && def.lastMcpStatus != mcp) def.broadcast(mcp)
+                def.lastMcpStatus = mcp
                 // The host-wide answer, for change detection and the kill decision only.
                 val hostStatus = def.voiceService.status(withReason = true, confidential = true)
                 // Seeded on the first tick rather than pushed: admit already sent this exact status
@@ -1204,7 +1283,11 @@ class DaemonShareServer(
             // finally this job is Completing, so isActive is still true and the old check never
             // fired — meaning a stale handle could outlive its poller.
             synchronized(def.voiceWatchLock) {
-                if (def.voiceWatchJob === self()) def.voiceWatchJob = null
+                if (def.voiceWatchJob === self()) {
+                    def.voiceWatchJob = null
+                    // A new viewer may arrive while this poller is finishing its empty-list check.
+                    if (!stopped && def in shares && def.viewers.isNotEmpty()) watchVoiceStatus(def)
+                }
             }
         }
     }
@@ -1215,6 +1298,7 @@ class DaemonShareServer(
      * (they only make sense for the GUI's window→tabs→panes model in MirrorShare).
      */
     private fun handleClient(def: ShareDef, vc: DaemonShareConnection, msg: ClientMessage) {
+        if (!currentSettings().sessionSharingEnabled) { stopShare(def.viewToken); return }
         // Voice messages run BEFORE the control gate so a view-only caller gets an explicit
         // not_controller error (the service re-checks the role) instead of silence. Focus rides
         // along: it tracks which session the viewer is looking at — the agent's default target.
@@ -1224,7 +1308,7 @@ class DaemonShareServer(
         // Only remember a session this share actually covers: the id is unvalidated viewer input
         // that becomes the agent's default tool target (the executor re-checks too).
         fun rememberVoiceTab(id: String?) {
-            if (id != null && mutationInScope(def.scope, def.sessionId, id)) vc.voiceTabId = id
+            if (id != null && mutationInScope(def.scope, def.sessionId, id, scopedGroupIds(def))) vc.voiceTabId = id
         }
         when (msg) {
             is ClientMessage.Focus -> { rememberVoiceTab(msg.tabId); return }
@@ -1279,10 +1363,10 @@ class DaemonShareServer(
         // (ids leak via MCP LIST_SESSIONS / attach layouts) or NewTab a brand-new shell — escaping the
         // share. Gate every mutating verb on scope; ALL covers every session, SESSION only its own.
         val isAll = def.scope == DaemonAttachProtocol.ShareScopeKind.ALL
-        fun inScope(id: String): Boolean = mutationInScope(def.scope, def.sessionId, id)
+        fun inScope(id: String): Boolean = mutationInScope(def.scope, def.sessionId, id, scopedGroupIds(def))
         when (msg) {
             is ClientMessage.Input -> if (inScope(msg.paneId)) host.get(msg.paneId)?.writeInput(msg.data)
-            is ClientMessage.ResizeHost -> if (inScope(msg.tabId)) host.get(msg.tabId)?.resize(msg.cols, msg.rows)
+            is ClientMessage.ResizeHost -> if (inScope(msg.tabId) && msg.cols in 1..2000 && msg.rows in 1..2000) host.get(msg.tabId)?.resize(msg.cols, msg.rows)
             // NewTab carries no id, so it can't be scoped — opening a fresh shell escapes a SESSION share.
             is ClientMessage.NewTab -> if (isAll) host.openSession()
             is ClientMessage.CloseTab -> if (inScope(msg.tabId)) host.closeSession(msg.tabId)
@@ -1300,12 +1384,16 @@ class DaemonShareServer(
     // ===================================================================================
 
     /** The daemon sessions a share covers: every session for ALL, just the one for SESSION. */
-    private fun inScopeCores(def: ShareDef): List<TerminalSessionCore> =
-        if (def.scope == DaemonAttachProtocol.ShareScopeKind.SESSION) {
-            listOfNotNull(def.sessionId?.let { host.get(it) })
-        } else {
-            host.list().mapNotNull { host.get(it.id) }
-        }
+    private fun scopedGroupIds(def: ShareDef): Set<String> =
+        def.groupId?.let { id -> host.listGroups().firstOrNull { it.groupId == id }?.tree }
+            ?.let(::groupSessionIds) ?: emptySet()
+
+    private fun inScopeCores(def: ShareDef): List<TerminalSessionCore> = when (def.scope) {
+        DaemonAttachProtocol.ShareScopeKind.SESSION -> listOfNotNull(def.sessionId?.let { host.get(it) })
+        DaemonAttachProtocol.ShareScopeKind.GROUP -> scopedGroupIds(def).mapNotNull { host.get(it) }
+        DaemonAttachProtocol.ShareScopeKind.ALL -> host.list().mapNotNull { host.get(it.id) }
+        else -> emptyList()
+    }
 
     /**
      * Build the [ServerMessage.Layout] for a share: one [TabNode] per in-scope session, each a single
@@ -1313,8 +1401,8 @@ class DaemonShareServer(
      * viewer renders single-leaf, no-split layouts fine.
      */
     private fun layoutFor(def: ShareDef): ServerMessage.Layout {
-        val infos = if (def.scope == DaemonAttachProtocol.ShareScopeKind.SESSION)
-            host.list().filter { it.id == def.sessionId } else host.list()
+        val ids = inScopeCores(def).map { it.id }.toSet()
+        val infos = host.list().filter { it.id in ids }
         val tabs = infos.mapNotNull { info ->
             val core = host.get(info.id) ?: return@mapNotNull null
             val title = core.windowTitle.value.ifBlank { info.title }
@@ -1332,7 +1420,7 @@ class DaemonShareServer(
             tabs = tabs,
             activeTabId = activeId,
             // Mirror the host's tab-bar placement (like MirrorShare does) instead of hardcoding top.
-            tabBarOnLeft = settings().tabBarPosition == "left",
+            tabBarOnLeft = currentSettings().tabBarPosition == "left",
             summaryMode = true, // one chip per tab
             sessionName = def.name,
         )
@@ -1340,20 +1428,21 @@ class DaemonShareServer(
 
     /** Host terminal [ServerMessage.Theme] — sourced exactly like MirrorShare so the viewer matches BossTerm. */
     private fun themeMessage(): ServerMessage.Theme {
-        val theme = ThemeManager.instance.currentTheme.value
-        val palette = ColorPaletteManager.instance.currentPalette.value ?: ColorPalette.fromTheme(theme)
-        val s = settings()
+        val s = currentSettings()
+        // Theme/palette managers in this process retain their startup selections. Resolve by the
+        // persisted IDs so a GUI theme change reaches daemon viewers as well.
+        val (theme, palette) = appearance.resolve(s)
         return ServerMessage.Theme(
-            background = hexToCss(theme.background),
-            foreground = hexToCss(theme.foreground),
+            background = hexToCss(s.defaultBackground),
+            foreground = hexToCss(s.defaultForeground),
             cursor = hexToCss(theme.cursor),
             cursorAccent = hexToCss(theme.cursorText),
-            selectionBackground = hexToCss(theme.selection),
+            selectionBackground = hexToCss(s.selectionColor),
             ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
             fontFamily = webTerminalFontFamily(s.fontName),
             fontSize = s.fontSize.toInt(),
             minimumContrastRatio = ColorUtils.lightBackgroundGuardRatio(
-                theme.backgroundColorValue,
+                s.defaultBackgroundColor,
                 s.lightBackgroundMinContrast,
             ),
         )
@@ -1385,7 +1474,7 @@ class DaemonShareServer(
      * (default) = only when the share is publicly reachable (Funnel / Cloudflare / a custom public URL).
      */
     private fun requiresApproval(def: ShareDef): Boolean {
-        val s = settings()
+        val s = currentSettings()
         return when (s.sessionSharingApprovalScope) {
             "all" -> true
             "off" -> false
@@ -1399,8 +1488,8 @@ class DaemonShareServer(
     /** True when this share is reachable from the open internet (vs LAN/loopback/tailnet only) — used
      *  to tighten the pending-viewer caps. (serve is tailnet-authenticated, so not counted here.) */
     private fun isPublicInternet(def: ShareDef): Boolean =
-        def.activeRemoteMode == "funnel" || def.activeRemoteMode == "cloudflare" ||
-            settings().sessionSharingPublicUrl.isNotBlank()
+        tailscaleExposure?.first == "funnel" || def.activeRemoteMode == "funnel" || def.activeRemoteMode == "cloudflare" ||
+            currentSettings().sessionSharingPublicUrl.isNotBlank()
 
     /**
      * Whether the host should REQUIRE E2E (reject a plaintext handshake): true whenever a remote
@@ -1412,7 +1501,7 @@ class DaemonShareServer(
     private fun requireE2E(def: ShareDef): Boolean {
         if (def.activeRemoteMode == "serve" || def.activeRemoteMode == "funnel" || def.activeRemoteMode == "cloudflare") return true
         val url = def.remoteUrl
-            ?: settings().sessionSharingPublicUrl.takeIf { it.isNotBlank() }
+            ?: currentSettings().sessionSharingPublicUrl.takeIf { it.isNotBlank() }
             ?: return false
         return e2eCapable(url)
     }
@@ -1423,9 +1512,12 @@ class DaemonShareServer(
 
     private fun startRemote(def: ShareDef, mode: String) {
         def.remoteMode = mode
+        val op = def.claimRemoteOp() // claim before dispatch: a later stop/switch must win
         scope.launch(Dispatchers.IO) {
-            establishRemote(def, mode)
-            publishState()
+            def.remoteLock.withLock {
+                establishRemote(def, mode, op)
+                publishState()
+            }
         }
     }
 
@@ -1434,27 +1526,40 @@ class DaemonShareServer(
      * working, and driving the share's RemoteStatus Starting → Verifying/Retrying → Active (or →
      * FellBack, leaving the LAN link). [op] gating: a newer remote op supersedes a slow establish.
      */
-    private suspend fun establishRemote(def: ShareDef, mode: String) {
+    private suspend fun establishRemote(def: ShareDef, mode: String, op: Int) {
+        if (!def.isCurrentRemoteOp(op) || stopped || def !in shares) return
         val port = boundPort ?: return
-        val op = def.claimRemoteOp()
         def.activeRemoteMode = mode
         def.remoteUrl = null
         def.remoteAttempt = 0
         def.remoteMaxAttempts = 0
         def.remoteStatus = RemoteStatus.Starting
         publishState()
-        val url: String? = when (mode) {
-            "cloudflare" -> establishCloudflareVerified(def, port, op)
-            "serve", "funnel" -> TailscaleExposer.enable(mode, port)
-            else -> null
+        val url: String? = try {
+            when (mode) {
+                "cloudflare" -> establishCloudflareVerified(def, port, op)
+                "serve", "funnel" -> enableTailscale(def, mode, port)
+                else -> null
+            }
+        } catch (failure: Throwable) {
+            teardownRemote(def, port, op)
+            if (failure is kotlinx.coroutines.CancellationException) throw failure
+            log.warn("remote access ({}) failed: {}", mode, failure.message)
+            null
         }
-        if (!def.isCurrentRemoteOp(op)) return // superseded while establishing — don't publish
+        if (!def.isCurrentRemoteOp(op) || stopped || def !in shares) {
+            // A CLI may finish enabling its mapping after a stop was requested. This operation
+            // still owns remoteLock, so undo it before the next operation can establish a link.
+            teardownRemote(def, port, op)
+            return
+        }
         if (url != null) {
             def.remoteUrl = url
             def.remoteStatus = RemoteStatus.Active
             log.info("daemon share reachable via {}", mode)
             if (mode == "cloudflare") def.remoteProcess?.let { registerRespawn(def, it, op) }
         } else {
+            teardownRemote(def, port, op)
             def.remoteStatus = RemoteStatus.FellBack
             log.warn("remote access ({}) yielded no working link; using the LAN link", mode)
         }
@@ -1480,22 +1585,25 @@ class DaemonShareServer(
         var refreshes = 0
         while (def.isCurrentRemoteOp(op)) {
             val tunnel = CloudflaredExposer.start(port) ?: return null
-            val url = tunnel.awaitUrl()
-            var ready = false
-            if (url != null && def.isCurrentRemoteOp(op)) {
-                def.remoteStatus = RemoteStatus.Verifying
-                publishState()
-                ready = tunnel.awaitReady()
+            var adopted = false
+            try {
+                val url = tunnel.awaitUrl()
+                var ready = false
+                if (url != null && def.isCurrentRemoteOp(op)) {
+                    def.remoteStatus = RemoteStatus.Verifying
+                    publishState()
+                    ready = tunnel.awaitReady()
+                }
+                if (ready && def.isCurrentRemoteOp(op)) {
+                    runCatching { def.remoteProcess?.destroyForcibly() }
+                    def.remoteProcess = tunnel.process
+                    if (def.isCurrentRemoteOp(op)) { adopted = true; return url }
+                    if (def.remoteProcess === tunnel.process) def.remoteProcess = null
+                    return null
+                }
+            } finally {
+                if (!adopted) tunnel.destroy()
             }
-            if (ready && def.isCurrentRemoteOp(op)) {
-                runCatching { def.remoteProcess?.destroyForcibly() }
-                def.remoteProcess = tunnel.process
-                if (def.isCurrentRemoteOp(op)) return url
-                tunnel.destroy()
-                if (def.remoteProcess === tunnel.process) def.remoteProcess = null
-                return null
-            }
-            tunnel.destroy()
             if (!def.isCurrentRemoteOp(op) || refreshes >= MAX_REFRESHES) return null
             refreshes++
             def.remoteStatus = RemoteStatus.Retrying
@@ -1521,8 +1629,41 @@ class DaemonShareServer(
                 delay(2000)
                 if (!def.isCurrentRemoteOp(op)) return@launch
                 log.info("cloudflared tunnel exited; re-establishing the share link")
-                withContext(Dispatchers.IO) { establishRemote(def, "cloudflare") }
-                publishState()
+                def.remoteLock.withLock {
+                    if (!def.isCurrentRemoteOp(op)) return@withLock
+                    val next = def.claimRemoteOp()
+                    establishRemote(def, "cloudflare", next)
+                    publishState()
+                }
+            }
+        }
+    }
+
+    private fun enableTailscale(def: ShareDef, mode: String, port: Int): String? = synchronized(tailscaleLock) {
+        tailscaleUsers[def] = mode to port
+        val effective = if (tailscaleUsers.values.any { it.first == "funnel" }) "funnel" else "serve"
+        // Register ownership even on failure: enable can install a mapping and then fail its DNS
+        // lookup. The normal fallback teardown must still undo that partial success.
+        tailscaleExposure = effective to port
+        TailscaleExposer.enable(effective, port)
+    }
+
+    private fun releaseTailscale(def: ShareDef) = synchronized(tailscaleLock) {
+        if (tailscaleUsers.remove(def) == null) return@synchronized
+        val previous = tailscaleExposure ?: return@synchronized
+        if (tailscaleUsers.isEmpty()) {
+            runCatching { TailscaleExposer.disable(previous.first, previous.second) }
+            tailscaleExposure = null
+        } else {
+            val port = tailscaleUsers.values.first().second
+            val effective = if (tailscaleUsers.values.any { it.first == "funnel" }) "funnel" else "serve"
+            if (previous != (effective to port)) {
+                // Switching off the final Funnel share must also remove its public exposure while
+                // leaving the remaining tailnet shares reachable.
+                runCatching { TailscaleExposer.disable(previous.first, previous.second) }
+                val url = runCatching { TailscaleExposer.enable(effective, port) }.getOrNull()
+                tailscaleExposure = (effective to port).takeIf { url != null }
+                tailscaleUsers.keys.forEach { it.remoteUrl = url }
             }
         }
     }
@@ -1534,7 +1675,7 @@ class DaemonShareServer(
      */
     private fun teardownRemote(def: ShareDef, port: Int?, @Suppress("UNUSED_PARAMETER") op: Int) {
         when (def.activeRemoteMode) {
-            "serve", "funnel" -> if (port != null) runCatching { TailscaleExposer.disable(def.activeRemoteMode, port) }
+            "serve", "funnel" -> releaseTailscale(def)
             "cloudflare" -> runCatching { def.remoteProcess?.destroyForcibly() }
         }
         def.remoteProcess = null
@@ -1557,7 +1698,7 @@ class DaemonShareServer(
     private fun buildUrl(token: String): String? {
         val def = sharesByToken[token]?.share
         val base = def?.remoteUrl?.let { "${it.trimEnd('/')}/?t=$token" }
-            ?: settings().sessionSharingPublicUrl.takeIf { it.isNotBlank() }?.let { "${it.trimEnd('/')}/?t=$token" }
+            ?: currentSettings().sessionSharingPublicUrl.takeIf { it.isNotBlank() }?.let { "${it.trimEnd('/')}/?t=$token" }
             ?: boundPort?.let { "http://${advertisedHost()}:$it/?t=$token" }
             ?: return null
         if (def != null && e2eCapable(base)) return "$base#k=${def.secretB64}"
@@ -1582,7 +1723,7 @@ class DaemonShareServer(
         url.startsWith("https://", ignoreCase = true) || hostIsPrivate(hostOf(url))
 
     private fun hostOf(url: String): String =
-        url.substringAfter("://", "").substringBefore('/').substringBefore(':')
+        runCatching { java.net.URI(url).host?.removePrefix("[")?.removeSuffix("]") }.getOrNull().orEmpty()
 
     private fun hostIsPrivate(host: String): Boolean {
         val h = host.lowercase()

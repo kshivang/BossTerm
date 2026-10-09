@@ -32,6 +32,7 @@ class DaemonControlHandler(
                         sessionCount = sessionHost.count(),
                         mcpPort = mcpPort(),
                         attachPort = attachPort(),
+                        attachProtocolVersion = DaemonAttachProtocol.PROTOCOL_VERSION,
                     )
                 )
             )
@@ -73,6 +74,9 @@ class DaemonControlHandler(
             DaemonProtocol.SHUTDOWN -> {
                 val req = if (arg.isBlank()) DaemonProtocol.ShutdownRequest()
                 else json.decodeFromString(DaemonProtocol.ShutdownRequest.serializer(), arg)
+                if (!sessionHost.beginShutdown(req.killSessions)) {
+                    return err("live sessions remain; set killSessions=true to stop them")
+                }
                 onShutdown(req.killSessions)
                 ok("stopping")
             }
@@ -85,5 +89,5 @@ class DaemonControlHandler(
     } }
 
     private fun ok(payload: String = ""): String = if (payload.isEmpty()) "OK" else "OK $payload"
-    private fun err(message: String): String = "ERR $message"
+    private fun err(message: String): String = "ERR ${message.replace('\n', ' ').replace('\r', ' ')}"
 }

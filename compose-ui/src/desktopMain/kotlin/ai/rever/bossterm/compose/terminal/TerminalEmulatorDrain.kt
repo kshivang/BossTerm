@@ -18,11 +18,12 @@ internal fun drainTerminalEmulator(
     terminal: Terminal,
     shouldContinue: () -> Boolean,
     onProcessingError: (Exception) -> Unit = {},
+    processCharacter: (Char) -> Unit = { emulator.processChar(it, terminal) },
 ) {
     try {
         while (shouldContinue()) {
             try {
-                emulator.processChar(dataStream.readInstructionStart(), terminal)
+                processCharacter(dataStream.readInstructionStart())
                 dataStream.instructionComplete()
             } catch (_: EOFException) {
                 break

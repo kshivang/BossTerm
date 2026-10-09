@@ -1058,23 +1058,20 @@ data class TerminalSettings(
     /**
      * Master switch for the BossTerm session daemon — a long-lived background process that owns
      * terminal sessions, the MCP server, and session sharing, so they survive the GUI closing.
-     * Defaults to false (opt-in): out of the box BossTerm uses the pre-daemon behavior (in-process
-     * MCP/sharing, sessions die with the window) — that path is preserved byte-for-byte. Set to
-     * true to have the GUI spawn/connect the daemon, host MCP there, and let sessions outlive the
-     * window. The daemon is started on-demand by the GUI; see also [startDaemonAtLogin] for an
-     * always-on at-login service.
+     * Enabled by default: the standalone GUI spawns/connects the daemon, hosts MCP there, and lets
+     * sessions outlive the window. Disable to use in-process sessions, MCP, and sharing instead.
+     * The GUI starts it on-demand if needed; [startDaemonAtLogin] also defaults to enabled.
      */
-    val daemonEnabled: Boolean = false,
+    val daemonEnabled: Boolean = true,
 
     /**
      * Install a per-OS login service (macOS LaunchAgent / Linux systemd user unit / Windows Run
      * key) so the daemon starts at login — always available, even before the GUI is first opened.
-     * Defaults off, matching [daemonEnabled], and stays coupled to it: enabling the daemon also
-     * schedules it at login (an enabled daemon is meant to be always-available); only meaningful
-     * while [daemonEnabled] is true. The toggle install/uninstalls the service via
-     * LoginServiceManager.
+     * Enabled by default alongside daemon mode. Explicitly enabling daemon mode through
+     * settings also enables this service; its separate toggle can turn it off. Only meaningful
+     * while [daemonEnabled] is true. LoginServiceManager installs/uninstalls the service.
      */
-    val startDaemonAtLogin: Boolean = false,
+    val startDaemonAtLogin: Boolean = true,
 
     // ===== Session sharing / remote control (issue #276) =====
 

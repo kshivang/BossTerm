@@ -3,12 +3,14 @@ package ai.rever.bossterm.compose.session
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.TerminalSessionDispatcher
 import ai.rever.bossterm.compose.TerminalSessionSlots
+import ai.rever.bossterm.compose.TerminalRuntimeLifecycle
 import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.shell.ShellIntegrationInjector
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
+import ai.rever.bossterm.compose.terminal.isTerminalParserThread
 import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.RequestOrigin
 import ai.rever.bossterm.terminal.TerminalCustomCommandListener
@@ -25,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
@@ -38,6 +41,14 @@ import ai.rever.bossterm.compose.util.submitLine
 import org.slf4j.LoggerFactory
 import java.net.URI
 import java.util.UUID
+
+private val engineWorker = ThreadLocal<TerminalSessionEngine?>()
+
+internal fun checkExternalTerminalUnloadCaller() {
+    check(engineWorker.get() == null && !isTerminalParserThread()) {
+        "Classloader unload must be called by the external host, outside terminal callbacks"
+    }
+}
 
 /** The shared PTY/emulator engine. UI, daemon ownership and transports are adapters around it. */
 class TerminalSessionEngine(
@@ -96,8 +107,9 @@ class TerminalSessionEngine(
     private var slotsReserved = false
     private val slotsReleased = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + engineWorker.asContextElement(this))
     private val terminated = CompletableDeferred<Unit>()
+    private val killerFinished = CompletableDeferred<Unit>()
     private var ownerWatcher: Job? = null
     @Volatile private var killer: Thread? = null
     private val processKilled = java.util.concurrent.atomic.AtomicBoolean()
@@ -106,6 +118,11 @@ class TerminalSessionEngine(
     private val startupRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     private val startupComplete = java.util.concurrent.CountDownLatch(1)
     @Volatile private var closed = false
+    // Published under the same monitor as close(), so a disposing UI cannot miss a
+    // parser that startup installs immediately after it checks for one.
+    private var parserJob: Job? = null
+    @Volatile private var parserThread: Thread? = null
+    @Volatile private var closingNotificationThread: Thread? = null
 
     // Completes true once the PTY is spawned (Connected), false on failure/close. The write
     // consumer waits on it so input sent immediately after openSession() is buffered, not dropped.
@@ -206,6 +223,12 @@ class TerminalSessionEngine(
     fun start() {
         if (closed) return
         if (!started.compareAndSet(false, true)) return // atomic idempotency — never spawn two PTYs
+        if (!TerminalRuntimeLifecycle.register(this)) {
+            updateState(State.Error("Terminal runtime is shutting down"))
+            close()
+            terminated.complete(Unit) // no startup job exists to publish completion
+            return
+        }
         ownerWatcher = parentScope?.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             try { kotlinx.coroutines.awaitCancellation() } finally { close() }
         }
@@ -286,24 +309,32 @@ class TerminalSessionEngine(
                 // Emulator processing loop — drains the data stream into the terminal model.
                 // Blocks in dataStream.char between chunks, so it must not hold one of
                 // Dispatchers.Default's nCPU permits.
-                val emulatorJob = launch(TerminalSessionDispatcher) {
-                    drainTerminalEmulator(
-                        emulator = emulator,
-                        dataStream = dataStream,
-                        terminal = terminal,
-                        shouldContinue = { !closed },
-                        processCharacter = { ch ->
-                            outputPublisher?.process(ch) { emulator.processChar(it, terminal) }
-                                ?: emulator.processChar(ch, terminal)
-                        },
-                        onProcessingError = { e ->
-                            log.warn("emulator processing error: {}", e.message)
-                            if (!closed) {
-                                updateState(State.Error("Terminal output processing failed: ${e.message}", e))
-                                close()
-                            }
-                        },
-                    )
+                val emulatorJob = synchronized(this@TerminalSessionEngine) {
+                    if (closed) return@launch
+                    launch(TerminalSessionDispatcher) {
+                        parserThread = Thread.currentThread()
+                        try {
+                            drainTerminalEmulator(
+                                emulator = emulator,
+                                dataStream = dataStream,
+                                terminal = terminal,
+                                shouldContinue = { !closed && isActive },
+                                processCharacter = { ch ->
+                                    outputPublisher?.process(ch) { emulator.processChar(it, terminal) }
+                                        ?: emulator.processChar(ch, terminal)
+                                },
+                                onProcessingError = { e ->
+                                    log.warn("emulator processing error: {}", e.message)
+                                    if (!closed) {
+                                        updateState(State.Error("Terminal output processing failed: ${e.message}", e))
+                                        close()
+                                    }
+                                },
+                            )
+                        } finally {
+                            parserThread = null
+                        }
+                    }.also { parserJob = it }
                 }
 
                 // PTY reader loop — grapheme-safe chunking without dropping oversized reads.
@@ -501,20 +532,36 @@ class TerminalSessionEngine(
         // Publish the one kill task before cancellation/exit callbacks can re-enter close().
         if (h != null || startupRequested.get()) {
             killer = Thread({
-                if (h == null) runCatching { startupComplete.await(2, java.util.concurrent.TimeUnit.SECONDS) }
-                (h ?: handle)?.let(::killProcess)
+                try {
+                    if (h == null) runCatching { startupComplete.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+                    (h ?: handle)?.let(::killProcess)
+                } finally {
+                    killerFinished.complete(Unit)
+                }
             }, "bossterm-session-kill-$id").apply { isDaemon = true }
             killer?.start()
+        } else {
+            killerFinished.complete(Unit)
         }
         ownerWatcher?.cancel()
         scope.cancel()
         if (!started.get() || (started.get() && !slotsReserved && reserveThreads)) terminated.complete(Unit)
-        if (exitNotified.compareAndSet(false, true)) runCatching { onExit?.invoke() }
+        if (exitNotified.compareAndSet(false, true)) {
+            closingNotificationThread = Thread.currentThread()
+            val previous = engineWorker.get()
+            engineWorker.set(this)
+            try { runCatching { onExit?.invoke() } } finally {
+                engineWorker.set(previous)
+                closingNotificationThread = null
+            }
+        }
         return killer
     }
 
     private fun killProcess(process: PlatformServices.ProcessService.ProcessHandle) {
-        if (processKilled.compareAndSet(false, true)) runCatching { runBlocking { process.kill() } }
+        if (processKilled.compareAndSet(false, true)) {
+            runCatching { runBlocking(engineWorker.asContextElement(this)) { process.kill() } }
+        }
     }
 
     /** Wait for all I/O consumers and process teardown, including the independent kill task. */
@@ -522,7 +569,40 @@ class TerminalSessionEngine(
         terminated.await()
         writeConsumer?.join()
         resizeWorker?.join()
-        kotlinx.coroutines.withContext(Dispatchers.IO) { killer?.join() }
+        // Completion is published by the independent killer's finally block. Parking
+        // an IO permit in Thread.join here can starve kill() itself when it dispatches
+        // onto IO and many sessions are closing at once.
+        killerFinished.await()
+    }
+
+    internal fun checkParserDisposalThread() {
+        check(Thread.currentThread() !== parserThread) {
+            "Dispose terminal sessions outside their synchronous parser callbacks"
+        }
+    }
+
+    /**
+     * UI disposal must finish parsing before its embedder can unload terminal code.
+     * Do not join the whole engine here: process-exit callbacks can themselves dispose
+     * their UI while the exit-monitor job is still running.
+     */
+    internal fun closeAndAwaitParserTermination() {
+        checkParserDisposalThread()
+        close()
+        val parser = synchronized(this) { parserJob }
+        runBlocking { parser?.join() }
+    }
+
+    internal fun checkUnloadThread() {
+        check(engineWorker.get() !== this && Thread.currentThread() !== closingNotificationThread) {
+            "disposeForUnload must be called by the external host, outside terminal callbacks"
+        }
+    }
+
+    internal fun awaitStoppedForUnload() {
+        checkUnloadThread()
+        close()
+        runBlocking { awaitTermination() }
     }
 
     /** A UI may expose a handle while keeping every input/reply/resize on the engine's FIFO. */

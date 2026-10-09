@@ -8,13 +8,135 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class EmbeddedSessionEngineTest {
+    @Test
+    fun `unload waits for a PTY reader that is already returning Unicode output`() = runBlocking {
+        val process = FakeProcess()
+        val reading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val disposing = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        val state = EmbeddableTerminalState()
+        val heldReader = object : PlatformServices.ProcessService.ProcessHandle by process {
+            override suspend fun read(): String? {
+                reading.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                return "你好👩🏽‍💻"
+            }
+        }
+        try {
+            state.initializeSession(TerminalSettings(autoInjectShellIntegration = false), "fake-shell", null, null,
+                null, null, null, null, services { heldReader })
+            assertTrue(reading.await(5, TimeUnit.SECONDS))
+            val disposal = executor.submit { disposing.countDown(); state.disposeForUnload() }
+            assertTrue(disposing.await(5, TimeUnit.SECONDS))
+            assertFailsWith<TimeoutException> { disposal.get(150, TimeUnit.MILLISECONDS) }
+            release.countDown()
+            disposal.get(5, TimeUnit.SECONDS)
+            assertFalse(process.isAlive())
+        } finally {
+            release.countDown()
+            state.disposeForUnload()
+            process.kill()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `unload waits for late spawn and kills its process before returning`() = runBlocking {
+        val process = FakeProcess()
+        val spawning = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val disposing = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        val state = EmbeddableTerminalState()
+        try {
+            state.initializeSession(TerminalSettings(autoInjectShellIntegration = false), "fake-shell", null, null,
+                null, null, null, null, services {
+                    spawning.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    process
+                })
+            assertTrue(spawning.await(5, TimeUnit.SECONDS))
+            val disposal = executor.submit { disposing.countDown(); state.disposeForUnload() }
+            assertTrue(disposing.await(5, TimeUnit.SECONDS))
+            assertFailsWith<TimeoutException> { disposal.get(150, TimeUnit.MILLISECONDS) }
+            release.countDown()
+            disposal.get(5, TimeUnit.SECONDS)
+            assertFalse(process.isAlive())
+        } finally {
+            release.countDown()
+            state.disposeForUnload()
+            process.kill()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `unload is rejected from an engine exit callback while ordinary disposal is safe`() = runBlocking {
+        val process = FakeProcess()
+        val state = EmbeddableTerminalState()
+        val callback = CompletableDeferred<Unit>()
+        try {
+            state.initializeSession(TerminalSettings(autoInjectShellIntegration = false), "fake-shell", null, null,
+                null, null, null, {
+                    assertFailsWith<IllegalStateException> { state.disposeForUnload() }
+                    state.dispose()
+                    callback.complete(Unit)
+                }, services { process })
+            withTimeout(5000) { while (!state.isConnected) delay(10) }
+            process.finish()
+            withTimeout(5000) { callback.await() }
+        } finally {
+            state.disposeForUnload()
+            process.kill()
+        }
+    }
+
+    @Test
+    fun `embedded dispose waits for its in flight parser`() = runBlocking {
+        val process = FakeProcess()
+        val state = EmbeddableTerminalState()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val disposing = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            state.initializeSession(TerminalSettings(autoInjectShellIntegration = false), "fake-shell", null, null,
+                null, null, null, null, services { process })
+            withTimeout(5000) { while (!state.isConnected) delay(10) }
+            val tab = state.session!!
+            val beginBatch = tab.dataStream.onChunkStart
+            tab.dataStream.onChunkStart = {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                beginBatch?.invoke()
+            }
+            process.output.send("你好👩🏽‍💻\r\n")
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val disposal = executor.submit { disposing.countDown(); state.dispose() }
+            assertTrue(disposing.await(5, TimeUnit.SECONDS))
+            assertFailsWith<TimeoutException> { disposal.get(150, TimeUnit.MILLISECONDS) }
+            release.countDown()
+            disposal.get(5, TimeUnit.SECONDS)
+            withTimeout(5000) { tab.sessionEngine!!.awaitTermination() }
+        } finally {
+            release.countDown()
+            state.dispose()
+            process.kill()
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun `input immediately after initialization is ordered before the CR submitted initial command`() = runBlocking {
         val spawned = CountDownLatch(1)

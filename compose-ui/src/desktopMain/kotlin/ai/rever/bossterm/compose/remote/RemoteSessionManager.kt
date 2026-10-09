@@ -33,6 +33,11 @@ import java.util.UUID
  * Owned by a [TabbedTerminalState] (the window whose left-bar "Add remote" was used).
  */
 class RemoteSessionManager(private val state: TabbedTerminalState) {
+    private val admissionLock = Any()
+    private var acceptingConnections = true
+    private var admissionGeneration = 0L
+    private var disposalComplete: java.util.concurrent.CountDownLatch? = null
+    private val retiringSessions = mutableSetOf<RemoteSession>()
 
     /**
      * Client id the host uses to recognize this device across reconnects WITHIN a session. It's a
@@ -52,26 +57,23 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
      * [shareBack] = two-way: once the host grants control, offer it this window's own share link
      * so it mirrors our tabs too.
      */
-    @Synchronized
     fun connect(link: String, deviceName: String, shareBack: Boolean = false): RemoteSession? {
         if (isOwnShareLink(link)) return null
-        // @Synchronized makes the lookup-then-add atomic — connect() is called from the UI thread
-        // (AddRemoteDialog) and from the host's OfferShare handler (a server coroutine).
-        tokenOf(link)?.let { token ->
-            sessions.firstOrNull { tokenOf(it.link) == token }?.let { existing ->
-                if (shareBack) existing.enableShareBack() // honor a newly-ticked two-way box
-                return existing
-            }
+        // Lookup/admission and the disposal snapshot share one lock. Never call a session
+        // while holding it: reconcile reads peer hashes while holding its own lifecycle lock.
+        val session = synchronized(admissionLock) {
+            if (!acceptingConnections) return null
+            val existing = tokenOf(link)?.let { token -> sessions.firstOrNull { tokenOf(it.link) == token } }
+            existing ?: RemoteSession(
+                link, deviceName, state, clientId, shareBack, onHostEnded = ::disconnect,
+                peerOriginHashes = { self -> peerOriginHashes(self) },
+            ).also { sessions.add(it) }
         }
-        val session = RemoteSession(
-            link, deviceName, state, clientId, shareBack, onHostEnded = ::disconnect,
-            peerOriginHashes = { self -> peerOriginHashes(self) },
-        )
-        sessions.add(session)
+        if (shareBack) session.enableShareBack()
         session.start()
         // A host that mirrors THIS session nested it under its own group; now that we have it
         // directly, the other sessions drop that copy (see [RemoteSession.peerOriginHashes]).
-        sessions.forEach { if (it !== session) it.rereconcile() }
+        sessionSnapshot().forEach { if (it !== session) it.rereconcile() }
         return session
     }
 
@@ -81,7 +83,9 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
      * session we already show directly, so it is skipped rather than shown twice.
      */
     private fun peerOriginHashes(self: RemoteSession): Set<String> =
-        sessions.mapNotNullTo(HashSet()) { if (it === self) null else it.originHash }
+        sessionSnapshot().mapNotNullTo(HashSet()) { if (it === self) null else it.originHash }
+
+    private fun sessionSnapshot(): List<RemoteSession> = synchronized(admissionLock) { sessions.toList() }
 
     /** True if [link]'s token belongs to a session this instance is hosting. */
     fun isOwnShareLink(link: String): Boolean =
@@ -89,23 +93,91 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
 
     fun disconnect(session: RemoteSession) {
         session.close()
-        sessions.remove(session)
+        synchronized(admissionLock) { sessions.remove(session) }
         if (blockedInput.value?.session === session) blockedInput.value = null
         // The direct copy is gone: any host that nests this session may show its copy again.
-        sessions.forEach { it.rereconcile() }
+        sessionSnapshot().forEach { it.rereconcile() }
     }
 
     /** The remote session that owns [tab] (a mirror tab), or null if it's a local tab. */
-    fun sessionForTab(tab: TerminalTab): RemoteSession? = sessions.firstOrNull { it.containsTab(tab) }
+    fun sessionForTab(tab: TerminalTab): RemoteSession? = sessionSnapshot().firstOrNull { it.containsTab(tab) }
 
     /** Like [sessionForTab] but also matches pane mirrors inside a container's split tree. */
     fun sessionForMirror(s: ai.rever.bossterm.compose.TerminalSession): RemoteSession? =
-        sessions.firstOrNull { it.ownsMirror(s) }
+        sessionSnapshot().firstOrNull { it.ownsMirror(s) }
 
     /** Tear down every remote session (e.g. when the window closes). */
     fun disconnectAll() {
-        sessions.toList().forEach { it.close() }
-        sessions.clear()
+        val closing = synchronized(admissionLock) { claimClosingSessions() }
+        closeSessions(closing)
+    }
+
+    /** Fence host/MCP connection admission until the owning state is initialized again. */
+    internal fun stopForDispose() {
+        var ownsDisposal = false
+        val (closing, complete) = synchronized(admissionLock) {
+            admissionGeneration++
+            acceptingConnections = false
+            val existing = disposalComplete
+            if (existing != null) emptyList<RemoteSession>() to existing
+            else {
+                ownsDisposal = true
+                val completion = java.util.concurrent.CountDownLatch(1)
+                disposalComplete = completion
+                claimClosingSessions() to completion
+            }
+        }
+        if (!ownsDisposal) { awaitDisposal(complete); return }
+        try {
+            closeSessions(closing)
+        } finally {
+            complete.countDown()
+        }
+    }
+
+    // Called under admissionLock. Keep detached sessions discoverable until close finishes:
+    // plugin disposal can race an account reset which already removed them from the UI list.
+    private fun claimClosingSessions(): List<RemoteSession> =
+        (sessions.toList() + retiringSessions).distinct().also {
+            retiringSessions.addAll(it)
+            sessions.clear()
+        }
+
+    private fun closeSessions(closing: List<RemoteSession>) {
+        var failure: Throwable? = null
+        try {
+            closing.forEach { session ->
+                try { session.close() } catch (t: Throwable) {
+                    if (failure == null) failure = t else failure!!.addSuppressed(t)
+                }
+            }
+        } finally {
+            synchronized(admissionLock) { retiringSessions.removeAll(closing.toSet()) }
+        }
+        failure?.let { throw it }
+    }
+
+    internal fun reopen() {
+        val (generation, complete) = synchronized(admissionLock) {
+            ++admissionGeneration to disposalComplete
+        }
+        complete?.let(::awaitDisposal)
+        synchronized(admissionLock) {
+            // A newer stop may have arrived while we waited for the old teardown.
+            // That stop owns admission; this stale initializer cannot reopen it.
+            if (admissionGeneration == generation) {
+                disposalComplete = null
+                acceptingConnections = true
+            }
+        }
+    }
+
+    private fun awaitDisposal(complete: java.util.concurrent.CountDownLatch) {
+        var interrupted = false
+        while (true) {
+            try { complete.await(); break } catch (_: InterruptedException) { interrupted = true }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
     }
 
     /** A blocked-typing event awaiting the user's decision ([tabId] != null → relay upstream). */
@@ -160,6 +232,12 @@ class RemoteSession internal constructor(
     private val peerOriginHashes: (RemoteSession) -> Set<String> = { emptySet() },
 ) {
     private val log = LoggerFactory.getLogger(RemoteSession::class.java)
+    // Plugin/window disposal may run off Main. Cancellation cannot interrupt a layout
+    // already rebuilding mirrors, so shutdown must wait for that rebuild and fence the
+    // next one before it can create a parser outside the teardown snapshot.
+    private val lifecycleLock = Any()
+    @Volatile private var closed = false
+    private var started = false
     /** The host's last Layout, so [rereconcile] can re-apply the peer filter without a resend. */
     @Volatile private var lastLayout: ServerMessage.Layout? = null
 
@@ -168,6 +246,7 @@ class RemoteSession internal constructor(
 
     /** Re-run [reconcile] on the last Layout (the set of peer sessions changed). Runs on Main. */
     fun rereconcile() {
+        if (closed) return
         val layout = lastLayout ?: return
         uiScope.launch {
             if (draggingSplit) { rereconcilePending = true; return@launch }
@@ -180,7 +259,8 @@ class RemoteSession internal constructor(
     @Volatile private var shareBackEnabled = shareBack
 
     /** Turn on two-way share-back after construction (a re-paste with the box newly ticked). */
-    fun enableShareBack() {
+    fun enableShareBack(): Unit = synchronized(lifecycleLock) {
+        if (closed) return
         shareBackEnabled = true
         if (conn.canControl) maybeOfferShareBack()
     }
@@ -332,7 +412,9 @@ class RemoteSession internal constructor(
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val inbox = kotlinx.coroutines.channels.Channel<ServerMessage>(kotlinx.coroutines.channels.Channel.UNLIMITED)
 
-    fun start() {
+    fun start(): Unit = synchronized(lifecycleLock) {
+        if (closed || started) return
+        started = true
         conn.relayMessageHandler = { message ->
             // Apply on Main before granting relay credit, and bound the emulator backlog.
             // Do not wait for an instruction checkpoint: a split CSI may need the next frame.
@@ -376,7 +458,8 @@ class RemoteSession internal constructor(
     val failureDismissed = androidx.compose.runtime.mutableStateOf(false)
 
     /** Restart a failed connection (the disconnect dialog's Reconnect). */
-    fun reconnect() {
+    fun reconnect(): Unit = synchronized(lifecycleLock) {
+        if (closed) return
         failureDismissed.value = false
         conn.reconnect()
     }
@@ -578,15 +661,24 @@ class RemoteSession internal constructor(
         )
     }
 
-    fun close() {
+    fun close(): Unit = synchronized(lifecycleLock) {
+        if (closed) return
+        closed = true
         statusState.value = RemoteStatus.Closed
         filesAvailable.value = false
         runCatching { scope.cancel() }   // status collector + share-back offer
         runCatching { uiScope.cancel() } // the inbox drain
-        files.disconnected()
+        inbox.cancel()
+        runCatching { files.disconnected() }
         fileControlDecision?.complete(false)
-        conn.close()
-        localTabByRemote.values.toList().forEach { removeMirrorTab(it) }
+        runCatching { conn.close() }
+        localTabByRemote.values.toList().forEach { container ->
+            runCatching { removeMirrorTab(container) }
+                .onFailure { log.warn("remote mirror teardown failed: {}", it.message) }
+        }
+        // A partially-applied layout may have created a pane before its split tree
+        // was installed. It still owns a parser even if no container can find it.
+        sessionByPane.values.toList().forEach(::disposeSession)
         localTabByRemote.clear()
         sessionByPane.clear()
         graphicsByPane.clear()
@@ -599,11 +691,13 @@ class RemoteSession internal constructor(
     // ---- message handling ----
     // Called on the WS IO thread — just hand off to the ordered Main drain (see [inbox]).
     private fun onMessage(msg: ServerMessage) {
+        if (closed) return
         if (msg is ServerMessage.FilesReply) files.receive(msg) else inbox.trySend(msg)
     }
 
     // Runs on Main, in wire order.
     private suspend fun handleMessage(msg: ServerMessage) {
+        if (closed) return
         when (msg) {
             is ServerMessage.Layout -> {
                 filesAvailable.value = msg.filesAvailable && conn.hasEncryptionSecret
@@ -707,7 +801,8 @@ class RemoteSession internal constructor(
      * pane, the survivors keep streaming (no pane is special). Runs whenever the host's structure
      * changes — Layout is only resent then. Reuses containers/panes by remote id across rebuilds.
      */
-    private fun reconcile(layout: ServerMessage.Layout) {
+    private fun reconcile(layout: ServerMessage.Layout): Unit = synchronized(lifecycleLock) {
+        if (closed) return
         // While a divider is being dragged locally, ignore the host's Layout echoes (they carry the
         // ratio we just sent) so the drag isn't interrupted — the post-release Layout reconciles.
         if (draggingSplit) return

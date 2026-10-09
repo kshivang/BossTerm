@@ -776,12 +776,17 @@ class TabController(
                 runCatching { tab.dataStream.close() }
             } else {
                 tab.remoteParserJob = scope.launch(TerminalSessionDispatcher) {
-                    drainTerminalEmulator(
-                        emulator = tab.emulator,
-                        dataStream = tab.dataStream,
-                        terminal = tab.terminal,
-                        shouldContinue = { isActive },
-                    )
+                    tab.remoteParserThread = Thread.currentThread()
+                    try {
+                        drainTerminalEmulator(
+                            emulator = tab.emulator,
+                            dataStream = tab.dataStream,
+                            terminal = tab.terminal,
+                            shouldContinue = { isActive },
+                        )
+                    } finally {
+                        tab.remoteParserThread = null
+                    }
                 }.also { parser ->
                     parser.invokeOnCompletion { TerminalSessionSlots.release(1) }
                 }

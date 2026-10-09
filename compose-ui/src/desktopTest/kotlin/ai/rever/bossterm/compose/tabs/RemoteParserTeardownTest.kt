@@ -11,6 +11,24 @@ import kotlin.test.assertTrue
 
 class RemoteParserTeardownTest {
     @Test
+    fun `parser callback disposal fails explicitly instead of joining itself`() {
+        val tab = TabController(TerminalSettings(), {}).createRemoteSession("callback")
+        val callback = CountDownLatch(1)
+        val beginBatch = tab.dataStream.onChunkStart
+        tab.dataStream.onChunkStart = {
+            assertFailsWith<IllegalStateException> { tab.dispose() }
+            beginBatch?.invoke()
+            callback.countDown()
+        }
+        try {
+            tab.dataStream.append("callback\r\n")
+            assertTrue(callback.await(5, TimeUnit.SECONDS))
+        } finally {
+            tab.dispose()
+        }
+    }
+
+    @Test
     fun `dispose waits for an in flight remote instruction before allowing classloader unload`() {
         val controller = TabController(TerminalSettings(), {})
         val tab = controller.createRemoteSession("remote")

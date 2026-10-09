@@ -660,6 +660,19 @@ class EmbeddableTerminalState(
     }
 
     /**
+     * External host unload boundary. Unlike ordinary disposal, this also waits for
+     * PTY startup, reads, writes and process teardown before the host closes its
+     * classloader. Call on the UI owner thread, outside terminal callbacks, after
+     * stopping admission of new terminal UI.
+     */
+    fun disposeForUnload() {
+        val engine = session?.sessionEngine
+        engine?.checkUnloadThread()
+        dispose()
+        engine?.awaitStoppedForUnload()
+    }
+
+    /**
      * Send text input to the terminal.
      * Use "\n" (or "\r") for the enter key — newlines are normalized to the CR a terminal actually
      * sends, so the same call submits on Windows/ConPTY as well as Unix. See `submitLine`.

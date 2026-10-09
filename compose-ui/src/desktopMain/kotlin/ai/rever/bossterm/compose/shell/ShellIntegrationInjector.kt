@@ -9,7 +9,7 @@ import java.io.File
  *
  * This uses the same approach as iTerm2:
  * - For Zsh: Hijack ZDOTDIR to point to our integration directory
- * - For Bash: Set ENV to point to our loader script
+ * - For Bash: Use --rcfile with our loader, replaying login startup files when requested
  * - For Fish: Prepend our vendor_conf.d to XDG_DATA_DIRS
  *
  * The integration scripts send OSC 133 sequences to track command execution,
@@ -102,22 +102,32 @@ object ShellIntegrationInjector {
     }
 
     /**
-     * Inject for Bash using ENV variable.
-     *
-     * How it works:
-     * 1. Set ENV to point to our bash-loader script
-     * 2. Bash sources ENV for interactive shells
-     * 3. Our loader sources normal startup files first
-     * 4. Then loads shell integration
+     * Mark Bash for integration; argumentsForShell supplies its --rcfile startup hook.
      */
     private fun injectBash(env: MutableMap<String, String>) {
-        val loaderPath = File(integrationDir, "bash-loader").absolutePath
-
-        // Set ENV to our loader script
-        env["ENV"] = loaderPath
         env["BOSSTERM_INJECT_INTEGRATION"] = "1"
+    }
 
-        LOG.debug("Injected Bash integration via ENV=$loaderPath")
+    /**
+     * Ordinary Bash ignores ENV, and login Bash ignores --rcfile. For normal interactive
+     * startup, use --rcfile and let the loader replay login startup files once. This retains
+     * interactive/login-profile behavior, but Bash's readonly login_shell option is false.
+     * Explicit command/script or startup-control arguments stay authoritative and untouched.
+     */
+    fun argumentsForShell(
+        shell: String,
+        arguments: List<String>,
+        env: MutableMap<String, String>,
+        enabled: Boolean = true,
+    ): List<String> {
+        if (!enabled || File(shell).name != "bash") return arguments
+        val supported = setOf("-l", "--login", "-i", "-il", "-li")
+        if (arguments.any { it !in supported }) return arguments
+        val login = arguments.any { it == "--login" || 'l' in it }
+        if (login) env["BOSSTERM_BASH_LOGIN"] = "1" else env.remove("BOSSTERM_BASH_LOGIN")
+        val interactive = arguments.any { it != "--login" && 'i' in it }
+        return listOf("--rcfile", File(integrationDir, "bash-loader").absolutePath) +
+            if (interactive) listOf("-i") else emptyList()
     }
 
     /**

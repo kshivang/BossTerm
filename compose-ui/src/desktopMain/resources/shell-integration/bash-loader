@@ -1,6 +1,6 @@
 #!/bin/bash
 # BossTerm Shell Integration Loader for Bash
-# This file is sourced via the ENV variable
+# This file is sourced via Bash's --rcfile option.
 
 # Get the directory containing this script
 _bossterm_integration_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,7 +9,7 @@ _bossterm_integration_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # For login shells: /etc/profile, then first of ~/.bash_profile, ~/.bash_login, ~/.profile
 # For non-login interactive: ~/.bashrc
 
-if shopt -q login_shell; then
+if shopt -q login_shell || [[ "${BOSSTERM_BASH_LOGIN-}" == "1" ]]; then
     # Login shell
     [[ -f /etc/profile ]] && . /etc/profile
     if [[ -f ~/.bash_profile ]]; then
@@ -23,6 +23,7 @@ else
     # Non-login interactive shell
     [[ -f ~/.bashrc ]] && . ~/.bashrc
 fi
+unset BOSSTERM_BASH_LOGIN
 
 # Load BossTerm shell integration if injection is enabled
 if [[ -n "$BOSSTERM_INJECT_INTEGRATION" ]]; then

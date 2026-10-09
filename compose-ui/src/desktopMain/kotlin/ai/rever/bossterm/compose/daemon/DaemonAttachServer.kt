@@ -17,10 +17,9 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.channels.Channel
 import org.slf4j.LoggerFactory
-import java.net.InetSocketAddress
-import java.net.ServerSocket
 import java.security.MessageDigest
 
 /**
@@ -99,22 +98,24 @@ class DaemonAttachServer(
             log.error("attach: refusing to start with an empty secret")
             return -1
         }
-        val firstPort = if (desiredPort == 0) ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { it.localPort } else desiredPort
-        for (offset in 0 until 10) {
-            val port = firstPort + offset
+        for (offset in 0 until if (desiredPort == 0) 1 else 10) {
+            val port = desiredPort + offset
             if (port > 65535) break
-            if (!portAvailable(port)) continue
+            val srv = embeddedServer(CIO, host = HOST, port = port) {
+                install(WebSockets)
+                routing { webSocket("/attach") { serve(this) } }
+            }
             try {
-                val srv = embeddedServer(CIO, host = HOST, port = port) {
-                    install(WebSockets)
-                    routing { webSocket("/attach") { serve(this) } }
-                }
+                // Bind directly. A separate non-reusing probe rejects sockets in TIME_WAIT
+                // on macOS, and selecting a free port before binding races other listeners.
                 srv.start(wait = false)
+                val actualPort = runBlocking { srv.engine.resolvedConnectors().first().port }
                 engine = srv
-                boundPort = port
-                log.info("Daemon attach server on ws://{}:{}/attach", HOST, port)
-                return port
+                boundPort = actualPort
+                log.info("Daemon attach server on ws://{}:{}/attach", HOST, actualPort)
+                return actualPort
             } catch (e: Throwable) {
+                runCatching { srv.stop(0, 0) }
                 log.warn("attach bind {}:{} failed: {}", HOST, port, e.message)
             }
         }
@@ -449,9 +450,6 @@ class DaemonAttachServer(
 
     /** Per-connection, per-session attachment: the core, its output tap + collector jobs (size, meta). */
     private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val sizeTap: (Int, Int) -> Unit, val jobs: List<kotlinx.coroutines.Job>)
-
-    private fun portAvailable(port: Int): Boolean =
-        runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(InetSocketAddress(HOST, port)); true } }.getOrDefault(false)
 
     private fun constantTimeEquals(a: String, b: String): Boolean =
         MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))

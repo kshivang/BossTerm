@@ -775,15 +775,20 @@ class TabController(
                 // a queue nobody reads. (The loop's finally does this on the normal path.)
                 runCatching { tab.dataStream.close() }
             } else {
-                scope.launch(TerminalSessionDispatcher) {
-                    drainTerminalEmulator(
-                        emulator = tab.emulator,
-                        dataStream = tab.dataStream,
-                        terminal = tab.terminal,
-                        shouldContinue = { isActive },
-                    )
-                }.invokeOnCompletion {
-                    TerminalSessionSlots.release(1)
+                tab.remoteParserJob = scope.launch(TerminalSessionDispatcher) {
+                    tab.remoteParserThread = Thread.currentThread()
+                    try {
+                        drainTerminalEmulator(
+                            emulator = tab.emulator,
+                            dataStream = tab.dataStream,
+                            terminal = tab.terminal,
+                            shouldContinue = { isActive },
+                        )
+                    } finally {
+                        tab.remoteParserThread = null
+                    }
+                }.also { parser ->
+                    parser.invokeOnCompletion { TerminalSessionSlots.release(1) }
                 }
             }
         }

@@ -13,14 +13,53 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class LocalSessionEngineTest {
+    @Test
+    fun `dispose waits for local parser and permits synchronous close callback reentry`() = runBlocking {
+        val process = FakeProcess()
+        val controller = TabController(TerminalSettings(autoInjectShellIntegration = false), {}, platformServices = services { process })
+        val tab = controller.createTab(command = "fake-shell")
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val disposing = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            withTimeout(5000) { while (tab.connectionState.value !is ConnectionState.Connected) delay(10) }
+            val beginBatch = tab.dataStream.onChunkStart
+            tab.dataStream.onChunkStart = {
+                assertFailsWith<IllegalStateException> { tab.dispose() }
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                beginBatch?.invoke()
+            }
+            tab.sessionEngine!!.onExit = { tab.dispose() }
+            process.output.send("你好👩🏽‍💻\r\n")
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val disposal = executor.submit { disposing.countDown(); tab.dispose() }
+            assertTrue(disposing.await(5, TimeUnit.SECONDS))
+            assertFailsWith<TimeoutException> { disposal.get(150, TimeUnit.MILLISECONDS) }
+            release.countDown()
+            disposal.get(5, TimeUnit.SECONDS)
+            withTimeout(5000) { tab.sessionEngine!!.awaitTermination() }
+            tab.dispose()
+        } finally {
+            release.countDown()
+            tab.dispose()
+            process.kill()
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun `input before spawn and initial command share one ordered CR submitting FIFO`() = runBlocking<Unit> {
         val spawning = CountDownLatch(1)

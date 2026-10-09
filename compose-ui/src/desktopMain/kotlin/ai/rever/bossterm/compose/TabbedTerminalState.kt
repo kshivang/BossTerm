@@ -202,6 +202,7 @@ class TabbedTerminalState(
             platformServices = platformServices,
             parentScope = owner
         )
+        remoteSessions.reopen()
 
         // Wire up snapshotFlow bridges for reactive state (T7)
         flowScope = CoroutineScope(SupervisorJob(owner?.coroutineContext?.get(kotlinx.coroutines.Job)) + Dispatchers.Main).also { scope ->
@@ -227,7 +228,7 @@ class TabbedTerminalState(
         _tabsFlow.value = emptyList()
         _activeTabIndexFlow.value = 0
         // Tear down any remote-session connections (closes sockets + mirror tabs).
-        runCatching { remoteSessions.disconnectAll() }
+        runCatching { remoteSessions.stopForDispose() }
         // Dispose all split states
         splitStates.values.forEach { it.dispose() }
         splitStates.clear()

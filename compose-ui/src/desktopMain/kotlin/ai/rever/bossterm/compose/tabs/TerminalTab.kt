@@ -8,6 +8,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -377,10 +379,14 @@ data class TerminalTab(
     @Volatile internal var sessionEngine: TerminalSessionEngine? = null
         private set
 
+    internal var remoteParserJob: Job? = null
+    @Volatile internal var remoteParserThread: Thread? = null
+
     private val inputLock = Any()
     private val pendingInputs = ArrayDeque<Pair<Int, (TerminalSessionEngine) -> Unit>>()
     private var pendingInputUnits = 0L
     private var disposed = false
+    @Volatile private var disposingThread: Thread? = null
 
     private fun queueLocalInput(units: Int, deliver: (TerminalSessionEngine) -> Unit) {
         if (units == 0) return
@@ -522,64 +528,89 @@ data class TerminalTab(
      * displays can cause exceptions that crash the rendering pipeline.
      */
     override fun dispose() {
-        synchronized(inputLock) {
-            if (disposed) return
-            disposed = true
-            pendingInputs.clear()
-            pendingInputUnits = 0
+        check(Thread.currentThread() !== remoteParserThread) {
+            "Dispose terminal sessions outside their synchronous parser callbacks"
         }
-        // Registered for this tab's lifetime, so it is unregistered here rather than by a
-        // composition leaving the tree.
+        sessionEngine?.checkParserDisposalThread()
+        val cleanup = synchronized(inputLock) {
+            if (disposed) false else {
+                disposed = true
+                disposingThread = Thread.currentThread()
+                pendingInputs.clear()
+                pendingInputUnits = 0
+                true
+            }
+        }
+        // close() can synchronously notify an embedder that re-enters dispose().
+        if (!cleanup && disposingThread === Thread.currentThread()) return
         try {
-            textBuffer.removeChangesListener(historyAppendBank)
-        } catch (e: Exception) {
-            System.err.println("WARN: Failed to remove history append bank: ${e.message}")
-        }
-
-        // Remove model listener to prevent memory leak
-        // This is CRITICAL - without cleanup, listeners accumulate and can crash
-        // the rendering pipeline when they reference disposed displays
-        modelListener?.let {
+            // A mirror parser runs blocking emulator/ICU code on the session dispatcher.
+            // Cancellation alone does not stop an instruction already being parsed. An
+            // embedder may close its classloader as soon as dispose returns, so wait for
+            // this worker (including its disconnected/finally cleanup) before returning.
+            // Join only this background job, never the UI scope: Main may be disposing us.
+            remoteParserJob?.let { parser ->
+                dataStream.close()
+                parser.cancel()
+                runBlocking { parser.join() }
+            }
+            sessionEngine?.closeAndAwaitParserTermination()
+            if (!cleanup) return
+            // Registered for this tab's lifetime, so it is unregistered here rather than by a
+            // composition leaving the tree.
             try {
-                textBuffer.removeModelListener(it)
+                textBuffer.removeChangesListener(historyAppendBank)
             } catch (e: Exception) {
-                System.err.println("WARN: Failed to remove model listener: ${e.message}")
+                System.err.println("WARN: Failed to remove history append bank: ${e.message}")
             }
-        }
 
-        // Remove the command-state listeners the controller registered for us.
-        // Same memory-pressure rationale as modelListener above: anonymous OSC 133
-        // listeners (CommandNotificationHandler, LastCommandTracker) would otherwise
-        // remain attached to `terminal` and keep this tab's state reachable until
-        // the terminal itself is collected.
-        for (listener in commandStateListeners) {
-            // Release any OS wake-lock held by the prevent-sleep listener before detaching.
-            (listener as? ai.rever.bossterm.compose.power.PreventSleepListener)?.let {
-                runCatching { it.dispose() }
+            // Remove model listener to prevent memory leak
+            // This is CRITICAL - without cleanup, listeners accumulate and can crash
+            // the rendering pipeline when they reference disposed displays
+            modelListener?.let {
+                try {
+                    textBuffer.removeModelListener(it)
+                } catch (e: Exception) {
+                    System.err.println("WARN: Failed to remove model listener: ${e.message}")
+                }
             }
+
+            // Remove the command-state listeners the controller registered for us.
+            // Same memory-pressure rationale as modelListener above: anonymous OSC 133
+            // listeners (CommandNotificationHandler, LastCommandTracker) would otherwise
+            // remain attached to `terminal` and keep this tab's state reachable until
+            // the terminal itself is collected.
+            for (listener in commandStateListeners) {
+                // Release any OS wake-lock held by the prevent-sleep listener before detaching.
+                (listener as? ai.rever.bossterm.compose.power.PreventSleepListener)?.let {
+                    runCatching { it.dispose() }
+                }
+                try {
+                    terminal.removeCommandStateListener(listener)
+                } catch (e: Exception) {
+                    System.err.println("WARN: Failed to remove command-state listener: ${e.message}")
+                }
+            }
+
+            sessionEngine?.close()
+
+            // Cancel all UI-adapter coroutines in this scope
+            coroutineScope.cancel()
+
+            // Tear down the display: cancels its redraw scope, closes the redraw
+            // channel, and stops the parked redraw coroutine. Without this every
+            // closed tab/pane leaks a Main-dispatcher coroutine and pins the display.
             try {
-                terminal.removeCommandStateListener(listener)
+                display.dispose()
             } catch (e: Exception) {
-                System.err.println("WARN: Failed to remove command-state listener: ${e.message}")
+                System.err.println("WARN: Failed to dispose display: ${e.message}")
             }
+
+            // Terminal cleanup (if needed)
+            // terminal.close() may not be available in all BossTerm versions
+        } finally {
+            if (cleanup) disposingThread = null
         }
-
-        sessionEngine?.close()
-
-        // Cancel all UI-adapter coroutines in this scope
-        coroutineScope.cancel()
-
-        // Tear down the display: cancels its redraw scope, closes the redraw
-        // channel, and stops the parked redraw coroutine. Without this every
-        // closed tab/pane leaks a Main-dispatcher coroutine and pins the display.
-        try {
-            display.dispose()
-        } catch (e: Exception) {
-            System.err.println("WARN: Failed to dispose display: ${e.message}")
-        }
-
-        // Terminal cleanup (if needed)
-        // terminal.close() may not be available in all BossTerm versions
     }
 
     /**

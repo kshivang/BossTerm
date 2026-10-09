@@ -187,6 +187,14 @@ through `environmentOverrides`, never import GUI or daemon registries into the e
 Regression tests live under `compose-ui/src/desktopTest/.../session/`,
 `tabs/LocalSessionEngineTest.kt`, `EmbeddedSessionEngineTest.kt`, and `daemon/`.
 
+Embedders that unload this library's classloader must stop UI/session admission first,
+call `disposeForUnload()` on their tabbed/embedded states on the UI owner thread, then
+call `TerminalRuntimeLifecycle.shutdownForUnload()` for the final classloader owner.
+The runtime barrier also drains engines whose tabs were already closed. Ordinary
+`dispose()` joins parsing but permits process-exit callbacks; the unload APIs must
+never run inside terminal workers or synchronous terminal callbacks. A same-loader
+plugin re-registration calls `activateHostLifetime()` before allowing new terminals.
+
 ### Platform Detection
 Use `ShellCustomizationUtils` for platform checks - never raw `System.getProperty("os.name")`:
 - `ShellCustomizationUtils.isWindows()`

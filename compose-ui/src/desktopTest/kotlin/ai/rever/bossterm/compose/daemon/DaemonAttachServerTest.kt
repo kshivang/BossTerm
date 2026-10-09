@@ -14,6 +14,8 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.InetAddress
+import java.net.ServerSocket
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -30,6 +32,22 @@ class DaemonAttachServerTest {
         is Frame.Text -> runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull()
         is Frame.Binary -> DaemonAttachProtocol.BinaryFrame.decode(frame.data)
         else -> null
+    }
+
+    @Test
+    fun `occupied preferred port falls back to a bound listening socket`() {
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        val server = DaemonAttachServer(host, "occupied-port")
+        try {
+            ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { occupied ->
+                val actual = server.start(occupied.localPort)
+                assertTrue(actual in (occupied.localPort + 1)..minOf(65535, occupied.localPort + 9))
+                java.net.Socket("127.0.0.1", actual).use { assertTrue(it.isConnected) }
+            }
+        } finally {
+            server.stop()
+            host.close()
+        }
     }
 
     @Test

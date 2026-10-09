@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.channels.Channel
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
@@ -109,7 +110,7 @@ class DaemonAttachServer(
                 // Bind directly. A separate non-reusing probe rejects sockets in TIME_WAIT
                 // on macOS, and selecting a free port before binding races other listeners.
                 srv.start(wait = false)
-                val actualPort = runBlocking { srv.engine.resolvedConnectors().first().port }
+                val actualPort = runBlocking { withTimeout(5000) { srv.engine.resolvedConnectors().first().port } }
                 engine = srv
                 boundPort = actualPort
                 log.info("Daemon attach server on ws://{}:{}/attach", HOST, actualPort)

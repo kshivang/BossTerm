@@ -349,6 +349,10 @@ fun TabbedTerminal(
         )
     }
 
+    if (state != null && daemonMode) {
+        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.initializeHosted(state)
+    }
+
     // Use external state's tabController if provided, otherwise create internal one
     val tabController = state?.tabController ?: remember {
         TabController(
@@ -469,7 +473,7 @@ fun TabbedTerminal(
         // mid-reconnect — isAttached stays true while the bridge reconnects), fall back to a local tab
         // so Ctrl+T isn't a silent no-op.
         if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
-            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession()) {
+            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(state = state)) {
             // enqueued — the daemon creates the session and the bridge renders it as a mirror tab.
         } else {
             tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
@@ -1213,7 +1217,7 @@ fun TabbedTerminal(
             if (!settings.sessionSharingEnabled) {
                 SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
             }
-            ai.rever.bossterm.compose.daemon.DaemonShareClient.startShare(kind, groupId = groupId)
+            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.startShare(state, kind, groupId)
             daemonShareGroupId = daemonGroupId
             daemonShareScope = kind
             daemonShareOpen = true
@@ -1863,7 +1867,7 @@ fun TabbedTerminal(
                     sessionFor(tabIndex, paneId)?.workingDirectory?.value?.let { cwd ->
                         val openedInDaemon = daemonMode &&
                             ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
-                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd)
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd, state)
                         if (!openedInDaemon) {
                             tabController.createTab(
                                 workingDir = cwd,
@@ -1922,7 +1926,7 @@ fun TabbedTerminal(
                     else {
                         val wd = t?.workingDirectory?.value
                         if (!(daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
-                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(wd))) {
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(wd, state))) {
                             tabController.createTab(workingDir = wd)
                         }
                     }
@@ -2176,7 +2180,7 @@ fun TabbedTerminal(
                 onNewTabAtCurrentPath = { cwd ->
                     val openedInDaemon = daemonMode &&
                         ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
-                        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd)
+                        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd, state)
                     if (!openedInDaemon) {
                         tabController.createTab(
                             workingDir = cwd,

@@ -444,6 +444,8 @@ class TabController(
      * @return The newly created TerminalTab
      * @throws IllegalArgumentException if tabId is provided but already exists
      */
+    internal var daemonTabFactory: ((TerminalLaunchRequest) -> TerminalTab)? = null
+
     fun createTab(
         workingDir: String? = null,
         command: String? = null,
@@ -454,6 +456,7 @@ class TabController(
         tabId: String? = null,
         activate: Boolean = true
     ): TerminalTab {
+        daemonTabFactory?.let { return it(TerminalLaunchRequest(workingDir, command, arguments, onProcessExit, initialCommand, onInitialCommandComplete, tabId, activate)) }
         // Validate tab ID uniqueness if custom ID provided
         if (tabId != null && tabs.any { it.id == tabId }) {
             throw IllegalArgumentException(
@@ -694,6 +697,7 @@ class TabController(
         remotePaneId: String? = null,
         onUserInput: ((String) -> Unit)? = null,
         feedsStream: Boolean = true,
+        tabId: String? = null,
     ): TerminalTab {
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
@@ -714,7 +718,7 @@ class TabController(
         val scope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(Job)) + Dispatchers.Default)
 
         val tab = TerminalTab(
-            id = java.util.UUID.randomUUID().toString(),
+            id = tabId ?: java.util.UUID.randomUUID().toString(),
             title = mutableStateOf(title),
             terminal = terminal,
             textBuffer = textBuffer,

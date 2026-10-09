@@ -14,7 +14,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,7 +26,7 @@ class DaemonGuiBridgeTest {
         val opens = AtomicInteger()
         val activations = AtomicInteger()
         val server = DaemonAttachServer(host, "activation", activateGui = { activations.incrementAndGet() })
-        val port = server.start(freePort())
+        val port = server.start(0)
         assertTrue(port > 0)
         val bridge = DaemonGuiBridge(port, "activation", this, { opens.incrementAndGet() }, Dispatchers.Unconfined).start()
         try {
@@ -60,7 +59,7 @@ class DaemonGuiBridgeTest {
     fun `app activation takes precedence over window mirrors`() = runBlocking {
         val host = SessionHost(TerminalSettings.DEFAULT)
         val server = DaemonAttachServer(host, "activation", activateGui = {})
-        val port = server.start(freePort())
+        val port = server.start(0)
         val opens = AtomicInteger()
         val windowFocus = AtomicInteger()
         val client = HttpClient(CIO) { install(WebSockets) }
@@ -96,7 +95,7 @@ class DaemonGuiBridgeTest {
     fun `lifecycle registration requires the same token and protocol as terminal attach`() = runBlocking {
         val host = SessionHost(TerminalSettings.DEFAULT)
         val server = DaemonAttachServer(host, "activation", activateGui = {})
-        val port = server.start(freePort())
+        val port = server.start(0)
         val client = HttpClient(CIO) { install(WebSockets) }
         try {
             for ((token, version) in listOf("wrong" to DaemonAttachProtocol.PROTOCOL_VERSION, "activation" to -1)) {
@@ -118,8 +117,6 @@ class DaemonGuiBridgeTest {
             host.close()
         }
     }
-
-    private fun freePort(): Int = ServerSocket(0).use { it.localPort }
 
     private suspend fun await(predicate: () -> Boolean) = withTimeout(5000) {
         while (!predicate()) delay(10)

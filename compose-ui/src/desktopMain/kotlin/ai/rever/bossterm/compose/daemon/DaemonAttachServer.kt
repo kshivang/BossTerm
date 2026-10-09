@@ -17,10 +17,10 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.channels.Channel
 import org.slf4j.LoggerFactory
-import java.net.InetSocketAddress
-import java.net.ServerSocket
 import java.security.MessageDigest
 
 /**
@@ -88,7 +88,7 @@ class DaemonAttachServer(
     @Synchronized
     fun start(desiredPort: Int = 7682): Int {
         if (engine != null) return boundPort
-        if (desiredPort !in 1..65535) {
+        if (desiredPort !in 0..65535) {
             log.error("attach: invalid port {}", desiredPort)
             return -1
         }
@@ -99,21 +99,24 @@ class DaemonAttachServer(
             log.error("attach: refusing to start with an empty secret")
             return -1
         }
-        for (offset in 0 until 10) {
+        for (offset in 0 until if (desiredPort == 0) 1 else 10) {
             val port = desiredPort + offset
             if (port > 65535) break
-            if (!portAvailable(port)) continue
+            val srv = embeddedServer(CIO, host = HOST, port = port) {
+                install(WebSockets)
+                routing { webSocket("/attach") { serve(this) } }
+            }
             try {
-                val srv = embeddedServer(CIO, host = HOST, port = port) {
-                    install(WebSockets)
-                    routing { webSocket("/attach") { serve(this) } }
-                }
+                // Bind directly. A separate non-reusing probe rejects sockets in TIME_WAIT
+                // on macOS, and selecting a free port before binding races other listeners.
                 srv.start(wait = false)
+                val actualPort = runBlocking { withTimeout(5000) { srv.engine.resolvedConnectors().first().port } }
                 engine = srv
-                boundPort = port
-                log.info("Daemon attach server on ws://{}:{}/attach", HOST, port)
-                return port
+                boundPort = actualPort
+                log.info("Daemon attach server on ws://{}:{}/attach", HOST, actualPort)
+                return actualPort
             } catch (e: Throwable) {
+                runCatching { srv.stop(0, 0) }
                 log.warn("attach bind {}:{} failed: {}", HOST, port, e.message)
             }
         }
@@ -364,14 +367,28 @@ class DaemonAttachServer(
                     // grouped-vs-flat distinction. Return value (sessionId, groupId) was already
                     // discarded for openSession() too; the GUI learns the result via SessionList/
                     // GroupList, not a reply.
-                    is DaemonAttachProtocol.Client.Open -> host.openWindow(cwd = msg.cwd, cols = msg.cols, rows = msg.rows)
+                    is DaemonAttachProtocol.Client.Open -> {
+                        val (id, _) = host.openWindow(cwd = msg.cwd, cols = msg.cols, rows = msg.rows,
+                            command = msg.command, arguments = msg.arguments,
+                            initialCommand = msg.initialCommand ?: if (msg.command == null && msg.arguments.isEmpty()) host.defaultInitialCommand() else null,
+                            requestedId = msg.id, requestId = msg.requestId)
+                        send(DaemonAttachProtocol.Server.Opened(id))
+                        resync()
+                        if (host.get(id) == null) send(DaemonAttachProtocol.Server.Closed(id))
+                    }
                     is DaemonAttachProtocol.Client.Close -> host.closeSession(msg.id)
-                    is DaemonAttachProtocol.Client.SplitPane -> host.splitPane(
-                        sessionId = msg.sessionId,
-                        orientation = if (msg.orientation == "h") SplitOrientation.HORIZONTAL else SplitOrientation.VERTICAL,
-                        cwd = msg.cwd,
-                        ratio = msg.ratio,
-                    )
+                    is DaemonAttachProtocol.Client.SplitPane -> {
+                        val id = host.splitPane(
+                            sessionId = msg.sessionId,
+                            orientation = if (msg.orientation == "h") SplitOrientation.HORIZONTAL else SplitOrientation.VERTICAL,
+                            cwd = msg.cwd, ratio = msg.ratio, requestedId = msg.id, initialCommand = msg.initialCommand,
+                        )
+                        msg.id?.let {
+                            send(DaemonAttachProtocol.Server.Opened(it))
+                            resync()
+                            if (id == null || host.get(it) == null) send(DaemonAttachProtocol.Server.Closed(it))
+                        }
+                    }
                     is DaemonAttachProtocol.Client.ClosePane -> host.closeGroupedSession(msg.sessionId)
                     is DaemonAttachProtocol.Client.CloseGroup -> host.closeGroup(msg.groupId)
                     is DaemonAttachProtocol.Client.UpdateSplitRatio -> host.updateSplitRatio(msg.groupId, msg.splitId, msg.ratio)
@@ -434,9 +451,6 @@ class DaemonAttachServer(
 
     /** Per-connection, per-session attachment: the core, its output tap + collector jobs (size, meta). */
     private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val sizeTap: (Int, Int) -> Unit, val jobs: List<kotlinx.coroutines.Job>)
-
-    private fun portAvailable(port: Int): Boolean =
-        runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(InetSocketAddress(HOST, port)); true } }.getOrDefault(false)
 
     private fun constantTimeEquals(a: String, b: String): Boolean =
         MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))

@@ -120,8 +120,11 @@ class SplitViewState(
      * @param ratio The initial split ratio (0.0 to 1.0, default 0.5)
      */
     fun splitFocusedPane(orientation: SplitOrientation, newSession: TerminalSession, ratio: Float = 0.5f): String? {
+        return splitFocusedPaneWithId(orientation, newSession, ratio, UUID.randomUUID().toString())
+    }
+
+    internal fun splitFocusedPaneWithId(orientation: SplitOrientation, newSession: TerminalSession, ratio: Float, newPaneId: String): String? {
         val currentPane = getFocusedPane() ?: return null
-        val newPaneId = UUID.randomUUID().toString()
         val newPane = SplitNode.Pane(id = newPaneId, session = newSession)
 
         rootNode = rootNode.replaceNode(currentPane.id) { pane ->

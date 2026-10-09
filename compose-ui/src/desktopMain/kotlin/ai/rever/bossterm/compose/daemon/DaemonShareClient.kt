@@ -6,15 +6,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.slf4j.LoggerFactory
 
 /**
- * Process-wide hub for the GUI's daemon-share control lane (Phase 2). Analogous to
- * [DaemonBridgeCoordinator]: the active [DaemonSessionBridge] feeds it the daemon's latest
- * [DaemonAttachProtocol.Server.ShareState] and registers a [sender] so the UI's start/stop/approve
- * calls reach that one attach socket. The daemon owns the real share server, so this is purely a
- * thin observe-and-steer surface that the daemon-share window binds to.
- *
- * Lives here (not on the bridge) because the share window is opened from the tab UI and must reach
- * whichever bridge is currently attached; a bridge can be recreated on window re-attach. Thread-safe:
- * a [@Volatile] sender ref plus a [MutableStateFlow] the UI collects via `collectAsState()`.
+ * GUI control lanes for standalone or hosted daemon shares. Hosted surfaces aggregate their state,
+ * deduplicate a shared pool's tokens, and route token actions through a live owning connection.
+ * Removing one window never clears another window's controls.
  */
 object DaemonShareClient {
     private val log = LoggerFactory.getLogger(DaemonShareClient::class.java)
@@ -25,6 +19,14 @@ object DaemonShareClient {
     }
 
     @Volatile private var sender: Sender? = null
+    private val sources = java.util.IdentityHashMap<Sender, DaemonAttachProtocol.Server.ShareState>()
+
+    private fun publish() {
+        _state.value = DaemonAttachProtocol.Server.ShareState(
+            shares = sources.values.flatMap { it.shares }.distinctBy { it.token },
+            pending = sources.values.flatMap { it.pending }.distinctBy { it.token to it.clientId },
+        )
+    }
 
     private val _state = MutableStateFlow(DaemonAttachProtocol.Server.ShareState())
 
@@ -33,29 +35,36 @@ object DaemonShareClient {
 
     /** The active bridge registers its outbox here on connect so UI calls reach this socket. */
     @Synchronized
-    fun registerSender(sender: Sender) {
+    fun registerSender(sender: Sender, hosted: Boolean = false) {
+        if (!hosted) sources.clear()
+        sources.putIfAbsent(sender, DaemonAttachProtocol.Server.ShareState())
         this.sender = sender
+        publish()
     }
 
     /** Clear the sender on disconnect/stop; UI calls become no-ops until a bridge reattaches. */
     @Synchronized
     fun clearSender(sender: Sender) {
-        // Only the registering bridge may clear, so a late teardown of an old bridge doesn't
-        // wipe a freshly-attached one.
-        if (this.sender === sender) {
-            this.sender = null
-            _state.value = DaemonAttachProtocol.Server.ShareState()
-        }
+        sources.remove(sender)
+        if (this.sender === sender) this.sender = sources.keys.firstOrNull()
+        publish()
     }
 
     /** Push the daemon's latest share state into the flow the UI observes. */
     @Synchronized
     fun update(state: DaemonAttachProtocol.Server.ShareState, sender: Sender) {
-        if (this.sender === sender) _state.value = state
+        if (sources.containsKey(sender)) {
+            sources[sender] = state
+            publish()
+        }
     }
 
-    private fun send(message: DaemonAttachProtocol.Client) {
-        val s = sender
+    private fun send(message: DaemonAttachProtocol.Client, token: String? = null) {
+        val s = synchronized(this) {
+            if (token == null) sender else sources.entries.firstOrNull { (_, state) ->
+                state.shares.any { it.token == token } || state.pending.any { it.token == token }
+            }?.key
+        }
         if (s == null) {
             log.debug("daemon-share action dropped (no bridge attached): {}", message::class.simpleName)
             return
@@ -66,17 +75,17 @@ object DaemonShareClient {
     fun startShare(scope: String, sessionId: String? = null, remoteMode: String? = null, groupId: String? = null) =
         send(DaemonAttachProtocol.Client.StartShare(scope, sessionId, remoteMode, groupId))
 
-    fun stopShare(token: String) = send(DaemonAttachProtocol.Client.StopShare(token))
+    fun stopShare(token: String) = send(DaemonAttachProtocol.Client.StopShare(token), token)
 
     fun setRemoteMode(token: String, mode: String) =
-        send(DaemonAttachProtocol.Client.SetShareRemoteMode(token, mode))
+        send(DaemonAttachProtocol.Client.SetShareRemoteMode(token, mode), token)
 
     fun setName(token: String, name: String) =
-        send(DaemonAttachProtocol.Client.SetShareName(token, name))
+        send(DaemonAttachProtocol.Client.SetShareName(token, name), token)
 
     fun approve(token: String, clientId: String, control: Boolean) =
-        send(DaemonAttachProtocol.Client.ApproveViewer(token, clientId, control))
+        send(DaemonAttachProtocol.Client.ApproveViewer(token, clientId, control), token)
 
     fun deny(token: String, clientId: String) =
-        send(DaemonAttachProtocol.Client.DenyViewer(token, clientId))
+        send(DaemonAttachProtocol.Client.DenyViewer(token, clientId), token)
 }

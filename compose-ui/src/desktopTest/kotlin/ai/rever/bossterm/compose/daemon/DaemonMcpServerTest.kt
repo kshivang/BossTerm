@@ -1,6 +1,10 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.mcp.InProcessClientConnection
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
+import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.InetAddress
@@ -73,6 +77,75 @@ class DaemonMcpServerTest {
             assertFalse(marker.exists(), "syncPortMarker must remove the marker when opted out")
         } finally {
             server.stop()
+        }
+    }
+
+
+    @Test
+    fun `an unstarted or stopped server does not erase another servers marker`() = withSettingsDir {
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        val server = DaemonMcpServer(host)
+        val marker = BossTermPaths.mcpPortFile()
+        marker.parentFile.mkdirs()
+        marker.writeText("18999")
+        server.syncPortMarker()
+        server.stop()
+        assertEquals("18999", marker.readText())
+        try {
+            val port = assertNotNull(server.start(18_777))
+            assertEquals(port, server.start(18_797), "second start must reuse the current listener")
+            marker.writeText("18999")
+            server.stop()
+            server.syncPortMarker()
+            assertEquals("18999", marker.readText())
+        } finally {
+            server.stop()
+            host.shutdownAll()
+        }
+    }
+
+    @Test
+    fun `invalid requested ports do not create an unusable marker`() = withSettingsDir {
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        val server = DaemonMcpServer(host)
+        try {
+            assertNull(server.start(0))
+            assertNull(server.start(-1))
+            assertNull(server.start(65536))
+            assertFalse(BossTermPaths.mcpPortFile().exists())
+        } finally {
+            server.stop()
+            host.shutdownAll()
+        }
+    }
+
+
+    @Test
+    fun `disabled tools are omitted and already advertised handlers reject live disable`() = runBlocking {
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        var disabled = emptySet<String>()
+        val wrapper = DaemonMcpServer(host, disabledTools = { disabled })
+        val server = wrapper.createServer()
+        try {
+            val tool = assertNotNull(server.tools["send_input"])
+            val invalid = tool.handler(InProcessClientConnection,
+                CallToolRequest(CallToolRequestParams(name = "send_input")))
+            assertEquals(true, invalid.isError, "argument failures must be MCP errors")
+            disabled = setOf("send_input", "open_session")
+            val blocked = tool.handler(InProcessClientConnection,
+                CallToolRequest(CallToolRequestParams(name = "send_input")))
+            assertEquals(true, blocked.isError)
+            val refreshed = wrapper.createServer()
+            try {
+                assertFalse(refreshed.tools.containsKey("send_input"))
+                assertFalse(refreshed.tools.containsKey("open_session"))
+                assertTrue(refreshed.tools.containsKey("list_sessions"))
+            } finally {
+                refreshed.close()
+            }
+        } finally {
+            server.close()
+            host.shutdownAll()
         }
     }
 

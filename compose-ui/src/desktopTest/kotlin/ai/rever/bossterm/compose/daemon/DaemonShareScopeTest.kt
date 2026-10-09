@@ -33,4 +33,16 @@ class DaemonShareScopeTest {
         // And a SESSION share with no backing session must not match anything.
         assertFalse(DaemonShareServer.mutationInScope(SESSION, defSessionId = null, targetId = "s2"))
     }
+    @Test
+    fun `GROUP scope permits only current group leaves and invalid scope never widens`() {
+        val tree = GroupTreeDto.Split("split", "v", 0.5f,
+            GroupTreeDto.Pane("p1", "s1"), GroupTreeDto.Pane("p2", "s2"))
+        val ids = DaemonShareServer.groupSessionIds(tree)
+        assertTrue(DaemonShareServer.mutationInScope("group", null, "s1", ids))
+        assertTrue(DaemonShareServer.mutationInScope("group", null, "s2", ids))
+        assertFalse(DaemonShareServer.mutationInScope("group", null, "other", ids))
+        assertFalse(DaemonShareServer.mutationInScope("group", null, "s1"))
+        assertFalse(DaemonShareServer.mutationInScope("invalid", "s1", "s1"))
+    }
+
 }

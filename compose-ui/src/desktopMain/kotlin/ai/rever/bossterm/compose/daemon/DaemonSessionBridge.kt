@@ -7,13 +7,18 @@ import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.RequestOrigin
 import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.header
+import io.ktor.websocket.close
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,6 +49,7 @@ class DaemonSessionBridge(
     private val attachPort: Int,
     private val secret: String,
     private val uiScope: CoroutineScope,
+    private val uiDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) {
     private val log = LoggerFactory.getLogger(DaemonSessionBridge::class.java)
     private val client = HttpClient(CIO) { install(WebSockets) }
@@ -65,7 +71,12 @@ class DaemonSessionBridge(
      *  [reconcile] tell a genuinely ungrouped session (MCP/CLI-created; daemon never wraps those
      *  in a group) apart from one whose tab/leaf is owned by [reconcileGroups]. */
     @Volatile private var allGroupedSessionIds: Set<String> = emptySet()
+    private var sessionMetadata: Map<String, DaemonAttachProtocol.SessionMeta> = emptyMap()
     @Volatile private var running = false
+    var hasReceivedState by mutableStateOf(false)
+        private set
+    private val pendingGroupCloses = ConcurrentHashMap.newKeySet<String>()
+    private val pendingPaneCloses = ConcurrentHashMap.newKeySet<String>()
     // Auto-open bookkeeping for the "empty daemon → open one session" path. issuedAutoOpen: this bridge
     // enqueued the auto-open. sawAnySession: the daemon ever reported a non-empty list. If we issued the
     // open but never saw a session before the socket dropped, the Open was likely lost — release the
@@ -80,9 +91,9 @@ class DaemonSessionBridge(
          *  first send immediate, final value always delivered. */
         const val RESIZE_MIN_INTERVAL_MS = 50L
 
-        /** Home + clear screen + clear scrollback — prepended to a snapshot so a reattach repaint
+        /** Full terminal reset — prepended to a snapshot so a reattach repaint
          *  replaces (not appends below) the mirror tab's existing content. */
-        const val SNAPSHOT_RESET = "\u001b[H\u001b[2J\u001b[3J"
+        const val SNAPSHOT_RESET = "\u001bc"
     }
 
     /**
@@ -118,6 +129,7 @@ class DaemonSessionBridge(
     fun stop() {
         running = false
         outbox?.close()
+        outbox = null
         io.cancel() // reaps the resize-sampler collectors too
         resizeSamplers.clear()
         runCatching { client.close() }
@@ -136,8 +148,12 @@ class DaemonSessionBridge(
 
     /** Ask the daemon to close one pane (session) — collapses its group if it has siblings, or
      *  closes the whole (1-pane) group if it doesn't. Fire-and-forget. */
-    fun closePane(sessionId: String): Boolean =
+    fun closePane(sessionId: String): Boolean {
+        if (!tabs.containsKey(sessionId)) return false
+        pendingPaneCloses.add(sessionId)
         send(DaemonAttachProtocol.Client.ClosePane(sessionId))
+        return true
+    }
 
     /** Turn the daemon's MCP server on/off (the GUI's MCP settings toggle in daemon mode). The daemon
      *  replies with [DaemonAttachProtocol.Server.McpState], which updates the status indicator. */
@@ -183,16 +199,27 @@ class DaemonSessionBridge(
         val url = "ws://127.0.0.1:$attachPort/attach?pid=${ProcessHandle.current().pid()}" +
             "&v=${DaemonAttachProtocol.PROTOCOL_VERSION}"
         val out = Channel<String>(capacity = 1024)
-        outbox = out
         // Route the daemon-share UI's start/stop/approve calls onto THIS connection's outbox, so a
         // window's Share controls reach whichever attach socket is currently live.
         val shareSender = DaemonShareClient.Sender { m -> send(m) }
-        DaemonShareClient.registerSender(shareSender)
         try {
             client.webSocket(url, request = { header(DaemonAttachProtocol.TOKEN_HEADER, secret) }) {
+                outbox = out
+                DaemonShareClient.registerSender(shareSender)
+                // Settings observed while disconnected must be replayed on every live socket.
+                setMcpEnabled(SettingsManager.instance.settings.value.mcpEnabled)
+                resizeSamplers.replay()
+                pendingGroupCloses.forEach { send(DaemonAttachProtocol.Client.CloseGroup(it)) }
+                pendingPaneCloses.forEach { send(DaemonAttachProtocol.Client.ClosePane(it)) }
                 // Pump this connection's outbox → socket.
                 val writer = launch {
-                    try { for (text in out) send(Frame.Text(text)) } catch (_: Exception) {}
+                    try {
+                        for (text in out) send(Frame.Text(text))
+                    } finally {
+                        // A failed writer must end the reader too; otherwise inputs disappear into
+                        // an outbox whose consumer has died while the bridge looks connected.
+                        runCatching { this@webSocket.close() }
+                    }
                 }
                 try {
                     for (frame in incoming) {
@@ -203,7 +230,7 @@ class DaemonSessionBridge(
                             is Frame.Binary -> DaemonAttachProtocol.BinaryFrame.decode(frame.data)
                             else -> null
                         } ?: continue
-                        dispatch(msg)
+                        dispatch(msg, shareSender)
                     }
                 } finally {
                     writer.cancel()
@@ -227,7 +254,7 @@ class DaemonSessionBridge(
         }
     }
 
-    private suspend fun dispatch(msg: DaemonAttachProtocol.Server) {
+    internal suspend fun dispatch(msg: DaemonAttachProtocol.Server, sender: DaemonShareClient.Sender? = null) {
         when (msg) {
             // Process SessionList first (drives tabs[id] title/cwd + vanish detection) so any leaf
             // GroupList references next already has fresh metadata.
@@ -235,15 +262,18 @@ class DaemonSessionBridge(
             is DaemonAttachProtocol.Server.GroupList -> reconcileGroups(msg.groups)
             // Reset the mirror buffer before painting a snapshot. The snapshot has no clear sequence of
             // its own, so on a reconnect (the tab persists, only the socket blipped) it would paint a
-            // SECOND full scrollback+screen below the existing content. Clear scrollback+screen+home
+            // SECOND full scrollback+screen below the existing content. Reset parser/model modes and clear both buffers
             // first — a no-op on a fresh tab, deduplicates on reattach.
-            is DaemonAttachProtocol.Server.Snapshot -> tabs[msg.id]?.dataStream?.append(SNAPSHOT_RESET + msg.data)
+            is DaemonAttachProtocol.Server.Snapshot -> {
+                resizeMirror(msg.id, msg.cols, msg.rows)
+                tabs[msg.id]?.dataStream?.append(SNAPSHOT_RESET + msg.data)
+            }
             is DaemonAttachProtocol.Server.Output -> tabs[msg.id]?.dataStream?.append(msg.data)
             is DaemonAttachProtocol.Server.Resized -> resizeMirror(msg.id, msg.cols, msg.rows)
             is DaemonAttachProtocol.Server.Closed -> closeMirror(msg.id)
             is DaemonAttachProtocol.Server.Focus -> focusWindows()
             // Phase 2 daemon-share state — feed the process-wide hub the daemon-share window binds to.
-            is DaemonAttachProtocol.Server.ShareState -> DaemonShareClient.update(msg)
+            is DaemonAttachProtocol.Server.ShareState -> if (sender != null) DaemonShareClient.update(msg, sender)
             // Daemon MCP toggled on/off — reflect the bound port (or off) in the status indicator.
             is DaemonAttachProtocol.Server.McpState ->
                 if (msg.port != null) ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(msg.port)
@@ -253,7 +283,7 @@ class DaemonSessionBridge(
 
     /** Bring this GUI's window(s) to the front — daemon's "Open BossTerm" when a window is already open. */
     private suspend fun focusWindows() {
-        withContext(Dispatchers.Main) {
+        withContext(uiDispatcher) {
             val windows = ai.rever.bossterm.compose.window.WindowManager.windows
             log.info("Focus requested by daemon; raising {} window(s)", windows.size)
             windows.forEach { w ->
@@ -279,109 +309,118 @@ class DaemonSessionBridge(
         }
     }
 
-    /** Create mirror tabs for new daemon sessions; update existing ones; close vanished ones. */
+    /** Session lists also arrive independently for title/cwd updates. Structural changes are
+     * applied with the following GroupList, avoiding temporary flat tabs and last-tab close
+     * callbacks while a split changes shape. */
     private suspend fun reconcile(sessions: List<DaemonAttachProtocol.SessionMeta>) {
-        // First attach to an empty daemon → open one session so the user sees a daemon terminal.
-        // The guard is process-wide (coordinator), so bridge churn can't accumulate sessions.
-        if (sessions.isEmpty()) {
-            // Release the process-wide claim if the Open couldn't be enqueued, so a later reconcile
-            // retries instead of the empty daemon being stuck tab-less with the claim consumed.
-            if (DaemonBridgeCoordinator.claimAutoOpen()) {
-                if (openSession()) issuedAutoOpen = true else DaemonBridgeCoordinator.releaseAutoOpen()
-            }
-            return
-        }
-        sawAnySession = true
-        val live = sessions.associateBy { it.id }
-        // Remove vanished sessions.
-        (tabs.keys - live.keys).toList().forEach { closeMirror(it) }
-        for (meta in sessions) {
-            val existing = tabs[meta.id]
-            if (existing != null) {
-                // Reflect daemon-side title/cwd changes (the mirror tab has no local cwd/title
-                // tracking of its own, so the tab-bar name + secondary cwd come from here).
-                if (existing.title.value != meta.title || existing.workingDirectory.value != meta.cwd) {
-                    withContext(Dispatchers.Main) {
-                        existing.title.value = meta.title
-                        existing.workingDirectory.value = meta.cwd
-                    }
-                }
-                continue
-            }
-            // A session not yet in `tabs` and already known to be grouped (per the latest
-            // GroupList) is owned by reconcileGroups — it'll be created there (1-pane groups too),
-            // so don't race it into a duplicate flat tab here. Only a genuinely ungrouped session
-            // (MCP/CLI-created; the daemon never wraps those in a group) falls through to today's
-            // flat-tab creation below.
-            if (meta.id in allGroupedSessionIds) continue
-            // New session → create a mirror tab (on the UI thread — mutates the Compose tabs list).
-            withContext(Dispatchers.Main) {
-                val tab = controller.createRemoteSession(
-                    title = meta.title,
-                    remotePaneId = meta.id,
-                    onUserInput = { data -> send(DaemonAttachProtocol.Client.Input(meta.id, data)) },
-                )
-                tab.onRemoteFit = { cols, rows -> sendResizeSampled(meta.id, cols, rows) }
-                tab.workingDirectory.value = meta.cwd
-                tabs[meta.id] = tab
-                controller.createTabFromExistingSession(tab)
-            }
+        sessionMetadata = sessions.associateBy { it.id }
+        if (sessions.isNotEmpty()) sawAnySession = true
+        withContext(uiDispatcher) {
+            sessions.forEach { meta -> tabs[meta.id]?.let { applyMetadata(it, meta) } }
         }
     }
 
-    /**
-     * Build/update local [SplitViewState] trees from the daemon's [groups]. Owns ALL tab/leaf
-     * creation for grouped sessions (including 1-pane groups — an ordinary daemon tab is just a
-     * 1-pane group), so a session whose SessionList frame raced ahead of its GroupList frame is
-     * never left to [reconcile]'s ungrouped fallback. Mirrors the existing
-     * `RemoteSessionManager.reconcile`/`buildTree` pattern (rebuild-by-id, not incremental patch).
-     */
+    private fun applyMetadata(tab: TerminalTab, meta: DaemonAttachProtocol.SessionMeta) {
+        tab.title.value = meta.title
+        tab.workingDirectory.value = meta.cwd
+    }
+
+    /** Apply an authoritative topology with stable leaf identities. Multi-pane containers own no
+     * leaf stream, so replacing/collapsing a container can never dispose a surviving pane. */
     private suspend fun reconcileGroups(groups: List<GroupView>) {
-        val liveGroupIds = groups.map { it.groupId }.toSet()
-        withContext(Dispatchers.Main) {
-            // Drop containers for groups that vanished entirely (closed/merged away daemon-side).
+        pendingGroupCloses.removeAll { pending -> groups.none { it.groupId == pending } }
+        pendingPaneCloses.removeAll { it !in sessionMetadata }
+        val closingSessions = groups.filter { it.groupId in pendingGroupCloses }
+            .flatMap { collectPaneIds(it.tree) }.toSet()
+        val visibleMetadata = sessionMetadata.filterKeys { it !in closingSessions }
+        withContext(uiDispatcher) {
+            val selected = controller.activeTab?.id
+            val selectedGroup = groupTabs.entries.firstOrNull { it.value.id == selected }?.key
+            val liveGroupIds = groups.filter { it.groupId !in pendingGroupCloses }.map { it.groupId }.toSet()
+            allGroupedSessionIds = groups.flatMap { collectPaneIds(it.tree) }.toSet()
+            for (group in groups) {
+                if (group.groupId in pendingGroupCloses) continue
+                val ids = collectPaneIds(group.tree)
+                if (ids.isEmpty() || ids.any { it !in sessionMetadata }) continue
+                ids.forEach { id ->
+                    tabs.getOrPut(id) { createLeafMirror(id) }.let { applyMetadata(it, sessionMetadata.getValue(id)) }
+                }
+                val old = groupTabs[group.groupId]
+                val container = if (ids.size == 1) tabs.getValue(ids.single()) else {
+                    old?.takeIf { it.remotePaneId == null }
+                        ?: controller.createRemoteSession(title = tabs.getValue(ids.first()).title.value, feedsStream = false)
+                }
+                if (ids.size == 1) {
+                    splitStates.remove(container.id)
+                } else {
+                    val ss = splitStates.getOrPut(container.id) { SplitViewState(initialSession = container) }
+                    ss.onRemoteDividerDrag = { splitId, ratio, committed ->
+                        if (committed) send(DaemonAttachProtocol.Client.UpdateSplitRatio(group.groupId, splitId, ratio))
+                    }
+                    if (lastTree[group.groupId] != group.tree) ss.setTree(buildGroupTree(group.tree), ss.focusedPaneId)
+                }
+                // Replace in place so a topology update never leaves the controller temporarily
+                // empty or changes the selected group. The old leaf remains alive in the tree.
+                val oldIndex = old?.let { t -> controller.tabs.indexOfFirst { it === t } } ?: -1
+                if (old !== container && oldIndex >= 0) controller.replaceTabAtIndex(oldIndex, container)
+                else if (controller.tabs.none { it === container }) controller.createTabFromExistingSession(container)
+                groupTabs[group.groupId] = container
+                lastTree[group.groupId] = group.tree
+                if (old !== container && old != null) {
+                    splitStates.remove(old.id)
+                    if (old.remotePaneId == null) old.dispose()
+                }
+                // A legacy/ungrouped flat tab may now be owned by this tree. Remove its duplicate
+                // list entry only after the replacement container exists.
+                ids.forEach { id ->
+                    val leaf = tabs.getValue(id)
+                    if (leaf !== container) controller.tabs.removeAll { it === leaf }
+                }
+            }
             (groupTabs.keys - liveGroupIds).toList().forEach { gone ->
-                groupTabs.remove(gone)?.let { closeMirrorContainer(it) }
+                groupTabs.remove(gone)?.let { container ->
+                    splitStates.remove(container.id)
+                    val index = controller.tabs.indexOfFirst { it === container }
+                    if (index >= 0) controller.closeTab(index)
+                    else if (container.remotePaneId == null) container.dispose()
+                }
                 lastTree.remove(gone)
             }
-            for (group in groups) {
-                if (lastTree[group.groupId] == group.tree) continue // no-op resend — nothing changed
-                val paneIds = collectPaneIds(group.tree)
-                if (paneIds.size == 1) {
-                    // 1-pane group == ordinary daemon tab. No SplitViewState wrapper — the lone
-                    // TerminalTab IS the tab, exactly like today's flat daemon tabs.
-                    val onlyId = paneIds.first()
-                    val tab = tabs.getOrPut(onlyId) { createLeafMirror(onlyId) }
-                    groupTabs[group.groupId] = tab
-                    lastTree[group.groupId] = group.tree
-                    if (controller.tabs.none { it.id == tab.id }) controller.createTabFromExistingSession(tab)
-                    continue
-                }
-                // Multi-pane group. Any of its panes that currently sit as a TOP-LEVEL tab — either
-                // because this group just grew 1->N (the original lone tab is paneIds.first()) or
-                // because this pane's SessionList frame raced ahead of this GroupList frame and
-                // `reconcile()` wrongly flat-created it — must be pulled out of the tab list (NOT
-                // disposed) before it's folded into the split tree, so it doesn't render twice.
-                paneIds.forEach { pid ->
-                    tabs[pid]?.let { t ->
-                        val idx = controller.tabs.indexOfFirst { it.id == t.id }
-                        if (idx >= 0) controller.tabs.removeAt(idx)
-                    }
-                }
-                val isNewGroup = !groupTabs.containsKey(group.groupId)
-                val container = groupTabs.getOrPut(group.groupId) {
-                    tabs[paneIds.first()] ?: controller.createRemoteSession(title = "Split", feedsStream = false)
-                }
-                val ss = splitStates.getOrPut(container.id) { SplitViewState(initialSession = container) }
-                ss.onRemoteDividerDrag = { splitId, ratio, committed ->
-                    if (committed) send(DaemonAttachProtocol.Client.UpdateSplitRatio(group.groupId, splitId, ratio))
-                }
-                ss.setTree(buildGroupTree(group.tree), ss.focusedPaneId)
-                lastTree[group.groupId] = group.tree
-                if (isNewGroup) controller.createTabFromExistingSession(container)
+            // MCP/CLI-created sessions can be ungrouped; add them only after group membership is
+            // known, with the exact same metadata/resize/input hooks as grouped leaves.
+            visibleMetadata.values.filter { it.id !in allGroupedSessionIds }.forEach { meta ->
+                val tab = tabs.getOrPut(meta.id) { createLeafMirror(meta.id) }
+                applyMetadata(tab, meta)
+                if (controller.tabs.none { it === tab }) controller.createTabFromExistingSession(tab)
             }
-            allGroupedSessionIds = groups.flatMap { collectPaneIds(it.tree) }.toSet()
+            (tabs.keys - visibleMetadata.keys).toList().forEach { id ->
+                dropResizeSampler(id)
+                tabs.remove(id)?.let { tab ->
+                    val index = controller.tabs.indexOfFirst { it === tab }
+                    if (index >= 0) controller.closeTab(index) else tab.dispose()
+                }
+            }
+            if (groupTabs.isNotEmpty() || tabs.isNotEmpty()) hasReceivedState = true
+            val targetId = selectedGroup?.let { groupTabs[it]?.id } ?: selected
+            controller.tabs.indexOfFirst { it.id == targetId }.takeIf { it >= 0 }?.let { controller.switchToTab(it) }
         }
+        if (sessionMetadata.isEmpty() && DaemonBridgeCoordinator.claimAutoOpen()) {
+            if (openSession()) issuedAutoOpen = true else DaemonBridgeCoordinator.releaseAutoOpen()
+        }
+    }
+
+    fun groupIdForTab(tabId: String): String? = groupTabs.entries.firstOrNull { it.value.id == tabId }?.key
+
+    fun isDaemonSession(tab: TerminalTab): Boolean = tabs.values.any { it === tab }
+
+    fun closeGroupForTab(tabId: String): Boolean {
+        val groupId = groupIdForTab(tabId) ?: return false
+        if (lastTree[groupId] == null) return false
+        // Queue a single atomic group-close command; closing panes independently can interleave
+        // with a split and accidentally leave a just-created sibling alive.
+        pendingGroupCloses.add(groupId)
+        send(DaemonAttachProtocol.Client.CloseGroup(groupId))
+        return true
     }
 
     /** Create (not reuse) a leaf mirror session for [sessionId] — same shape as the flat-tab path,
@@ -409,29 +448,18 @@ class DaemonSessionBridge(
         is GroupTreeDto.Split -> collectPaneIds(node.a) + collectPaneIds(node.b)
     }
 
-    /** Tear down a multi-pane group's container: dispose every leaf, drop its split state, close
-     *  the container tab. Mirrors `RemoteSessionManager.removeMirrorTab`. Must run on Main. */
-    private fun closeMirrorContainer(container: TerminalTab) {
-        splitStates[container.id]?.getAllSessions()?.filterIsInstance<TerminalTab>()?.forEach { mirror ->
-            tabs.entries.filter { it.value === mirror }.forEach { dropResizeSampler(it.key) }
-            tabs.entries.removeIf { it.value === mirror }
-            runCatching { mirror.dispose() }
-        }
-        splitStates.remove(container.id)
-        val idx = controller.tabs.indexOfFirst { it.id == container.id }
-        if (idx >= 0) controller.closeTab(idx)
-    }
-
     private fun resizeMirror(id: String, cols: Int, rows: Int) {
         val tab = tabs[id] ?: return
         if (cols < 1 || rows < 1) return
-        runCatching { tab.terminal.resize(TermSize(cols, rows), RequestOrigin.User) }
+        tab.dataStream.appendAction {
+            runCatching { tab.terminal.resize(TermSize(cols, rows), RequestOrigin.User) }
+        }
     }
 
     private suspend fun closeMirror(id: String) {
         dropResizeSampler(id)
         val tab = tabs.remove(id) ?: return
-        withContext(Dispatchers.Main) {
+        withContext(uiDispatcher) {
             // A leaf inside a multi-pane group's SplitViewState isn't in controller.tabs at all —
             // only its container is — so the old "assume it's a top-level tab" lookup would miss
             // it. Check every tracked container's split tree first; fall back to the flat-tab

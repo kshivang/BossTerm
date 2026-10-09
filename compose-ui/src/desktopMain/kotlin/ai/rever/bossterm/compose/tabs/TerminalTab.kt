@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.session.TerminalSessionEngine
+import ai.rever.bossterm.compose.session.TerminalSessionStack
 import ai.rever.bossterm.compose.ui.HistoryAppendBank
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
@@ -7,10 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
@@ -221,13 +220,13 @@ data class TerminalTab(
      * Type-ahead terminal model for applying predictions to the buffer.
      * Null when type-ahead is disabled.
      */
-    override val typeAheadModel: ComposeTypeAheadModel? = null,
+    override var typeAheadModel: ComposeTypeAheadModel? = null,
 
     /**
      * Type-ahead manager that tracks predictions and latency statistics.
      * Null when type-ahead is disabled.
      */
-    override val typeAheadManager: TerminalTypeAheadManager? = null,
+    override var typeAheadManager: TerminalTypeAheadManager? = null,
 
     // === AI Command Interception ===
 
@@ -373,17 +372,47 @@ data class TerminalTab(
      */
     override val selectionTracker: SelectionTracker = SelectionTracker(textBuffer)
 
-    // === User Input Write Channel ===
-    // Uses Channel for sequential write ordering and backpressure handling
-    // This prevents race conditions from concurrent coroutines and ensures
-    // keyboard input is processed in order even under high load.
+    /** The shared PTY runtime for local tabs; remote mirrors only use their stream/input hook. */
+    internal var sessionStack: TerminalSessionStack? = null
+    @Volatile internal var sessionEngine: TerminalSessionEngine? = null
+        private set
 
-    /**
-     * Sealed class for write operations to ensure FIFO ordering between text and raw bytes.
-     */
-    private sealed class WriteOperation {
-        data class Text(val data: String) : WriteOperation()
-        class RawBytes(val data: ByteArray) : WriteOperation()  // Not data class - ByteArray uses referential equality
+    private val inputLock = Any()
+    private val pendingInputs = ArrayDeque<Pair<Int, (TerminalSessionEngine) -> Unit>>()
+    private var pendingInputUnits = 0L
+    private var disposed = false
+
+    private fun queueLocalInput(units: Int, deliver: (TerminalSessionEngine) -> Unit) {
+        if (units == 0) return
+        synchronized(inputLock) {
+            if (disposed) return
+            sessionEngine?.let { deliver(it); return }
+            // Pre-connect questions can keep a tab visible before its runtime is configured.
+            // Retain input in call order, but bound a programmatic flood while no PTY exists.
+            if (pendingInputs.size >= 8192 || pendingInputUnits + units > 32L * 1024 * 1024) {
+                connectionState.value = ConnectionState.Error("Terminal input backlog limit reached while waiting for connection")
+                return
+            }
+            pendingInputs.addLast(units to deliver)
+            pendingInputUnits += units
+        }
+    }
+
+    internal fun attachEngine(engine: TerminalSessionEngine) {
+        synchronized(inputLock) {
+            sessionEngine = engine
+            if (disposed) { engine.close(); return }
+            while (pendingInputs.isNotEmpty()) pendingInputs.removeFirst().second(engine)
+            pendingInputUnits = 0
+        }
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try { awaitCancellation() } finally {
+                withContext(NonCancellable) {
+                    engine.close()
+                    engine.awaitTermination()
+                }
+            }
+        }
     }
 
     /**
@@ -396,13 +425,6 @@ data class TerminalTab(
      */
     override val historyAppendBank: HistoryAppendBank =
         HistoryAppendBank(textBuffer).also { textBuffer.addChangesListener(it) }
-
-    /**
-     * Channel for queuing user input writes to the PTY.
-     * Capacity of 256 provides reasonable buffer for burst input (e.g., paste operations).
-     * Uses WriteOperation sealed class to handle both text and raw bytes in FIFO order.
-     */
-    private val writeChannel = Channel<WriteOperation>(capacity = 256)
 
     // Unblock emulator reads as soon as the owning scope is cancelled.
     init {
@@ -436,24 +458,7 @@ data class TerminalTab(
         }
     }
 
-    /**
-     * Background job that consumes from writeChannel and writes to PTY sequentially.
-     * Runs on IO dispatcher to avoid blocking other coroutines.
-     */
-    private val writeConsumerJob: Job = coroutineScope.launch(Dispatchers.IO) {
-        for (operation in writeChannel) {
-            try {
-                when (operation) {
-                    is WriteOperation.Text -> processHandle.value?.write(operation.data)
-                    is WriteOperation.RawBytes -> processHandle.value?.writeBytes(operation.data)
-                }
-            } catch (e: java.io.IOException) {
-                // PTY might be closed - log but don't crash
-                // This can happen during normal tab close or if shell exits
-                println("WARNING: PTY write failed: ${e.message}")
-            }
-        }
-    }
+
 
     // === Hyperlink Hover Consumers ===
 
@@ -517,6 +522,12 @@ data class TerminalTab(
      * displays can cause exceptions that crash the rendering pipeline.
      */
     override fun dispose() {
+        synchronized(inputLock) {
+            if (disposed) return
+            disposed = true
+            pendingInputs.clear()
+            pendingInputUnits = 0
+        }
         // Registered for this tab's lifetime, so it is unregistered here rather than by a
         // composition leaving the tree.
         try {
@@ -553,10 +564,9 @@ data class TerminalTab(
             }
         }
 
-        // Close write channel to signal consumer to stop
-        writeChannel.close()
+        sessionEngine?.close()
 
-        // Cancel all coroutines in this scope (including writeConsumerJob)
+        // Cancel all UI-adapter coroutines in this scope
         coroutineScope.cancel()
 
         // Tear down the display: cancels its redraw scope, closes the redraw
@@ -600,10 +610,8 @@ data class TerminalTab(
      * Write user input to the process and record in debug collector.
      * Centralizes input handling to ensure all user input is captured for debugging.
      *
-     * Uses Channel-based queue to ensure:
-     * - Sequential write ordering (no race conditions)
-     * - Backpressure handling (suspends if buffer full, never drops input)
-     * - Non-blocking UI (launches coroutine for send)
+     * Uses the shared engine's FIFO so keyboard input, protocol replies, and raw bytes
+     * preserve their call order without launching competing producer coroutines.
      *
      * @param text The text to send to the shell
      */
@@ -614,25 +622,15 @@ data class TerminalTab(
         // Remote mirror: route keystrokes to the host over the WebSocket (no local PTY).
         onUserInput?.let { it(text); return }
 
-        // Queue for sequential processing by writeConsumerJob
-        // Uses coroutine with send() to suspend if buffer full (never drops input)
-        // This is safe because we're launching on the tab's scope, not blocking the caller
-        coroutineScope.launch {
-            try {
-                writeChannel.send(WriteOperation.Text(text))
-            } catch (e: Exception) {
-                // Channel closed (tab closing) - expected during shutdown
-                println("WARNING: Failed to queue text input to PTY: ${e.message}")
-            }
-        }
+        queueLocalInput(text.length) { it.writeInput(text) }
+
     }
 
     /**
      * Write raw bytes to the process stdin.
      * Use this for sending control characters or binary data without string encoding issues.
      *
-     * This method uses the same write queue as writeUserInput() to guarantee FIFO ordering.
-     * Calls are asynchronous - they return immediately after queuing.
+     * Uses the engine's same FIFO as writeUserInput(); callers return after enqueueing.
      *
      * @param bytes The raw bytes to send to the shell
      */
@@ -643,16 +641,11 @@ data class TerminalTab(
             ai.rever.bossterm.compose.debug.ChunkSource.USER_INPUT
         )
 
-        // Queue for sequential processing by writeConsumerJob (same queue as text)
-        // This ensures FIFO ordering between write() and sendInput() calls
-        coroutineScope.launch {
-            try {
-                writeChannel.send(WriteOperation.RawBytes(bytes))
-            } catch (e: Exception) {
-                // Channel closed (tab closing) - expected during shutdown
-                println("WARNING: Failed to queue raw bytes to PTY: ${e.message}")
-            }
-        }
+        // Native remote panes use the same input hook for keyboard-generated byte packets.
+        onUserInput?.let { it(String(bytes, Charsets.UTF_8)); return }
+        val copy = bytes.copyOf()
+        queueLocalInput(copy.size) { it.writeBytes(copy) }
+
     }
 }
 

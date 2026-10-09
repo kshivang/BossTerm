@@ -65,6 +65,24 @@ class DaemonMcpToolsTest {
         assertTrue(r.contains("\"error\""), "unknown session should yield an error: $r")
     }
 
+
+    @Test
+    fun `invalid dimensions and wrong string types are rejected without opening a session`() {
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        val tools = DaemonMcpTools(host)
+        try {
+            for (dimension in listOf(0, -1, 2001, Int.MAX_VALUE)) {
+                assertTrue(tools.openSession(buildJsonObject { put("cols", dimension) }).contains("\"error\""))
+            }
+            assertTrue(host.list().isEmpty())
+            assertTrue(tools.sendInput(buildJsonObject { put("session_id", true); put("text", "x") })
+                .contains("Missing required argument: session_id"))
+            assertTrue(tools.closeSession(buildJsonObject { put("session_id", "missing") }).contains("Unknown session_id"))
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
     private fun awaitTool(timeoutMs: Long, predicate: () -> Boolean): Boolean {
         val deadline = System.nanoTime() + timeoutMs * 1_000_000
         while (System.nanoTime() < deadline) {

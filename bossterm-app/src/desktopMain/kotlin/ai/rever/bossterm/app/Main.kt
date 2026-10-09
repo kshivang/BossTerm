@@ -89,7 +89,8 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
  *
  * This is the main entry point for the BossTerm application.
  */
-fun main(args: Array<String>) {
+fun main(arguments: Array<String>) {
+    val args = ai.rever.bossterm.compose.daemon.DaemonLauncher.applyPropArgs(arguments)
     // Daemon dispatch — packaged bundles ship no `java` binary (jpackage runtimes have no bin/),
     // so DaemonLauncher relaunches THIS native launcher with --daemon. Must be the very first
     // thing in main: apple.awt.UIElement is only honored if set before AWT boots (menu-bar-only
@@ -101,6 +102,8 @@ fun main(args: Array<String>) {
         runDaemon(rest)
         return
     }
+
+    ai.rever.bossterm.compose.daemon.DaemonLauncher.captureGuiBranding()
 
     // Window appearance, derived from OUR background rather than the system's. Must be here:
     // apple.awt.application.appearance is read once when AWT initializes, so this has to beat the
@@ -160,7 +163,7 @@ fun main(args: Array<String>) {
 
     // Session daemon (tmux-style): when enabled, a long-lived background process owns the MCP
     // server, sessions, and sharing so they survive the GUI closing. The GUI then does NOT host the
-    // in-process MCP — the daemon owns the loopback endpoint + mcp.port. On by default; set
+    // in-process MCP — the daemon owns the loopback endpoint + mcp.port. Enabled by default; set
     // daemonEnabled=false to fall back to the pre-daemon path (in-process, sessions die with the window).
     val daemonEnabled = SettingsManager.instance.settings.value.daemonEnabled
     val daemonScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -244,6 +247,15 @@ fun main(args: Array<String>) {
         }
         val windowLifecycle = remember {
             ApplicationWindowLifecycle(isMacOS, quitApplication)
+        }
+        if (daemonEnabled) {
+            val appScope = rememberCoroutineScope()
+            DisposableEffect(windowLifecycle) {
+                val activation = ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.registerGuiLifecycle(
+                    appScope, { if (!quitting) windowLifecycle.reopen() },
+                )
+                onDispose { activation.cancel() }
+            }
         }
         if (isMacOS) {
             MacOSApplicationLifecycle(
@@ -1027,6 +1039,7 @@ fun main(args: Array<String>) {
                                     LocalWindowGlassMode provides if (nativeGlassInstalled) glassMode else WindowGlassMode.OFF
                                 ) {
                                     TabbedTerminal(
+                                        daemonMode = daemonEnabled,
                                         sidebarToggleInHeader = !useNativeTitleBar,
                                         statusControlsInHeader = !useNativeTitleBar,
                                         sidebarHeaderOverlapPx = updateBannerHeightPx,

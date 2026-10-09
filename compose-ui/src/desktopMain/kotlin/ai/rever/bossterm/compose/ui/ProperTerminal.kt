@@ -1087,7 +1087,9 @@ fun ProperTerminal(
             // for consecutive stable samples so a transient first pass is not trusted.
             if (!hasPerformedInitialResize || currentCols != newCols || currentRows != newRows) {
               // Resize terminal buffer and notify PTY process (sends SIGWINCH)
-              terminal.resize(TermSize(newCols, newRows), RequestOrigin.User)
+              val engine = (tab as? ai.rever.bossterm.compose.tabs.TerminalTab)?.sessionEngine
+              if (engine != null) engine.resize(newCols, newRows)
+              else terminal.resize(TermSize(newCols, newRows), RequestOrigin.User)
               // Clear type-ahead predictions on resize (terminal state is no longer predictable)
               tab.typeAheadManager?.onResize()
               // Reset scroll to bottom on resize - history size may have changed, making old offset invalid
@@ -1098,7 +1100,7 @@ fun ProperTerminal(
               // eviction from history.
               hyperlinkCache.clear()
               // Also notify the process handle if available (must be launched in coroutine)
-              scope.launch {
+              if (engine == null) scope.launch {
                 processHandle?.resize(newCols, newRows)
               }
               // Force redraw with new buffer dimensions (critical for initial size)

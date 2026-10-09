@@ -35,7 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Session-daemon settings: toggle the tmux-style background daemon (off by default), install/remove
+ * Session-daemon settings: toggle the tmux-style background daemon (on by default), install/remove
  * its login service, and see/control its status. The daemon owns terminal sessions + MCP + sharing
  * so they survive the GUI closing. [TerminalSettings.daemonEnabled] is read at app startup, so
  * toggling it needs a restart — surfaced in the note.
@@ -55,10 +55,12 @@ fun DaemonSettingsSection(
             SettingsToggle(
                 label = "Run sessions in a background daemon",
                 checked = settings.daemonEnabled,
+                enabled = !busy,
                 description = "Terminal sessions, MCP, and sharing live in a long-lived process that " +
                     "outlives this window. Enabling this also installs a start-at-login service (the " +
                     "toggle below turns that off). Takes effect after restarting BossTerm.",
                 onCheckedChange = { on ->
+                    busy = true
                     if (on) {
                         // Enabling the daemon also schedules it at login by default (it's meant to be
                         // always-available) and installs the login service now. The separate toggle
@@ -76,6 +78,7 @@ fun DaemonSettingsSection(
                             val r = LoginServiceManager.install()
                             withContext(Dispatchers.Main) {
                                 r.onFailure { status = "Login service install failed: ${it.message}" }
+                                busy = false
                             }
                         }
                     } else {
@@ -85,7 +88,13 @@ fun DaemonSettingsSection(
                         // drop the disable and leave the just-uninstalled service to be reinstalled.
                         onSettingsChange(settings.copy(daemonEnabled = false, startDaemonAtLogin = false))
                         SettingsManager.instance.updateSetting { copy(daemonEnabled = false, startDaemonAtLogin = false) }
-                        scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.uninstall() } }
+                        scope.launch(Dispatchers.IO) {
+                            val result = LoginServiceManager.uninstall()
+                            withContext(Dispatchers.Main) {
+                                result.onFailure { status = "Login service remove failed: ${it.message}" }
+                                busy = false
+                            }
+                        }
                     }
                 },
             )
@@ -93,10 +102,11 @@ fun DaemonSettingsSection(
             SettingsToggle(
                 label = "Start daemon at login",
                 checked = settings.startDaemonAtLogin,
-                enabled = settings.daemonEnabled,
+                enabled = settings.daemonEnabled && !busy,
                 description = "Install a per-OS login service so the daemon is always available - " +
                     "even before BossTerm is first opened, or after a reboot.",
                 onCheckedChange = { enabled ->
+                    busy = true
                     onSettingsChange(settings.copy(startDaemonAtLogin = enabled))
                     // Persist immediately (not via the debounce) so the install/uninstall below can't
                     // diverge from the persisted flag if the user closes Settings right after toggling.
@@ -109,6 +119,7 @@ fun DaemonSettingsSection(
                                 onSuccess = { if (enabled) "Login service installed." else "Login service removed." },
                                 onFailure = { "Login service ${if (enabled) "install" else "remove"} failed: ${it.message}" },
                             )
+                            busy = false
                         }
                     }
                 },

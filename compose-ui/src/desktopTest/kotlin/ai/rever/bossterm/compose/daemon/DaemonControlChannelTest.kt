@@ -55,6 +55,27 @@ class DaemonControlChannelTest {
 
     // ---- helpers ----
 
+    @Test
+    fun `readiness publication is deferred until explicitly requested`() = withSettingsDir {
+        val channel = DaemonControlChannel("1", DaemonControlChannel.PROTOCOL_VERSION) { _, _ -> "OK" }
+        channel.start(publishEndpoint = false)
+        try {
+            assertNull(DaemonControlChannel.readEndpoint())
+            channel.publishEndpoint()
+            assertEquals(channel.port, DaemonControlChannel.readEndpoint()?.port)
+        } finally { channel.stop() }
+    }
+
+    @Test
+    fun `stopping an unpublished channel preserves another daemon marker`() = withSettingsDir {
+        val file = BossTermPaths.daemonPortFile()
+        val content = "12345\nother-secret\n1 1\n"
+        file.writeText(content)
+        val channel = DaemonControlChannel("1", DaemonControlChannel.PROTOCOL_VERSION) { _, _ -> "OK" }
+        channel.stop()
+        assertEquals(content, file.readText())
+    }
+
     /** Send [payload] to the channel; return the single response line, or null if none / on error. */
     private fun request(port: Int, payload: String, expectResponse: Boolean = true): String? =
         runCatching {

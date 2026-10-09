@@ -1,6 +1,5 @@
 package ai.rever.bossterm.compose.daemon
 
-import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -18,6 +17,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -28,7 +28,7 @@ import java.security.MessageDigest
  * so the GUI can render and steer daemon-hosted terminals as if they were local. Each GUI mirrors
  * a session as a tab (`TabController.createRemoteSession`) fed by [DaemonAttachProtocol.Server.Output].
  *
- * Loopback + secret-gated (the daemon's control secret, presented as `?token=`), so no E2E/approval
+ * Loopback + secret-gated (the daemon's control secret, presented in an authenticated header), so no E2E/approval
  * is needed — that's only for untrusted remote viewers ([ai.rever.bossterm.compose.share.MirrorShare]).
  * Output is pushed via each session's raw-output tap into a per-connection bounded drop-oldest
  * outbox, so a stalled GUI never blocks the PTY; a drop schedules a healing re-snapshot of the
@@ -43,6 +43,7 @@ class DaemonAttachServer(
     private val shareServer: DaemonShareServer? = null,
     /** Starts/stops the daemon's MCP server live (GUI MCP toggle); returns the bound port or null. */
     private val setMcpEnabled: ((Boolean) -> Int?)? = null,
+    private val activateGui: (Long) -> Unit = DaemonLauncher::activatePid,
 ) {
     private val log = LoggerFactory.getLogger(DaemonAttachServer::class.java)
 
@@ -53,9 +54,12 @@ class DaemonAttachServer(
     // Attached GUIs: a push channel (for the Focus message) + the GUI's OS pid (for activation).
     private class Client(val pid: Long?, val send: (DaemonAttachProtocol.Server) -> Unit)
     private val clients = java.util.concurrent.CopyOnWriteArrayList<Client>()
+    private val guiClients = java.util.concurrent.CopyOnWriteArrayList<Client>()
 
     /** Number of currently-attached GUI clients (diagnostics + tests assert this drops on disconnect). */
     val clientCount: Int get() = clients.size
+    /** App-lifetime registrations stay connected when there are no terminal windows. */
+    val guiClientCount: Int get() = guiClients.size
 
     /**
      * Bring attached GUIs forward. Sends a Focus message (the GUI tries alwaysOnTop — no permission)
@@ -64,11 +68,14 @@ class DaemonAttachServer(
      * may prompt for Accessibility once). Returns the number of attached clients.
      */
     fun focusClients(): Int {
-        clients.forEach { c ->
+        // ApplicationWindowLifecycle decides whether to restore a window or create one. A
+        // window-only Focus cannot reopen an app whose last terminal mirror was disposed.
+        val targets = guiClients.toList().ifEmpty { clients.toList() }
+        targets.forEach { c ->
             runCatching { c.send(DaemonAttachProtocol.Server.Focus) }
-            c.pid?.let { DaemonLauncher.activatePid(it) }
+            c.pid?.let { activateGui(it) }
         }
-        return clients.size
+        return targets.size
     }
 
     /** Push the daemon's MCP state (bound port, or null = off) to every attached GUI. */
@@ -78,7 +85,13 @@ class DaemonAttachServer(
     }
 
     /** Bind on loopback, trying [desiredPort]..+9. Returns the bound port or -1. */
+    @Synchronized
     fun start(desiredPort: Int = 7682): Int {
+        if (engine != null) return boundPort
+        if (desiredPort !in 1..65535) {
+            log.error("attach: invalid port {}", desiredPort)
+            return -1
+        }
         // Refuse to start without a real secret — constantTimeEquals("", "") is true, so an empty
         // secret would accept every (token-less) client. Not reachable today (secret is 32-byte
         // SecureRandom), but fail loud rather than serve unauthenticated.
@@ -108,6 +121,7 @@ class DaemonAttachServer(
         return -1
     }
 
+    @Synchronized
     fun stop() {
         runCatching { engine?.stop(200, 600) }
         engine = null
@@ -133,13 +147,18 @@ class DaemonAttachServer(
             runCatching { ws.close() }
             return
         }
-        // Attach-protocol skew check: a client sends ?v=<version>. Absent (older client) is tolerated;
-        // a present-but-mismatched version means the GUI and daemon disagree on the wire shape — refuse
+        // Attach-protocol skew check: a client sends ?v=<version>. A mismatched version means the GUI and daemon disagree on the wire shape — refuse
         // rather than silently mis-render (the control channel has its own HELLO version handshake).
+        // Unversioned diagnostic clients are accepted; shipped GUIs always provide their version.
         val attachVer = ws.call.request.queryParameters["v"]
         if (attachVer != null && attachVer != DaemonAttachProtocol.PROTOCOL_VERSION.toString()) {
             log.warn("attach: rejected connection with incompatible protocol v{} (want {})", attachVer, DaemonAttachProtocol.PROTOCOL_VERSION)
             runCatching { ws.close() }
+            return
+        }
+
+        if (ws.call.request.queryParameters["lifecycle"] == "1") {
+            serveGui(ws)
             return
         }
 
@@ -162,7 +181,7 @@ class DaemonAttachServer(
         // require() throwing later inside the writer coroutine, where it reads as a bare
         // connection drop. Cheap char-length check only — the exact UTF-8 count is encode's job.
         fun idFitsBinaryFrame(id: String): Boolean =
-            (id.length <= 255).also { if (!it) log.error("session id too long for binary framing ({} chars); frame dropped", id.length) }
+            (id.toByteArray(Charsets.UTF_8).size in 1..255).also { if (!it) log.error("session id too long for binary framing ({} chars); frame dropped", id.length) }
 
         fun send(m: DaemonAttachProtocol.Server) {
             when (m) {
@@ -171,8 +190,10 @@ class DaemonAttachServer(
                 // string-escaping of an escape-dense stream on the hot path.
                 is DaemonAttachProtocol.Server.Output ->
                     if (idFitsBinaryFrame(m.id)) outbox.sendOutput(m.id, m.data)
+                is DaemonAttachProtocol.Server.Resized ->
+                    outbox.sendOrderedControl(m.id, FrameOutbox.Frame.Text(DaemonAttachProtocol.encodeServer(m)))
                 is DaemonAttachProtocol.Server.Snapshot ->
-                    if (idFitsBinaryFrame(m.id)) outbox.sendControl(FrameOutbox.Frame.Binary(
+                    if (idFitsBinaryFrame(m.id)) outbox.sendSnapshot(m.id, FrameOutbox.Frame.Binary(
                         DaemonAttachProtocol.BinaryFrame.encodeSnapshot(m.id, m.cols, m.rows, m.data),
                     ))
                 else -> outbox.sendControl(FrameOutbox.Frame.Text(DaemonAttachProtocol.encodeServer(m)))
@@ -193,59 +214,29 @@ class DaemonAttachServer(
         // Attach output tap + size collector + send the initial snapshot. Caller holds [lock].
         fun beginLocked(core: TerminalSessionCore) {
             if (attachments.containsKey(core.id)) return
-            val sz = core.display.termSizeFlow.value
-            // Register the output tap BEFORE encoding the snapshot, so PTY output produced while we
-            // snapshot isn't lost (the old order — snapshot then listener — silently dropped that
-            // window). Output that races the snapshot is held in [prelude] and flushed right after the
-            // Snapshot frame is enqueued, so the client still sees Snapshot before Output — at worst a
-            // small duplicated region instead of a gap.
-            val preludeLock = Any()
-            var prelude: ArrayList<String>? = ArrayList()
-            var preludeChars = 0
-            val tap: (String) -> Unit = { d ->
-                val held = synchronized(preludeLock) {
-                    val p = prelude
-                    when {
-                        p == null -> false // snapshot already enqueued → send live
-                        // Cap the buffer: a session flooding output (e.g. `cat largefile`) during a
-                        // slow large-scrollback encode is the one path that bypasses FrameOutbox
-                        // backpressure. Past the cap, drop (a small gap heals on the next resync).
-                        preludeChars + d.length > MAX_PRELUDE_CHARS -> true
-                        else -> { p.add(d); preludeChars += d.length; true }
-                    }
-                }
-                if (!held) send(DaemonAttachProtocol.Server.Output(core.id, d))
-            }
-            core.addRawOutputListener(tap)
-            // From here the tap is live but NOT yet recorded in [attachments]; if the snapshot encode
-            // throws, endLocked would never see it and the tap would fire forever on a dead connection.
-            // Remove it on any failure before the attachment is recorded.
+            val tap: (String) -> Unit = { data -> send(DaemonAttachProtocol.Server.Output(core.id, data)) }
+            val sizeTap: (Int, Int) -> Unit = { cols, rows -> send(DaemonAttachProtocol.Server.Resized(core.id, cols, rows)) }
             try {
-                send(DaemonAttachProtocol.Server.Snapshot(
-                    core.id,
-                    TerminalSnapshotEncoder.encode(
-                        snapshot = core.textBuffer.createSnapshot(),
-                        cursorX = core.terminal.cursorX,
-                        cursorY = core.terminal.cursorY,
-                        cursorVisible = core.display.cursorVisible,
-                        cursorShape = core.display.cursorShape,
-                    ),
-                    sz.columns, sz.rows,
-                ))
-                synchronized(preludeLock) {
-                    prelude?.forEach { send(DaemonAttachProtocol.Server.Output(core.id, it)) }
-                    prelude = null
-                }
-                // Push Resized whenever the grid changes (GUI-driven resize OR a TUI resizing it) so the
-                // attached mirror's buffer follows — without this it stays stuck at the snapshot size.
-                val sizeJob = ws.launch {
-                    core.display.termSizeFlow.collect { send(DaemonAttachProtocol.Server.Resized(core.id, it.columns, it.rows)) }
+                core.attachOutputListener(tap) {
+                    // Purge inside the parsed-output lock: an in-flight callback from a just-
+                    // removed listener can finish before this capture, but never after it.
+                    outbox.dropQueuedOutput(core.id)
+                    val cols = core.textBuffer.width
+                    val rows = core.textBuffer.height
+                    send(DaemonAttachProtocol.Server.Snapshot(
+                        core.id,
+                        DaemonTerminalSnapshot.encode(core),
+                        cols, rows,
+                    ))
+                    // Register under the same lock as the baseline; resizes are ordered with
+                    // parsed bytes, rather than observed later from an asynchronous StateFlow.
+                    core.addResizeListener(sizeTap)
                 }
                 // Push an updated SessionList when this session's cwd or title changes (OSC 7 / OSC 0,2),
                 // so the attached client's tab name + secondary cwd update live. drop(1) skips the
                 // initial combined emit already conveyed by the SessionList/Snapshot above.
                 val metaJob = ws.launch {
-                    combine(core.workingDirectory, core.windowTitle) { cwd, title -> cwd to title }
+                    combine(core.workingDirectory, core.iconTitle) { cwd, title -> cwd to title }
                         .drop(1)
                         // Debounce: a TUI that sets its title to the running command (shells, vim, htop,
                         // progress spinners) churns this rapidly, and each emit rebuilds the WHOLE session
@@ -254,10 +245,13 @@ class DaemonAttachServer(
                         .debounce(META_DEBOUNCE_MS)
                         .collect { send(sessionList()) }
                 }
-                attachments[core.id] = Attachment(core, tap, listOf(sizeJob, metaJob))
+                attachments[core.id] = Attachment(core, tap, sizeTap, listOf(metaJob))
             } catch (e: Throwable) {
                 core.removeRawOutputListener(tap)
-                log.warn("beginLocked({}) failed before recording the attachment; removed orphan tap: {}", core.id, e.message)
+                core.removeResizeListener(sizeTap)
+                log.warn("beginLocked({}) failed before recording the attachment: {}", core.id, e.message)
+                // Reconnect retries the atomic baseline once an incomplete escape finishes.
+                outbox.close()
             }
         }
 
@@ -267,6 +261,7 @@ class DaemonAttachServer(
                 // Remove the tap from the core DIRECTLY — host.get(id) is already null once a session
                 // has exited and been reaped, which would otherwise skip the removal.
                 a.core.removeRawOutputListener(a.tap)
+                a.core.removeResizeListener(a.sizeTap)
                 a.jobs.forEach { it.cancel() }
             }
         }
@@ -360,6 +355,7 @@ class DaemonAttachServer(
             for (frame in ws.incoming) {
                 if (frame !is Frame.Text) continue
                 val msg = runCatching { DaemonAttachProtocol.decodeClient(frame.readText()) }.getOrNull() ?: continue
+                try {
                 when (msg) {
                     is DaemonAttachProtocol.Client.Input -> host.get(msg.id)?.writeInput(msg.data)
                     is DaemonAttachProtocol.Client.Resize -> host.get(msg.id)?.resize(msg.cols, msg.rows)
@@ -377,10 +373,11 @@ class DaemonAttachServer(
                         ratio = msg.ratio,
                     )
                     is DaemonAttachProtocol.Client.ClosePane -> host.closeGroupedSession(msg.sessionId)
+                    is DaemonAttachProtocol.Client.CloseGroup -> host.closeGroup(msg.groupId)
                     is DaemonAttachProtocol.Client.UpdateSplitRatio -> host.updateSplitRatio(msg.groupId, msg.splitId, msg.ratio)
                     // Phase 2 share management — delegate to the daemon's public-share server (no-op
                     // if sharing is disabled). startShare is non-blocking; results arrive via ShareState.
-                    is DaemonAttachProtocol.Client.StartShare -> shareServer?.startShare(msg.scope, msg.sessionId, msg.remoteMode)
+                    is DaemonAttachProtocol.Client.StartShare -> shareServer?.startShare(msg.scope, msg.sessionId, msg.remoteMode, msg.groupId)
                     is DaemonAttachProtocol.Client.StopShare -> shareServer?.stopShare(msg.token)
                     is DaemonAttachProtocol.Client.SetShareRemoteMode -> shareServer?.setRemoteMode(msg.token, msg.mode)
                     is DaemonAttachProtocol.Client.SetShareName -> shareServer?.setName(msg.token, msg.name)
@@ -390,6 +387,11 @@ class DaemonAttachServer(
                     // so every attached GUI's MCP indicator updates (no-op if no controller wired).
                     is DaemonAttachProtocol.Client.SetMcpEnabled ->
                         setMcpEnabled?.let { broadcastMcpState(it.invoke(msg.enabled)) }
+                }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log.warn("attach request {} failed: {}", msg::class.simpleName, e.message)
                 }
             }
         } catch (e: Exception) {
@@ -410,8 +412,28 @@ class DaemonAttachServer(
         }
     }
 
+    /** Activation-only registration: no PTY taps, models, sharing state, or window ownership. */
+    private suspend fun serveGui(ws: io.ktor.server.websocket.DefaultWebSocketServerSession) {
+        val messages = Channel<DaemonAttachProtocol.Server>(Channel.CONFLATED)
+        val gui = Client(ws.call.request.queryParameters["pid"]?.toLongOrNull()) { messages.trySend(it) }
+        guiClients.add(gui)
+        val writer = ws.launch {
+            try {
+                for (message in messages) ws.send(Frame.Text(DaemonAttachProtocol.encodeServer(message)))
+            } finally { runCatching { ws.close() } }
+        }
+        try {
+            // The activation channel is server-to-GUI only. Drain incoming close frames.
+            for (frame in ws.incoming) { if (frame is Frame.Close) break }
+        } finally {
+            guiClients.remove(gui)
+            messages.close()
+            writer.cancel()
+        }
+    }
+
     /** Per-connection, per-session attachment: the core, its output tap + collector jobs (size, meta). */
-    private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val jobs: List<kotlinx.coroutines.Job>)
+    private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val sizeTap: (Int, Int) -> Unit, val jobs: List<kotlinx.coroutines.Job>)
 
     private fun portAvailable(port: Int): Boolean =
         runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(InetSocketAddress(HOST, port)); true } }.getOrDefault(false)
@@ -421,8 +443,6 @@ class DaemonAttachServer(
 
     private companion object {
         const val HOST = "127.0.0.1"
-        /** Cap on the per-session prelude buffer (output racing a snapshot encode) — bounds heap. */
-        const val MAX_PRELUDE_CHARS = 1_000_000
         /** Quiet window for coalescing title/cwd-driven session-list refreshes (ms). */
         const val META_DEBOUNCE_MS = 200L
         /** Delay before re-snapshotting a session whose output was dropped under back-pressure —

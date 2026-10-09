@@ -273,7 +273,9 @@ fun TabbedTerminal(
     /** Header space above the terminal that an expanded sidebar may occupy. */
     sidebarHeaderOverlapPx: Int = 0,
     /** Transient resize width in dp; null restores the saved width. */
-    onSidebarResizePreview: ((Float?) -> Unit)? = null
+    onSidebarResizePreview: ((Float?) -> Unit)? = null,
+    /** Standalone host's startup choice; embedded terminals keep their own local sessions. */
+    daemonMode: Boolean = false,
 ) {
     // Settings integration
     val settingsManager = remember { SettingsManager.instance }
@@ -338,7 +340,10 @@ fun TabbedTerminal(
             settings = settings,
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
-            onTabClose = onTabClose,
+            onTabClose = { tabId ->
+                if (daemonMode) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closeGroupForTab(tabId)
+                onTabClose?.invoke(tabId)
+            },
             platformServices = platformServices,
             parentScope = parentScope
         )
@@ -350,7 +355,10 @@ fun TabbedTerminal(
             settings = settings,
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
-            onTabClose = onTabClose,
+            onTabClose = { tabId ->
+                if (daemonMode) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closeGroupForTab(tabId)
+                onTabClose?.invoke(tabId)
+            },
             platformServices = platformServices,
             parentScope = parentScope
         )
@@ -456,16 +464,22 @@ fun TabbedTerminal(
     // startup tab and routes new-tab requests to the daemon (which renders them as mirror tabs).
     // Gated entirely on the startup-read daemonEnabled flag, so OFF is byte-for-byte the pre-daemon
     // behavior. Falls back to a local tab if the daemon bridge isn't attached (daemon unreachable).
-    val daemonMode = settings.daemonEnabled
     val requestNewTab: () -> Unit = {
         // In daemon mode, route to the daemon; but if it can't be enqueued right now (socket
         // mid-reconnect — isAttached stays true while the bridge reconnects), fall back to a local tab
         // so Ctrl+T isn't a silent no-op.
-        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
             ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession()) {
             // enqueued — the daemon creates the session and the bridge renders it as a mirror tab.
         } else {
             tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
+        }
+    }
+
+    fun daemonPaneId(session: TerminalSession?): String? {
+        val tab = session as? TerminalTab ?: return null
+        return tab.remotePaneId.takeIf {
+            daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isDaemonSession(tab)
         }
     }
 
@@ -486,13 +500,19 @@ fun TabbedTerminal(
     }
 
     // Wire up split menu actions (updates when active tab changes or tabs are added)
-    LaunchedEffect(menuActions, tabController.activeTabIndex, tabController.tabs.size) {
+    LaunchedEffect(menuActions, tabController.activeTabIndex, tabController.activeTab?.id, tabController.tabs.size) {
         if (tabController.tabs.isEmpty()) return@LaunchedEffect
         val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
         val splitState = getOrCreateSplitState(activeTab)
 
         menuActions?.apply {
-            onSplitVertical = {
+            onSplitVertical = splitVertical@ {
+                val daemonId = daemonPaneId(splitState.getFocusedSession())
+                if (daemonId != null) {
+                    val cwd = if (settings.splitInheritWorkingDirectory) splitState.getFocusedSession()?.workingDirectory?.value else null
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.splitPane(daemonId, "v", cwd)
+                    return@splitVertical
+                }
                 val workingDir = splitState.getFocusedSession()?.workingDirectory?.value
                 var newSessionRef: TerminalSession? = null
                 val newSession = tabController.createSessionForSplit(
@@ -518,7 +538,13 @@ fun TabbedTerminal(
                 newSessionRef = newSession
                 splitState.splitFocusedPane(SplitOrientation.VERTICAL, newSession)
             }
-            onSplitHorizontal = {
+            onSplitHorizontal = splitHorizontal@ {
+                val daemonId = daemonPaneId(splitState.getFocusedSession())
+                if (daemonId != null) {
+                    val cwd = if (settings.splitInheritWorkingDirectory) splitState.getFocusedSession()?.workingDirectory?.value else null
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.splitPane(daemonId, "h", cwd)
+                    return@splitHorizontal
+                }
                 val workingDir = splitState.getFocusedSession()?.workingDirectory?.value
                 var newSessionRef: TerminalSession? = null
                 val newSession = tabController.createSessionForSplit(
@@ -545,7 +571,10 @@ fun TabbedTerminal(
                 splitState.splitFocusedPane(SplitOrientation.HORIZONTAL, newSession)
             }
             onClosePane = {
-                if (splitState.isSinglePane) {
+                val daemonId = daemonPaneId(splitState.getFocusedSession())
+                if (daemonId != null && !splitState.isSinglePane) {
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closePane(daemonId)
+                } else if (splitState.isSinglePane) {
                     tabController.closeTab(tabController.activeTabIndex)
                 } else {
                     splitState.closeFocusedPane()
@@ -555,7 +584,7 @@ fun TabbedTerminal(
     }
 
     // Wire up Tools menu actions
-    LaunchedEffect(menuActions, tabController.activeTabIndex, tabController.tabs.size, aiState) {
+    LaunchedEffect(menuActions, tabController.activeTabIndex, tabController.activeTab?.id, tabController.tabs.size, aiState) {
         if (tabController.tabs.isEmpty()) return@LaunchedEffect
         val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
         val splitState = getOrCreateSplitState(activeTab)
@@ -752,18 +781,17 @@ fun TabbedTerminal(
                 // bridge never attaches (daemon unreachable), fall back to a local tab after a grace
                 // period so the window isn't stuck empty. The grace window must exceed the bridge's own
                 // attach window (DaemonBridgeCoordinator waits up to ~15s, event-driven) and
-                // short-circuits the moment the bridge attaches — otherwise an 8–15s attach leaves a
-                // stray local tab.
+                // ends once the first tab arrives. A socket alone is insufficient: a failed
+                // initial shell must still leave a usable local tab with its error state.
                 var waited = 0
                 while (waited < 16000 && tabController.tabs.isEmpty() &&
-                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachPendingFor(state) &&
                     // Stop early if the daemon definitively won't serve an attach endpoint this launch
                     // (unreachable / attach server didn't bind) — no point waiting the full grace period.
                     !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachUnavailable) {
                     kotlinx.coroutines.delay(200); waited += 200
                 }
-                if (tabController.tabs.isEmpty() &&
-                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) {
+                if (tabController.tabs.isEmpty()) {
                     tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
                 }
             } else {
@@ -852,7 +880,7 @@ fun TabbedTerminal(
 
     // Set up AI command interceptors for all tabs (detects typing "claude", "aider", etc.)
     // When an AI command is typed and the assistant is not installed, shows install prompt
-    LaunchedEffect(tabController.tabs.size, settings.aiAssistantsEnabled) {
+    LaunchedEffect(tabController.tabs.map { it.id }, settings.aiAssistantsEnabled) {
         if (!settings.aiAssistantsEnabled) return@LaunchedEffect
 
         for (tab in tabController.tabs) {
@@ -948,15 +976,20 @@ fun TabbedTerminal(
                 if (session.isRemote) return@forEach
                 val cur = session.display.termSize.value
                 if (cur.columns == size.columns && cur.rows == size.rows) return@forEach
-                runCatching {
-                    session.terminal.resize(size, ai.rever.bossterm.terminal.RequestOrigin.User)
+                val engine = session.sessionEngine
+                if (engine != null) {
+                    engine.resize(size.columns, size.rows)
+                } else {
+                    runCatching {
+                        session.terminal.resize(size, ai.rever.bossterm.terminal.RequestOrigin.User)
+                    }
+                    launch { runCatching { session.processHandle.value?.resize(size.columns, size.rows) } }
                 }
-                launch { runCatching { session.processHandle.value?.resize(size.columns, size.rows) } }
             }
         }
     }
 
-    LaunchedEffect(tabController.tabs.size) {
+    LaunchedEffect(tabController.tabs.map { it.id }) {
         val currentTabIds = tabController.tabs.map { it.id }.toSet()
         // Find orphaned split states (tabs that were closed)
         val orphanedIds = splitStates.keys.filter { it !in currentTabIds }
@@ -1014,6 +1047,8 @@ fun TabbedTerminal(
     // Phase 2: when the daemon hosts sessions, sharing is hosted by the daemon (survives the GUI
     // closing) and uses a separate window driven by DaemonShareClient over the attach socket.
     var daemonShareOpen by remember { mutableStateOf(false) }
+    var daemonShareGroupId by remember { mutableStateOf<String?>(null) }
+    var daemonShareScope by remember { mutableStateOf(ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.ALL) }
     // Account sign-in (BossConsole Supabase backend) — window opened from the Share menus.
     var showSignInWindow by remember { mutableStateOf(false) }
     var signInFocusTick by remember { mutableStateOf(0) }
@@ -1167,28 +1202,20 @@ fun TabbedTerminal(
     // Start (or reopen) a share for a tab. TAB = this tab + its splits; WINDOW = all tabs.
     // First use auto-enables the feature; the server binds on demand.
     fun startShare(tabId: String, scope: ai.rever.bossterm.compose.share.ShareScope) {
-        if (daemonMode) {
-            // The daemon hosts the share so it outlives the GUI. TAB → share just this session;
-            // WINDOW/ALL → share the whole daemon (every session as a viewer tab). DaemonShareWindow
-            // observes DaemonShareClient.state; startShare here is idempotent (returns any existing).
-            val isTabScope = scope == ai.rever.bossterm.compose.share.ShareScope.TAB
-            val sessionId = if (isTabScope)
-                tabController.tabs.firstOrNull { it.id == tabId }?.remotePaneId else null
-            // Privacy guard: a TAB share whose tab has no backing daemon session (a local fallback tab
-            // created when the daemon was unreachable, a split sub-pane, etc.) must NOT silently widen
-            // to ALL — that would publish EVERY daemon session when the user asked to share one tab.
-            if (isTabScope && sessionId == null) {
-                println("startShare: refusing TAB share of $tabId - no backing daemon session (would widen to ALL)")
-                return
-            }
-            val kind = if (sessionId != null) ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.SESSION
+        val daemonGroupId = if (daemonMode) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.groupIdForTab(tabId) else null
+        if (daemonGroupId != null && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state)) {
+            // A tab share follows the daemon group's live leaves, including later splits.
+            val groupId = if (scope == ai.rever.bossterm.compose.share.ShareScope.TAB) daemonGroupId else null
+            val kind = if (groupId != null) ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.GROUP
                        else ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.ALL
             // Parity with the non-daemon path: first share turns the feature on (the daemon reads
             // this setting live and the menu reflects it).
             if (!settings.sessionSharingEnabled) {
                 SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
             }
-            ai.rever.bossterm.compose.daemon.DaemonShareClient.startShare(kind, sessionId, null)
+            ai.rever.bossterm.compose.daemon.DaemonShareClient.startShare(kind, groupId = groupId)
+            daemonShareGroupId = daemonGroupId
+            daemonShareScope = kind
             daemonShareOpen = true
             shareFocusTick++
             return
@@ -1215,9 +1242,9 @@ fun TabbedTerminal(
         // GroupList (mirrors today's async requestNewTab contract). A plain local pane is
         // completely unaffected and keeps today's behavior below.
         val focusedSession = splitState.getFocusedSession()
-        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached && focusedSession?.isRemote == true) {
-            val parentId = (focusedSession as? TerminalTab)?.remotePaneId ?: return
-            val cwd = if (settings.splitInheritWorkingDirectory) focusedSession.workingDirectory.value else null
+        val parentId = daemonPaneId(focusedSession)
+        if (parentId != null) {
+            val cwd = if (settings.splitInheritWorkingDirectory) focusedSession?.workingDirectory?.value else null
             ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.splitPane(
                 parentId,
                 if (orientation == SplitOrientation.HORIZONTAL) "h" else "v",
@@ -1375,8 +1402,11 @@ fun TabbedTerminal(
                 if (daemonMode && daemonShareState.shares.isNotEmpty()) {
                     // Daemon-hosted share active → reopen the daemon share dialog.
                     daemonShareOpen = true
+                    daemonShareGroupId = tabController.activeTab?.let { ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.groupIdForTab(it.id) }
+                    daemonShareScope = if (daemonShareState.shares.any { it.scope == ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.GROUP && it.groupId == daemonShareGroupId })
+                        ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.GROUP else ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.ALL
                     shareFocusTick++
-                } else if (!daemonMode && sharedId != null) {
+                } else if (sharedId != null) {
                     openShareWindow(ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId))
                 } else {
                     tabController.activeTab?.let { active ->
@@ -1819,9 +1849,11 @@ fun TabbedTerminal(
                             session.closeFromChip(t.id, paneId)
                         } else {
                             val st = splitStates[t.id]
+                            val daemonId = daemonPaneId(st?.getAllPanes()?.firstOrNull { it.id == paneId }?.session)
                             // paneId == t.id is a synthetic tab-level chip (summary / single
                             // pane) — close the whole tab. Real split panes close just the pane.
                             if (st == null || st.isSinglePane || paneId == t.id) tabController.closeTab(tabIndex)
+                            else if (daemonId != null) ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closePane(daemonId)
                             else st.closePane(paneId)
                         }
                     }
@@ -1830,7 +1862,7 @@ fun TabbedTerminal(
                 onNewTabAtCurrentPath = { tabIndex, paneId ->
                     sessionFor(tabIndex, paneId)?.workingDirectory?.value?.let { cwd ->
                         val openedInDaemon = daemonMode &&
-                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
                             ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd)
                         if (!openedInDaemon) {
                             tabController.createTab(
@@ -1842,6 +1874,7 @@ fun TabbedTerminal(
                 },
                 onTabMoveToNewWindow = { index ->
                     val tab = tabController.tabs.getOrNull(index) ?: return@TabBar
+                    if (ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.groupIdForTab(tab.id) != null) return@TabBar
                     val splitState = splitStates.remove(tab.id)
                     val extractedTab = tabController.extractTab(index) ?: return@TabBar
                     WindowManager.createWindowWithTab(extractedTab, splitState)
@@ -1888,7 +1921,10 @@ fun TabbedTerminal(
                     if (remote != null && t != null) remote.duplicateTab(t.id)
                     else {
                         val wd = t?.workingDirectory?.value
-                        tabController.createTab(workingDir = wd)
+                        if (!(daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(wd))) {
+                            tabController.createTab(workingDir = wd)
+                        }
                     }
                 },
                 onCreateWorktree = { tabIndex, paneId ->
@@ -1999,10 +2035,7 @@ fun TabbedTerminal(
             // local PTY/tree directly — same rule as splitActiveTab() above. Returns the daemon
             // session id of the focused pane, or null if this pane isn't (or can't be) daemon-routed.
             fun focusedDaemonPaneId(): String? {
-                if (!daemonMode || !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) return null
-                val session = splitState.getFocusedSession()
-                if (session?.isRemote != true) return null
-                return (session as? TerminalTab)?.remotePaneId
+                return daemonPaneId(splitState.getFocusedSession())
             }
 
             // Split operation handlers
@@ -2142,7 +2175,7 @@ fun TabbedTerminal(
                 onNewTab = { requestNewTab() },
                 onNewTabAtCurrentPath = { cwd ->
                     val openedInDaemon = daemonMode &&
-                        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+                        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachedTo(state) &&
                         ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd)
                     if (!openedInDaemon) {
                         tabController.createTab(
@@ -2158,14 +2191,6 @@ fun TabbedTerminal(
                     tabController.closeTab(currentIndex)
                 },
                 onCloseTab = {
-                    // Closing a daemon-backed tab's chip: tell the daemon to close every leaf
-                    // (1-pane or a whole split group) so its session(s) don't linger server-side.
-                    // Local removal proceeds immediately either way — same "local now, daemon
-                    // catches up async" pattern an ordinary daemon tab close already uses.
-                    splitState.getAllSessions().filterIsInstance<TerminalTab>()
-                        .filter { it.isRemote }
-                        .mapNotNull { it.remotePaneId }
-                        .forEach { ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closePane(it) }
                     tabController.closeTab(tabController.activeTabIndex)
                 },
                 onNextTab = {
@@ -2189,7 +2214,7 @@ fun TabbedTerminal(
                 onNavigateNextPane = { splitState.navigateToNextPane() },
                 onNavigatePreviousPane = { splitState.navigateToPreviousPane() },
                 // A remote mirror pane can't be moved into a local tab (it has no local PTY).
-                onMoveToNewTab = if (!splitState.isSinglePane && remoteForActive == null) {
+                onMoveToNewTab = if (!splitState.isSinglePane && remoteForActive == null && focusedDaemonPaneId() == null) {
                     {
                         // Extract the session from the split and move it to a new tab
                         val extractedSession = splitState.extractFocusedPaneSession()
@@ -2805,7 +2830,9 @@ fun TabbedTerminal(
             // The currently-focused daemon session, so the dialog's "This session" scope is always
             // selectable (not just when the active share happens to be session-scoped). Reactive to
             // the active tab. Null for a non-daemon/local tab → only "All sessions" is offered.
-            focusedSessionId = tabController.activeTab?.remotePaneId,
+            focusedSessionId = null,
+            focusedGroupId = daemonShareGroupId,
+            initialScope = daemonShareScope,
             onDismiss = { daemonShareOpen = false },
             focusTick = shareFocusTick,
             callLabel = resolvedCallLabel,

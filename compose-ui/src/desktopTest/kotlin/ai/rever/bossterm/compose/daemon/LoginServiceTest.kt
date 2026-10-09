@@ -74,4 +74,55 @@ class LoginServiceTest {
         assertTrue(value.contains("\"/Applications/BossTerm.app/Contents/app/compose-ui.jar:/Applications/BossTerm.app/Contents/app/has space.jar\""))
         assertTrue(value.contains(mainClass))
     }
+
+    @Test
+    fun `systemd escapes literal dollars rather than expanding profile paths`() {
+        val unit = LoginServiceManager.systemdUnit(listOf("/usr/bin/java", "-Dprofile=/tmp/\${PROFILE}/100%"))
+        assertTrue(unit.contains("/tmp/\$\${PROFILE}/100%%"))
+    }
+
+    @Test
+    fun `desktop quoting handles both escaping passes`() {
+        val value = LoginServiceManager.desktopQuote("/tmp/\$cash/`name`/has \\\"quote")
+        assertTrue(value.contains("\\\\\$cash"), value)
+        assertTrue(value.contains("\\\\`name\\\\`"), value)
+        assertTrue(value.contains("\\\\\\\\"), value)
+    }
+
+    @Test
+    fun `launch commands resolve relative classpath entries before login`() {
+        val command = DaemonLauncher.absoluteClasspath("relative.jar" + java.io.File.pathSeparator + ".")
+        command.split(java.io.File.pathSeparatorChar).forEach { assertTrue(java.io.File(it).isAbsolute) }
+    }
+
+    @Test
+    fun `explicit default directory and symlink alias reuse the default service identity`() {
+        val previousHome = System.getProperty("user.home")
+        val previousDirectory = System.getProperty(BossTermPaths.SETTINGS_DIR_PROPERTY)
+        val home = java.nio.file.Files.createTempDirectory("bossterm-login-profile").toFile()
+        try {
+            System.setProperty("user.home", home.absolutePath)
+            System.clearProperty(BossTermPaths.SETTINGS_DIR_PROPERTY)
+            val defaultValue = LoginServiceManager.windowsRegFile(command)
+            val defaultDir = java.io.File(home, ".bossterm")
+            defaultDir.mkdirs()
+            System.setProperty(BossTermPaths.SETTINGS_DIR_PROPERTY, defaultDir.absolutePath)
+            assertEquals(defaultValue, LoginServiceManager.windowsRegFile(command))
+
+            val alias = java.io.File(home, "profile-alias")
+            // Some Windows/filesystem configurations cannot create symlinks without privileges.
+            val linked = runCatching {
+                java.nio.file.Files.createSymbolicLink(alias.toPath(), defaultDir.toPath())
+            }.isSuccess
+            if (linked) {
+                System.setProperty(BossTermPaths.SETTINGS_DIR_PROPERTY, alias.absolutePath)
+                assertEquals(defaultValue, LoginServiceManager.windowsRegFile(command))
+            }
+        } finally {
+            if (previousHome == null) System.clearProperty("user.home") else System.setProperty("user.home", previousHome)
+            if (previousDirectory == null) System.clearProperty(BossTermPaths.SETTINGS_DIR_PROPERTY)
+            else System.setProperty(BossTermPaths.SETTINGS_DIR_PROPERTY, previousDirectory)
+            home.deleteRecursively()
+        }
+    }
 }

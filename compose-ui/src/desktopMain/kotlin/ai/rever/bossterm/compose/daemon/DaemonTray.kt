@@ -47,6 +47,7 @@ object DaemonTray {
             runCatching { SwingUtilities.invokeAndWait { result = install(version, sessionCount, onOpenApp, onQuit) } }
             return result
         }
+        if (trayIcon != null) return true
         return try {
             val popup = PopupMenu()
             popup.add(MenuItem("BossTerm v$version").apply { isEnabled = false })
@@ -57,7 +58,7 @@ object DaemonTray {
             if (onOpenApp != null) {
                 popup.add(MenuItem("Open BossTerm").apply { addActionListener { runCatching { onOpenApp() } } })
             }
-            popup.add(MenuItem("Quit BossTerm").apply { addActionListener { runCatching { onQuit() } } })
+            popup.add(MenuItem("Quit daemon").apply { addActionListener { runCatching { onQuit() } } })
 
             // A PopupMenu must hang off a Component; the tray icon isn't one. Park a 1px undecorated
             // frame to anchor it at the click location. Kept tiny + reused so it's imperceptible.
@@ -88,6 +89,7 @@ object DaemonTray {
             log.info("Daemon menu-bar icon installed")
             true
         } catch (e: Throwable) {
+            remove()
             log.warn("Failed to install daemon tray icon: {}", e.message)
             false
         }
@@ -103,6 +105,7 @@ object DaemonTray {
         }
         trayIcon?.let { runCatching { SystemTray.getSystemTray().remove(it) } }
         trayIcon = null
+        sessionsItem = null
         anchor?.let { runCatching { it.dispose() } }
         anchor = null
     }

@@ -115,7 +115,7 @@ fun GroupNode.removePane(targetId: String): GroupNode? {
 
 /** Update the ratio of a split node. */
 fun GroupNode.updateRatio(targetId: String, newRatio: Float, minRatio: Float = 0.1f): GroupNode {
-    val clampedRatio = newRatio.coerceIn(minRatio, 1f - minRatio)
+    val clampedRatio = safeSplitRatio(newRatio, minRatio)
     return when (this) {
         is GroupNode.Pane -> this
         is GroupNode.VerticalSplit -> if (this.id == targetId) {
@@ -129,6 +129,12 @@ fun GroupNode.updateRatio(targetId: String, newRatio: Float, minRatio: Float = 0
             copy(top = top.updateRatio(targetId, newRatio, minRatio), bottom = bottom.updateRatio(targetId, newRatio, minRatio))
         }
     }
+}
+
+/** Non-finite ratios cannot be serialized or used as Compose weights. */
+internal fun safeSplitRatio(ratio: Float, minRatio: Float = 0.1f): Float {
+    require(minRatio.isFinite() && minRatio in 0f..0.5f)
+    return if (ratio.isFinite()) ratio.coerceIn(minRatio, 1f - minRatio) else 0.5f
 }
 
 /** The parent split's id for a given node, or null if [targetId] is the root or not found. */

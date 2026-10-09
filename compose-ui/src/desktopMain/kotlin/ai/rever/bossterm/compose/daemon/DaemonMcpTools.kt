@@ -1,6 +1,5 @@
 package ai.rever.bossterm.compose.daemon
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -18,7 +17,6 @@ import kotlinx.serialization.json.put
  * ([ai.rever.bossterm.compose.mcp.BossTermMcpServer]) is unchanged.
  */
 class DaemonMcpTools(private val host: SessionHost) {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     companion object {
         const val DEFAULT_SCROLLBACK_LINES = 200
@@ -48,6 +46,7 @@ class DaemonMcpTools(private val host: SessionHost) {
         val command = args.str("command")
         val cols = args.intOr("cols", 80)
         val rows = args.intOr("rows", 24)
+        if (cols !in 1..2000 || rows !in 1..2000) return err("cols/rows must be between 1 and 2000")
         val id = host.openSession(cwd = cwd, command = command, cols = cols, rows = rows)
         return buildJsonObject { put("id", id) }.toString()
     }
@@ -96,7 +95,7 @@ class DaemonMcpTools(private val host: SessionHost) {
         val id = args.str("session_id") ?: return err("Missing required argument: session_id")
         val cols = args.intOr("cols", 0)
         val rows = args.intOr("rows", 0)
-        if (cols < 1 || rows < 1) return err("cols/rows must be >= 1")
+        if (cols !in 1..2000 || rows !in 1..2000) return err("cols/rows must be between 1 and 2000")
         val core = host.get(id) ?: return err("Unknown session_id: $id")
         core.resize(cols, rows)
         return ok()
@@ -105,6 +104,7 @@ class DaemonMcpTools(private val host: SessionHost) {
     /** Close a daemon session. */
     fun closeSession(args: JsonObject): String {
         val id = args.str("session_id") ?: return err("Missing required argument: session_id")
+        if (host.get(id) == null) return err("Unknown session_id: $id")
         host.closeSession(id)
         return ok()
     }
@@ -112,7 +112,7 @@ class DaemonMcpTools(private val host: SessionHost) {
     // ---- json helpers (defensive: a non-primitive/absent arg yields null, never throws) ----
     private fun JsonObject.str(key: String): String? = runCatching {
         (this[key] as? kotlinx.serialization.json.JsonPrimitive)
-            ?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.content
+            ?.takeIf { it.isString }?.content
     }.getOrNull()
     private fun JsonObject.intOr(key: String, default: Int): Int =
         runCatching { (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.int }.getOrNull() ?: default

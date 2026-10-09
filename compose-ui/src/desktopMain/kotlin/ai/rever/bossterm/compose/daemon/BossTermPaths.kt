@@ -31,7 +31,7 @@ object BossTermPaths {
      */
     fun dir(): File {
         val override = System.getProperty(SETTINGS_DIR_PROPERTY)?.takeIf { it.isNotBlank() }
-        val dir = if (override != null) File(override) else File(System.getProperty("user.home"), ".bossterm")
+        val dir = (if (override != null) File(override) else File(System.getProperty("user.home"), ".bossterm")).absoluteFile
         if (!dir.exists()) {
             dir.mkdirs()
             // Create the base dir owner-only (0700): it holds the daemon's auth secret + log + lock.
@@ -95,7 +95,7 @@ object BossTermPaths {
      * `-Dbossterm.settings.dir` profile get distinct values.
      */
     fun profileTag(): String {
-        val path = dir().absolutePath
+        val path = dir().canonicalPath
         // First 6 bytes of SHA-256 → 12 hex chars: filename-safe, deterministic, and collision-
         // resistant across profiles. (32-bit String.hashCode() could collide two settings dirs and
         // clobber each other's login-service artifacts.) Not security-sensitive.

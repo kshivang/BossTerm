@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.PlatformServices
+import ai.rever.bossterm.compose.getPlatformServices
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
@@ -16,9 +18,16 @@ import java.util.concurrent.ConcurrentHashMap
 class SessionHost(
     private val settings: TerminalSettings,
     private val colorSettingsProvider: () -> TerminalSettings = { settings },
+    private val settingsProvider: () -> TerminalSettings = { settings },
+    private val platformServices: PlatformServices = getPlatformServices(),
+    private val environmentProvider: () -> Map<String, String> = { emptyMap() },
 ) {
     private val log = LoggerFactory.getLogger(SessionHost::class.java)
     private val sessions = ConcurrentHashMap<String, TerminalSessionCore>()
+    private val sessionOrder = ConcurrentHashMap<String, Long>()
+    private val nextOrder = java.util.concurrent.atomic.AtomicLong()
+    private val closingKillThreads = java.util.concurrent.ConcurrentHashMap.newKeySet<Thread>()
+    @Volatile private var closed = false
 
     // groupId -> split tree (session ids as leaves). A session id that never appears as a Pane
     // leaf in any group is a flat/ungrouped session (today's only kind: MCP/CLI-created). Every
@@ -45,8 +54,21 @@ class SessionHost(
     private val notifier = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "bossterm-session-notify").apply { isDaemon = true }
     }
+    private val notificationScheduled = java.util.concurrent.atomic.AtomicBoolean()
+    private val notificationDirty = java.util.concurrent.atomic.AtomicBoolean()
     private fun notifyChanged() {
-        runCatching { notifier.execute { changeListeners.forEach { l -> runCatching { l() } } } }
+        notificationDirty.set(true)
+        if (!notificationScheduled.compareAndSet(false, true)) return
+        runCatching {
+            notifier.execute {
+                do {
+                    notificationDirty.set(false)
+                    changeListeners.forEach { l -> runCatching { l() } }
+                } while (notificationDirty.get())
+                notificationScheduled.set(false)
+                if (notificationDirty.get()) notifyChanged()
+            }
+        }.onFailure { notificationScheduled.set(false) }
     }
 
     /** Lightweight, serializable view of a session for LIST_SESSIONS / status. */
@@ -69,25 +91,52 @@ class SessionHost(
         arguments: List<String> = emptyList(),
         cols: Int = 80,
         rows: Int = 24,
+        initialCommand: String? = null,
+    ): String = openSessionInternal(cwd, command, arguments, cols, rows, initialCommand, notify = true)
+
+    private fun openSessionInternal(
+        cwd: String? = null,
+        command: String? = null,
+        arguments: List<String> = emptyList(),
+        cols: Int = 80,
+        rows: Int = 24,
+        initialCommand: String? = null,
+        notify: Boolean,
     ): String {
         val core = TerminalSessionCore(
-            settings = settings,
+            settings = settingsProvider(),
             workingDir = cwd,
             command = command,
             arguments = arguments,
             initialCols = cols,
             initialRows = rows,
             colorSettingsProvider = colorSettingsProvider,
+            initialCommand = initialCommand,
+            platformServices = platformServices,
+            environmentOverrides = environmentProvider(),
         )
-        sessions[core.id] = core
         // Reap on exit so a dead shell doesn't linger in the registry. Also collapses the session
         // out of its group (if any) — covers a SPONTANEOUS exit (shell `exit`, crash), not just an
         // explicit close, so a split's tree never keeps a dangling leaf for a session that died on
         // its own.
-        core.onExit = { collapseFromGroup(core.id); sessions.remove(core.id); notifyChanged() }
+        core.onExit = {
+            core.close()?.let { closingKillThreads.add(it) }
+            closingKillThreads.removeIf { !it.isAlive }
+            synchronized(groupLock) {
+                collapseFromGroup(core.id)
+                sessions.remove(core.id)
+                sessionOrder.remove(core.id)
+            }
+            notifyChanged()
+        }
+        synchronized(groupLock) {
+            if (closed) { core.close(); error("Session host is shutting down") }
+            sessions[core.id] = core
+            sessionOrder[core.id] = nextOrder.getAndIncrement()
+        }
         core.start()
         log.info("opened session {} (cwd={}, cmd={})", core.id, cwd, command ?: "<default shell>")
-        notifyChanged()
+        if (notify) notifyChanged()
         return core.id
     }
 
@@ -102,11 +151,14 @@ class SessionHost(
         cols: Int = 80,
         rows: Int = 24,
     ): Pair<String, String> {
-        val sessionId = openSession(cwd, command, arguments, cols, rows)
+        val initialCommand = if (command == null && arguments.isEmpty()) settingsProvider().initialCommand else null
+        val sessionId = openSessionInternal(cwd, command, arguments, cols, rows, initialCommand, notify = false)
         val groupId = java.util.UUID.randomUUID().toString()
         synchronized(groupLock) {
-            groups[groupId] = GroupNode.Pane(sessionId = sessionId)
-            sessionToGroup[sessionId] = groupId
+            if (sessions.containsKey(sessionId)) {
+                groups[groupId] = GroupNode.Pane(sessionId = sessionId)
+                sessionToGroup[sessionId] = groupId
+            }
         }
         notifyChanged()
         return sessionId to groupId
@@ -138,21 +190,21 @@ class SessionHost(
         // Spawn the new PTY OUTSIDE groupLock — openSession() does real process work and must not
         // run while holding the tree lock (would block every other group mutation/resync for the
         // duration of the spawn).
-        val newSessionId = openSession(cwd = inheritedCwd)
+        val newSessionId = openSessionInternal(cwd = inheritedCwd, notify = false)
 
         // Graft into the tree under groupLock, re-validating the target pane is still there — it
         // could have been closed by a concurrent splitPane/closePane/exit while we were spawning.
         val grafted = synchronized(groupLock) {
             val tree = groups[groupId]
             val targetPane = tree?.findPaneBySessionId(sessionId)
-            if (tree == null || targetPane == null) {
+            if (tree == null || targetPane == null || !sessions.containsKey(newSessionId) || !sessions.containsKey(sessionId)) {
                 false
             } else {
                 val newPane = GroupNode.Pane(sessionId = newSessionId)
                 val newTree = tree.replaceNode(targetPane.id) { pane ->
                     when (orientation) {
-                        SplitOrientation.HORIZONTAL -> GroupNode.HorizontalSplit(top = pane, bottom = newPane, ratio = ratio)
-                        SplitOrientation.VERTICAL -> GroupNode.VerticalSplit(left = pane, right = newPane, ratio = ratio)
+                        SplitOrientation.HORIZONTAL -> GroupNode.HorizontalSplit(top = pane, bottom = newPane, ratio = safeSplitRatio(ratio))
+                        SplitOrientation.VERTICAL -> GroupNode.VerticalSplit(left = pane, right = newPane, ratio = safeSplitRatio(ratio))
                     }
                 }
                 groups[groupId] = newTree
@@ -188,8 +240,22 @@ class SessionHost(
      *  [closeSession] (the group disappears too). If it has siblings, the session is killed AND
      *  the tree collapses around it. Ungrouped sessions just close normally. */
     fun closeGroupedSession(sessionId: String) {
-        collapseFromGroup(sessionId)
         closeSession(sessionId)
+    }
+
+    /** Detach the whole tree atomically so a concurrent split cannot grow a closing group. */
+    fun closeGroup(groupId: String): Boolean {
+        val cores = synchronized(groupLock) {
+            val tree = groups.remove(groupId) ?: return false
+            tree.getAllSessionIds().mapNotNull { id ->
+                sessionToGroup.remove(id)
+                sessionOrder.remove(id)
+                sessions.remove(id)
+            }
+        }
+        cores.forEach { it.close() }
+        notifyChanged()
+        return true
     }
 
     /** Update one split's ratio within its group's tree (divider drag commit). Pure tree edit. */
@@ -202,23 +268,30 @@ class SessionHost(
 
     /** All current groups, as wire DTOs, for GroupList broadcast. */
     fun listGroups(): List<GroupInfo> = synchronized(groupLock) {
-        groups.map { (groupId, tree) -> GroupInfo(groupId, tree.toDto()) }
+        groups.entries.sortedBy { (_, tree) ->
+            tree.getAllSessionIds().minOfOrNull { sessionOrder[it] ?: Long.MAX_VALUE } ?: Long.MAX_VALUE
+        }.map { (groupId, tree) -> GroupInfo(groupId, tree.toDto()) }
     }
 
     fun get(id: String): TerminalSessionCore? = sessions[id]
 
     fun closeSession(id: String) {
-        sessions.remove(id)?.let {
+        val core = synchronized(groupLock) {
+            collapseFromGroup(id)
+            sessionOrder.remove(id)
+            sessions.remove(id)
+        }
+        core?.let {
             it.close()
             log.info("closed session {}", id)
             notifyChanged()
         }
     }
 
-    fun list(): List<SessionInfo> = sessions.values.map { core ->
+    fun list(): List<SessionInfo> = sessions.values.sortedBy { sessionOrder[it.id] ?: Long.MAX_VALUE }.map { core ->
         SessionInfo(
             id = core.id,
-            title = core.windowTitle.value.ifBlank { labelFor(core.workingDirectory.value) },
+            title = core.iconTitle.value.ifBlank { labelFor(core.workingDirectory.value) },
             cwd = core.workingDirectory.value,
             alive = core.isAlive(),
         )
@@ -226,13 +299,21 @@ class SessionHost(
 
     fun count(): Int = sessions.size
 
+    /** Atomically refuse a non-destructive shutdown when it would end live sessions. */
+    fun beginShutdown(killSessions: Boolean): Boolean = synchronized(groupLock) {
+        if (!killSessions && sessions.isNotEmpty()) false else { closed = true; true }
+    }
+
     /** Kill every session — used on daemon SHUTDOWN {killSessions:true}. */
     fun shutdownAll() {
         // close() kills each PTY on a detached thread; join them (bounded) so the JVM doesn't exit
         // before the shells are actually destroyed (which would orphan them).
-        val killThreads = sessions.values.mapNotNull { runCatching { it.close() }.getOrNull() }
-        sessions.clear()
-        synchronized(groupLock) { groups.clear(); sessionToGroup.clear() }
+        val cores = synchronized(groupLock) {
+            sessions.values.toList().also {
+                sessions.clear(); sessionOrder.clear(); groups.clear(); sessionToGroup.clear()
+            }
+        }
+        val killThreads = (cores.mapNotNull { runCatching { it.close() }.getOrNull() } + closingKillThreads).distinct()
         // Tell attached GUIs the sessions are gone — otherwise a mass close the daemon survives leaves
         // them showing stale tabs. (The notifier is a daemon-thread executor, so it needn't be shut
         // down explicitly; it dies with the JVM on actual daemon exit.)
@@ -242,12 +323,20 @@ class SessionHost(
             val remaining = deadline - System.currentTimeMillis()
             if (remaining > 0) runCatching { t.join(remaining) }
         }
+        closingKillThreads.removeIf { !it.isAlive }
+    }
+
+    /** Permanently stop admitting sessions and release the notification worker. */
+    fun close() {
+        synchronized(groupLock) { closed = true }
+        shutdownAll()
+        notifier.shutdownNow()
     }
 
     private fun labelFor(path: String?): String {
         if (path.isNullOrBlank()) return "~"
-        val clean = path.trimEnd('/')
-        val home = System.getProperty("user.home")?.trimEnd('/')
+        val clean = path.replace('\\', '/').trimEnd('/')
+        val home = System.getProperty("user.home")?.replace('\\', '/')?.trimEnd('/')
         if (clean == home) return "~"
         return clean.substringAfterLast('/').ifEmpty { "/" }
     }

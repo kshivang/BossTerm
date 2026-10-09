@@ -52,4 +52,16 @@ class DaemonAttachBinaryFrameTest {
             "truncated snapshot grid",
         )
     }
+    @Test
+    fun `invalid snapshot grids and empty session ids are rejected`() {
+        assertNull(DaemonAttachProtocol.BinaryFrame.decode(byteArrayOf(1, 0)))
+        // id=a, cols=0, rows=24
+        assertNull(DaemonAttachProtocol.BinaryFrame.decode(byteArrayOf(2, 1, 97, 0, 0, 0, 24)))
+        // id=a, cols=65535, rows=24
+        assertNull(DaemonAttachProtocol.BinaryFrame.decode(byteArrayOf(2, 1, 97, -1, -1, 0, 24)))
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            DaemonAttachProtocol.BinaryFrame.encodeSnapshot(sessionId, 65536, 24, "")
+        }
+    }
+
 }

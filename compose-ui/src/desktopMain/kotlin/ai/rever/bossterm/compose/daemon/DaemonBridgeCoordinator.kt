@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.tabs.TerminalTab
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -77,6 +78,11 @@ object DaemonBridgeCoordinator {
         // started), so the GUI's MCP status indicator — which reads McpTerminalRegistry.runningPort —
         // would otherwise show "not running" even though the daemon serves it. Reflect the daemon's
         // bound MCP port so the indicator is accurate.
+        if (status.attachProtocolVersion != DaemonAttachProtocol.PROTOCOL_VERSION) {
+            log.warn("Daemon attach protocol is incompatible (daemon={}, GUI={})", status.attachProtocolVersion, DaemonAttachProtocol.PROTOCOL_VERSION)
+            markAttachUnavailable()
+            return
+        }
         status.mcpPort?.let { ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(it) }
         val ap = status.attachPort
             ?: run { log.warn("daemon reported no attach port"); markAttachUnavailable(); return }
@@ -159,7 +165,25 @@ object DaemonBridgeCoordinator {
     /** Ask the daemon to close one pane (session) — does not affect siblings. Fire-and-forget. */
     fun closePane(sessionId: String): Boolean = bridge?.closePane(sessionId) ?: false
 
+    fun isAttachPendingFor(state: TabbedTerminalState?): Boolean = state != null && activeState === state && !isAttachUnavailable
+
+    fun isAttachedTo(state: TabbedTerminalState?): Boolean = state != null && activeState === state && bridge?.hasReceivedState == true
+
+    fun groupIdForTab(tabId: String): String? = bridge?.groupIdForTab(tabId)
+
+    fun isDaemonSession(tab: TerminalTab): Boolean = bridge?.isDaemonSession(tab) ?: false
+
+    fun closeGroupForTab(tabId: String): Boolean = bridge?.closeGroupForTab(tabId) ?: false
+
     val isAttached: Boolean get() = bridge != null
+
+    /** Keep Open BossTerm routed to this app even after its last window unregisters. */
+    fun registerGuiLifecycle(scope: CoroutineScope, onOpen: () -> Unit): kotlinx.coroutines.Job = scope.launch {
+        val endpoint = attachState.first { it !is AttachEndpoint.Pending } as? AttachEndpoint.Ready
+            ?: return@launch
+        val activation = DaemonGuiBridge(endpoint.port, endpoint.secret, this, onOpen).start()
+        try { activation.join() } finally { activation.cancel() }
+    }
 
     /** Single deadline for endpoint + controller readiness (matches the old 60×250ms poll window;
      *  cold daemon spawn + handshake fits well inside it, and it stays under the window's ~16s

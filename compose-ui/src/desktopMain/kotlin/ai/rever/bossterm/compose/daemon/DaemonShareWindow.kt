@@ -91,28 +91,31 @@ fun DaemonShareWindow(
      * embedder, but this window is composed by the GUI, so its Boss Calling copy follows the GUI.
      */
     callLabel: String = DEFAULT_CALL_LABEL,
+    focusedGroupId: String? = null,
+    initialScope: String = when {
+        focusedGroupId != null -> DaemonAttachProtocol.ShareScopeKind.GROUP
+        focusedSessionId != null -> DaemonAttachProtocol.ShareScopeKind.SESSION
+        else -> DaemonAttachProtocol.ShareScopeKind.ALL
+    },
 ) {
     val clipboard = LocalClipboardManager.current
     val shareState by DaemonShareClient.state.collectAsState()
 
     // Scope the user is managing. Default to a single focused session when one is available, else
     // every session — matches how the user most likely arrived (a tab's Share button vs window menu).
-    var scope by remember {
-        mutableStateOf(
-            if (focusedSessionId != null) DaemonAttachProtocol.ShareScopeKind.SESSION
-            else DaemonAttachProtocol.ShareScopeKind.ALL
-        )
-    }
+    var scope by remember(focusTick) { mutableStateOf(initialScope) }
 
     // The share matching the chosen scope/session. No cross-scope fallback: showing the ALL share
     // under a "This session" scope would mislabel its links/viewer-count and make Stop Sharing tear
     // down the whole-daemon share the user didn't mean to touch. When the selected scope has no share,
     // `share` is null and StartSection is shown so the user can start exactly the share they meant.
-    val share = remember(shareState, scope, focusedSessionId) {
+    val share = remember(shareState, scope, focusedSessionId, focusedGroupId) {
         shareState.shares.firstOrNull { s ->
             when (scope) {
                 DaemonAttachProtocol.ShareScopeKind.SESSION ->
                     s.scope == DaemonAttachProtocol.ShareScopeKind.SESSION && s.sessionId == focusedSessionId
+                DaemonAttachProtocol.ShareScopeKind.GROUP ->
+                    s.scope == DaemonAttachProtocol.ShareScopeKind.GROUP && s.groupId == focusedGroupId
                 else -> s.scope == DaemonAttachProtocol.ShareScopeKind.ALL
             }
         }
@@ -147,11 +150,11 @@ fun DaemonShareWindow(
                 )
                 Spacer(Modifier.height(20.dp))
 
-                ScopeSection(scope, focusedSessionId) { scope = it }
+                ScopeSection(scope, focusedSessionId, focusedGroupId) { scope = it }
                 Spacer(Modifier.height(20.dp))
 
                 if (share == null) {
-                    StartSection(scope, focusedSessionId)
+                    StartSection(scope, focusedSessionId, focusedGroupId)
                 } else {
                     ShareDetails(share, pending, clipboard, callLabel)
                 }
@@ -181,26 +184,29 @@ fun DaemonShareWindow(
 
 /** Scope picker: every daemon session as tabs vs the single focused session. */
 @Composable
-private fun ScopeSection(scope: String, focusedSessionId: String?, onScopeChange: (String) -> Unit) {
+private fun ScopeSection(scope: String, focusedSessionId: String?, focusedGroupId: String?, onScopeChange: (String) -> Unit) {
     SettingsSection("Scope") {
         Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            val canSession = focusedSessionId != null
+            val canSession = focusedSessionId != null || focusedGroupId != null
             SegPicker(
-                listOf("All sessions", "This session"),
-                selectedIndex = if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION) 1 else 0,
+                listOf("All sessions", if (focusedGroupId != null) "This tab" else "This session"),
+                selectedIndex = if (scope != DaemonAttachProtocol.ShareScopeKind.ALL) 1 else 0,
             ) { i ->
                 // "This session" needs a focused session id; ignore the click when there isn't one.
                 val target = if (i == 1) {
-                    if (canSession) DaemonAttachProtocol.ShareScopeKind.SESSION else return@SegPicker
+                    if (!canSession) return@SegPicker
+                    if (focusedGroupId != null) DaemonAttachProtocol.ShareScopeKind.GROUP else DaemonAttachProtocol.ShareScopeKind.SESSION
                 } else DaemonAttachProtocol.ShareScopeKind.ALL
                 onScopeChange(target)
             }
             Text(
-                if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION)
+                if (scope == DaemonAttachProtocol.ShareScopeKind.GROUP)
+                    "Sharing this tab and all its split panes."
+                else if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION)
                     "Sharing just the focused session."
                 else "Sharing every session - viewers switch between them as tabs.",
                 color = TextMuted, fontSize = 11.sp,
@@ -213,7 +219,7 @@ private fun ScopeSection(scope: String, focusedSessionId: String?, onScopeChange
 
 /** Shown when no share matches the chosen scope: a button to ask the daemon to start one. */
 @Composable
-private fun StartSection(scope: String, focusedSessionId: String?) {
+private fun StartSection(scope: String, focusedSessionId: String?, focusedGroupId: String?) {
     SettingsSection("Not sharing yet") {
         Text(
             "No active share for this scope. Start one - it keeps serving the viewer even after you close BossTerm.",
@@ -222,7 +228,7 @@ private fun StartSection(scope: String, focusedSessionId: String?) {
         Button(
             onClick = {
                 val sessionId = if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION) focusedSessionId else null
-                DaemonShareClient.startShare(scope, sessionId, null)
+                DaemonShareClient.startShare(scope, sessionId, groupId = if (scope == DaemonAttachProtocol.ShareScopeKind.GROUP) focusedGroupId else null)
             },
             colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
         ) { Text("Start sharing") }

@@ -342,4 +342,37 @@ class FrameOutboxTest {
             "the queue must not disconnect a viewer for one legal full-graphics frame",
         )
     }
+    @Test
+    fun `resize barrier cannot overtake old grid output and prevents coalescing across it`() {
+        val outbox = FrameOutbox()
+        outbox.sendOutput("pane", "old-grid")
+        outbox.sendOrderedControl("pane", ctrl("resize"))
+        outbox.sendOutput("pane", "new-grid")
+        outbox.close()
+        assertEquals(listOf(FrameOutbox.Frame.Output("pane", "old-grid"), ctrl("resize"),
+            FrameOutbox.Frame.Output("pane", "new-grid")), drainAll(outbox))
+    }
+
+    @Test
+    fun `snapshot heal purges obsolete resize barriers with their old output`() {
+        val outbox = FrameOutbox()
+        outbox.sendOutput("pane", "old-grid")
+        outbox.sendOrderedControl("pane", ctrl("old-resize"))
+        outbox.dropQueuedOutput("pane")
+        outbox.sendSnapshot("pane", ctrl("fresh-snapshot"))
+        outbox.sendOutput("pane", "live")
+        outbox.close()
+        assertEquals(listOf(ctrl("fresh-snapshot"), FrameOutbox.Frame.Output("pane", "live")), drainAll(outbox))
+    }
+
+    @Test
+    fun `resize barrier survives output eviction`() {
+        val outbox = FrameOutbox(outputCapacityChars = 4)
+        outbox.sendOutput("pane", "old")
+        outbox.sendOrderedControl("pane", ctrl("resize"))
+        outbox.sendOutput("pane", "latest")
+        outbox.close()
+        assertEquals(listOf(ctrl("resize"), FrameOutbox.Frame.Output("pane", "latest")), drainAll(outbox))
+    }
+
 }

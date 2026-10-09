@@ -400,9 +400,11 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
                 }
             }
 
-            7 ->         // Support for OSC 7 is pending
-                // "return true" to avoid logging errors about unhandled sequences;
+            7 -> {
+                // Hosts observe the standard file URI without tying the parser to a UI or PTY.
+                myTerminal?.processCustomCommand(args.args.toMutableList())
                 return true
+            }
 
             133 -> return processShellIntegration(args)
 

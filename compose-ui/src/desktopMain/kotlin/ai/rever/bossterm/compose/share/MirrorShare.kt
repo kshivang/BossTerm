@@ -864,13 +864,18 @@ class MirrorShare(
                 else -> null
             }
             if (session != null) {
-                runCatching {
-                    session.terminal.resize(
-                        ai.rever.bossterm.core.util.TermSize(cols, rows),
-                        ai.rever.bossterm.terminal.RequestOrigin.User
-                    )
+                val engine = session.sessionEngine
+                if (engine != null) {
+                    engine.resize(cols, rows)
+                } else {
+                    runCatching {
+                        session.terminal.resize(
+                            ai.rever.bossterm.core.util.TermSize(cols, rows),
+                            ai.rever.bossterm.terminal.RequestOrigin.User
+                        )
+                    }
+                    coro.launch { runCatching { session.processHandle.value?.resize(cols, rows) } }
                 }
-                coro.launch { runCatching { session.processHandle.value?.resize(cols, rows) } }
             }
         }
         val win = tw.awtWindow ?: return

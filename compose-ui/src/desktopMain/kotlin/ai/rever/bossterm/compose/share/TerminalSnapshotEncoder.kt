@@ -92,12 +92,12 @@ object TerminalSnapshotEncoder {
         var end = runs.size
         while (end > 0 && runs[end - 1].let { it.text.toString().isBlank() && it.style.background == null }) end--
         for (i in 0 until end) {
-            sb.append(ansiForStyle(runs[i].style)).append(runs[i].text.toString())
+            sb.append(encodeStyle(runs[i].style)).append(runs[i].text.toString())
         }
     }
 
     /** SGR escape that resets then applies [style]'s colors + attributes (256-color / truecolor). */
-    private fun ansiForStyle(style: TextStyle): String {
+    fun encodeStyle(style: TextStyle): String {
         val codes = ArrayList<String>()
         codes.add("0")
         if (style.hasOption(TextStyle.Option.BOLD)) codes.add("1")

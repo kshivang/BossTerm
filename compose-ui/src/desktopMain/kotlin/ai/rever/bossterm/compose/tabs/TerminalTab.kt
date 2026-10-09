@@ -8,6 +8,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -377,6 +379,8 @@ data class TerminalTab(
     @Volatile internal var sessionEngine: TerminalSessionEngine? = null
         private set
 
+    internal var remoteParserJob: Job? = null
+
     private val inputLock = Any()
     private val pendingInputs = ArrayDeque<Pair<Int, (TerminalSessionEngine) -> Unit>>()
     private var pendingInputUnits = 0L
@@ -522,6 +526,16 @@ data class TerminalTab(
      * displays can cause exceptions that crash the rendering pipeline.
      */
     override fun dispose() {
+        // A mirror parser runs blocking emulator/ICU code on the session dispatcher.
+        // Cancellation alone does not stop an instruction already being parsed. An
+        // embedder may close its classloader as soon as dispose returns, so wait for
+        // this worker (including its disconnected/finally cleanup) before returning.
+        // Join only this background job, never the UI scope: Main may be disposing us.
+        remoteParserJob?.let { parser ->
+            dataStream.close()
+            parser.cancel()
+            runBlocking { parser.join() }
+        }
         synchronized(inputLock) {
             if (disposed) return
             disposed = true

@@ -54,14 +54,6 @@ internal fun migrateSplitFocusBorderDefault(
     }
 }
 
-/** Older releases saved false even for the factory default; enable once, then honor user edits. */
-internal fun migrateDaemonModeDefault(
-    settings: TerminalSettings,
-    hasDaemonModeDefaultsVersion: Boolean,
-): TerminalSettings = if (hasDaemonModeDefaultsVersion) settings else {
-    settings.copy(daemonEnabled = true, daemonModeDefaultsVersion = 1)
-}
-
 /**
  * Manager for terminal settings with persistence support.
  * Settings are saved to ~/.bossterm/settings.json by default,
@@ -287,16 +279,12 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                 wasFreshInstall = false
                 val jsonString = settingsFile.readText()
                 val rawSettings = json.parseToJsonElement(jsonString).jsonObject
-                val appearanceSettings = migrateSplitFocusBorderDefault(
+                val loadedSettings = migrateSplitFocusBorderDefault(
                     settings = migrateCursorRenderingDefaults(
                         settings = json.decodeFromJsonElement(TerminalSettings.serializer(), rawSettings),
                         hasCursorRenderingVersion = "cursorRenderingVersion" in rawSettings,
                     ),
                     hasSplitFocusBorderVersion = "splitFocusBorderVersion" in rawSettings,
-                )
-                val loadedSettings = migrateDaemonModeDefault(
-                    settings = appearanceSettings,
-                    hasDaemonModeDefaultsVersion = "daemonModeDefaultsVersion" in rawSettings,
                 )
                 publish(loadedSettings)
                 println("Settings loaded from: ${settingsFile.absolutePath}")

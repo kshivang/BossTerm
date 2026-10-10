@@ -163,8 +163,8 @@ fun main(arguments: Array<String>) {
 
     // Session daemon (tmux-style): when enabled, a long-lived background process owns the MCP
     // server, sessions, and sharing so they survive the GUI closing. The GUI then does NOT host the
-    // in-process MCP — the daemon owns the loopback endpoint + mcp.port. Enabled by default; set
-    // daemonEnabled=false to fall back to the pre-daemon path (in-process, sessions die with the window).
+    // in-process MCP — the daemon owns the loopback endpoint + mcp.port. Disabled by default;
+    // daemonEnabled=true opts into sessions that outlive the window.
     val daemonEnabled = SettingsManager.instance.settings.value.daemonEnabled
     val daemonScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val daemonClient = if (daemonEnabled) {

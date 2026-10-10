@@ -198,23 +198,24 @@ fun runDaemon(args: Array<String>) {
             onRequest = handler::handle,
         )
 
-        // Single, idempotent teardown shared by the SHUTDOWN path and the JVM shutdown hook.
-        fun shutdown() {
-            if (!stopped.compareAndSet(false, true)) return
-            log.info("BossTerm daemon stopping")
-            mcpAttachments.stop()
-            runCatching { daemonScope.cancel() }
-            runCatching { DaemonTray.remove() }
-            runCatching { control.stop() }
-            // Under mcpLock so a concurrent setDaemonMcpEnabled(true) from the attach socket can't slip a
-            // freshly-bound server in after we read the ref — which would leak a bound ServerSocket.
-            runCatching { synchronized(mcpLock) { mcpServerRef.getAndSet(null)?.stop() } }
-            runCatching { shareServer.stop() } // stop share server + tunnels before sessions die
-            runCatching { attachServerRef.get()?.stop() }
-            runCatching { sessionHost.close() } // joins PTY-kill threads so shells aren't orphaned
-        }
+        val shutdown = DaemonShutdownLifecycle(
+            stopServices = {
+                stopped.set(true)
+                log.info("BossTerm daemon stopping")
+                runCatching { mcpAttachments.stop() }
+                runCatching { daemonScope.cancel() }
+                runCatching { control.stop() }
+                // Under mcpLock so a concurrent setDaemonMcpEnabled(true) from the attach socket can't slip a
+                // freshly-bound server in after we read the ref — which would leak a bound ServerSocket.
+                runCatching { synchronized(mcpLock) { mcpServerRef.getAndSet(null)?.stop() } }
+                runCatching { shareServer.stop() } // stop share server + tunnels before sessions die
+                runCatching { attachServerRef.get()?.stop() }
+                runCatching { sessionHost.close() } // joins PTY-kill threads so shells aren't orphaned
+            },
+            removeTray = { runCatching { DaemonTray.remove() } },
+        )
 
-        val shutdownHook = Thread { shutdown() }
+        val shutdownHook = Thread({ shutdown.shutdownFromHook() }, "bossterm-daemon-shutdown")
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         try {
             if (settings.mcpEnabled) setDaemonMcpEnabled(true)
@@ -254,7 +255,7 @@ fun runDaemon(args: Array<String>) {
             // process exit; only the intentional single-instance/normal-stop paths return normally.
             throw e
         } finally {
-            shutdown()
+            shutdown.shutdown()
             runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
         }
         log.info("BossTerm daemon stopped")

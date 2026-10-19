@@ -102,7 +102,7 @@ jobs:
 
       - name: Sign MSI with DigiCert KeyLocker
         # Pin the reviewed shared action; BossConsole uses main, not master.
-        uses: risa-labs-inc/BossConsole/.github/actions/sign-windows-msi@5dd0b064f95fe6b6d088930568fc79996feb063d
+        uses: risa-labs-inc/BossConsole/.github/actions/sign-windows-msi@824884f1cf976bb91a14c95f0312162f097b5001
         with:
           msi-path: ${{ steps.msi.outputs.path }}
           cert-host: ${{ secrets.CODE_SIGNING_CERT_HOST }}

@@ -523,7 +523,7 @@ in a browser, or connect from another BossTerm as a native client.
   per-connection AES-256-GCM, and a short verification code lets both ends confirm the same key.
 
 Enable it under **Settings → Session Sharing** (off by default), then **Share** from a tab's menu.
-Defaults: binds the LAN on port `7677`, Cloudflare remote mode, approval required only for public
+Defaults: binds the LAN on port `17770`, Cloudflare remote mode, approval required only for public
 links.
 
 See **[docs/session-sharing.md](docs/session-sharing.md)** for the full guide - scopes,
@@ -539,7 +539,15 @@ are enabled - drive shells, send signals, open new splits, and **run
 commands in a visible pane** while still capturing stdout/stderr and exit
 code (`run_command` - recommended default shell for AI clients).
 
-- **Endpoint**: `http://127.0.0.1:7676/` over Server-Sent Events, configurable
+Standalone BossTerm uses separate port ranges from BossConsole: MCP `17760–17769`,
+session sharing `17770–17779`, and daemon attachment starting at `17780`.
+At standalone GUI/daemon startup, saved MCP ports `7676–7685` and sharing ports
+`7677–7686` migrate to `17760` and `17770`. Other custom ports are preserved.
+The embedded library keeps its host-specific settings; BossConsole is unchanged.
+Restart standalone BossTerm after upgrading so existing listeners and CLI
+registrations move to the new range.
+
+- **Endpoint**: `http://127.0.0.1:17760/` over Server-Sent Events, configurable
   via Settings → BossTerm MCP → Port.
 - **Loopback-only**: the server binds `127.0.0.1` and rejects non-loopback
   `Host` headers (DNS-rebinding defense). Any local process running as your

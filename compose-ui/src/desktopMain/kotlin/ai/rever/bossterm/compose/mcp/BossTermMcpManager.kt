@@ -977,7 +977,7 @@ class BossTermMcpManager(
      * `preferredShellWatcherJob`). Callers must check the setting before calling
      * this; the bind path and the watcher both do.
      *
-     * Reflects the *actual* bound port, including the 7676→7685 fallback range,
+     * Reflects the *actual* bound port, including the configured port’s ten-port fallback range,
      * so the hook doesn't need to know about fallback. Best-effort: any I/O
      * failure is logged at WARN and ignored — the marker is an optimization,
      * not a correctness lever.

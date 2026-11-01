@@ -87,7 +87,7 @@ class DaemonAttachServer(
 
     /** Bind on loopback, trying [desiredPort]..+9. Returns the bound port or -1. */
     @Synchronized
-    fun start(desiredPort: Int = 7682): Int {
+    fun start(desiredPort: Int = ai.rever.bossterm.compose.mcp.StandalonePorts.ATTACH): Int {
         if (engine != null) return boundPort
         if (desiredPort !in 1..65535) {
             log.error("attach: invalid port {}", desiredPort)

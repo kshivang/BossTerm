@@ -98,7 +98,7 @@ fun McpSettingsSection(
                 value = settings.mcpPort,
                 onValueChange = { onSettingsChange(settings.copy(mcpPort = it)) },
                 range = 1..65535,
-                description = "Localhost port the server listens on. Default 7676. " +
+                description = "Localhost port the server listens on. Default ${cfg?.defaultPort ?: ai.rever.bossterm.compose.mcp.StandalonePorts.MCP}. " +
                         "Changing while enabled will rebind to the new port.",
                 enabled = settings.mcpEnabled
             )

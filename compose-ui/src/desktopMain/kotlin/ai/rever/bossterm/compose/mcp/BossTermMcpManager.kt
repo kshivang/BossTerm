@@ -10,6 +10,7 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
+import ai.rever.bossterm.compose.server.cioServerScope
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
@@ -632,7 +633,7 @@ class BossTermMcpManager(
                     HOST, port, PATH, desiredPort
                 )
             }
-            val engine = embeddedServer(CIO, host = HOST, port = port) {
+            val engine = cioServerScope.embeddedServer(CIO, host = HOST, port = port) {
                 install(SSE)
                 // DNS-rebinding defense: only accept Host headers that name a
                 // loopback target. Anything else (e.g. attacker.example

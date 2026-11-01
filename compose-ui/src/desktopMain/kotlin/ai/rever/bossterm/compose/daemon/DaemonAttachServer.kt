@@ -4,6 +4,7 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
+import ai.rever.bossterm.compose.server.cioServerScope
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
@@ -104,7 +105,7 @@ class DaemonAttachServer(
             if (port > 65535) break
             if (!portAvailable(port)) continue
             try {
-                val srv = embeddedServer(CIO, host = HOST, port = port) {
+                val srv = cioServerScope.embeddedServer(CIO, host = HOST, port = port) {
                     install(WebSockets)
                     routing { webSocket("/attach") { serve(this) } }
                 }

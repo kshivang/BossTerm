@@ -10,6 +10,7 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
+import ai.rever.bossterm.compose.server.cioServerScope
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.routing
@@ -234,7 +235,7 @@ class DaemonMcpServer(
             val allowed = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
             var candidate: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
             try {
-                val srv = embeddedServer(CIO, host = HOST, port = port) {
+                val srv = cioServerScope.embeddedServer(CIO, host = HOST, port = port) {
                     install(SSE)
                     intercept(ApplicationCallPipeline.Plugins) {
                         // Treat an ABSENT/empty Host as untrusted (don't fall back to the server's own

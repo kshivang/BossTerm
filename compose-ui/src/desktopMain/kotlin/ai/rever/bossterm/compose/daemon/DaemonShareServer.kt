@@ -36,6 +36,7 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
+import ai.rever.bossterm.compose.server.cioServerScope
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
@@ -616,7 +617,7 @@ class DaemonShareServer(
                 continue
             }
             try {
-                val started = embeddedServer(CIO, host = host, port = port) {
+                val started = cioServerScope.embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
                     install(DefaultHeaders) {
                         header("X-Frame-Options", "DENY")

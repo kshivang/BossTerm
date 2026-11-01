@@ -8,6 +8,7 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
+import ai.rever.bossterm.compose.server.cioServerScope
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.application.ApplicationCallPipeline
@@ -1066,7 +1067,7 @@ object SessionShareManager {
                 continue
             }
             try {
-                val started = embeddedServer(CIO, host = host, port = port) {
+                val started = cioServerScope.embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
                     install(DefaultHeaders)
                     // Frame policy per request. Every response refuses framing, EXCEPT the shell

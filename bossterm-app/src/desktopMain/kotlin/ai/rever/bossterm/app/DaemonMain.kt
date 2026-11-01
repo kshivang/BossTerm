@@ -50,6 +50,13 @@ fun main(args: Array<String>) = runDaemon(args)
  * any AWT/Compose init.
  */
 fun runDaemon(args: Array<String>) {
+    // Apply standalone port isolation before GUI/daemon services read their settings.
+    ai.rever.bossterm.compose.settings.SettingsManager.instance.let { manager ->
+        val current = manager.settings.value
+        val isolated = ai.rever.bossterm.compose.mcp.StandalonePorts.migrate(current)
+        if (isolated != current) manager.updateSettings(isolated)
+    }
+
     ai.rever.bossterm.compose.daemon.DaemonProcessLifecycle.detachFromParentTerminal()
     // NOT headless: the daemon shows a menu-bar/tray icon so a background process isn't invisible.
     // On macOS it runs as a UIElement agent (no Dock icon): -Dapple.awt.UIElement=true from

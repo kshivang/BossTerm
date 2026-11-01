@@ -16,7 +16,7 @@ samples, see the `embedded-example/` and `tabbed-example/` modules in the
 
 - **Transport**: SSE (Server-Sent Events) over HTTP, served by an embedded
   Ktor CIO engine.
-- **Endpoint**: `http://127.0.0.1:<port>/`. Default port `7676`; configurable
+- **Endpoint**: `http://127.0.0.1:<port>/`. Default standalone port `17760`; configurable
   via Settings → BossTerm MCP → Port or `mcpPort` in `settings.json`.
 - **Binding**: loopback only. Any process running as your user can reach the
   endpoint while it is enabled. Requests with a non-loopback `Host` header
@@ -34,7 +34,7 @@ samples, see the `embedded-example/` and `tabbed-example/` modules in the
 2. Toggle **Enable BossTerm MCP Server**. The small green
    **BossTerm MCP on** pill appears in the tab bar; click it for a popover
    that shows the endpoint URL, attached AI CLIs, and a one-click toggle.
-3. (Optional) Adjust **Port** if `7676` clashes with another local service.
+3. (Optional) Adjust **Port** if `17760` clashes with another local service.
    Toggling the port while enabled performs a stop-then-start.
 4. (Optional) In **Exposed Tools**, untick any built-in tool you don't want
    MCP clients to call. The change applies immediately - no server restart.
@@ -49,7 +49,7 @@ samples, see the `embedded-example/` and `tabbed-example/` modules in the
 The server is constructed in `BossTermMcpManager` and binds via Ktor:
 
 - Host: `127.0.0.1` (never `0.0.0.0`).
-- Port: `settings.mcpPort` (default `7676`). If that port is busy, the
+- Port: `settings.mcpPort` (standalone default `17760`). If that port is busy, the
   manager automatically falls back to the next free port in a 10-port
   window. The configured setting is not modified; the next restart still
   tries the original first. See [Troubleshooting](#troubleshooting).

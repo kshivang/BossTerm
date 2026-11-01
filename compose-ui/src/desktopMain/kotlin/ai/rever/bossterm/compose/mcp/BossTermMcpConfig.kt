@@ -91,7 +91,7 @@ data class BossTermMcpConfig(
      * been initialized on this machine (controlled via the
      * `mcpConfigured` settings flag). After that the user's setting wins.
      */
-    val defaultPort: Int = 7676,
+    val defaultPort: Int = StandalonePorts.MCP,
     /**
      * First-launch enabled state written to settings when the embedder has
      * never been initialized on this machine. After that the user's setting

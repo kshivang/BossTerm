@@ -103,6 +103,13 @@ fun main(arguments: Array<String>) {
         return
     }
 
+    // Apply standalone port isolation before GUI/daemon services read their settings.
+    ai.rever.bossterm.compose.settings.SettingsManager.instance.let { manager ->
+        val current = manager.settings.value
+        val isolated = ai.rever.bossterm.compose.mcp.StandalonePorts.migrate(current)
+        if (isolated != current) manager.updateSettings(isolated)
+    }
+
     ai.rever.bossterm.compose.daemon.DaemonLauncher.captureGuiBranding()
 
     // Window appearance, derived from OUR background rather than the system's. Must be here:

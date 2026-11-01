@@ -241,11 +241,16 @@ require_python3() {
 # MCP plumbing
 # ---------------------------------------------------------------------------
 
-# Print the configured port (settings.mcpPort, default 7676).
+# Print the configured port (settings.mcpPort, default 17760).
 mcp_configured_port() {
     local p
     p="$(settings_get mcpPort)"
-    echo "${p:-7676}"
+    # Older standalone settings used the range now retained by BossConsole.
+    # Do not discover BossConsole while BossTerm is stopped or upgrading.
+    case "${p:-17760}" in
+        767[6-9]|768[0-5]) echo 17760 ;;
+        *) echo "${p:-17760}" ;;
+    esac
 }
 
 # Probe whether port responds as a BossTerm MCP server. Returns 0/1.
@@ -277,7 +282,7 @@ mcp_probe_port() {
 #      port and either return it or fail. Useful when multiple BossTerms
 #      are running (e.g. a packaged install + an IDE debug session) and
 #      you need to address a specific one.
-#   2. Configured port from settings.json (default 7676).
+#   2. Configured port from settings.json (default 17760).
 #   3. Configured+1 .. configured+9 (the fallback range PR #255 walks).
 mcp_running_port() {
     if [ -n "${BOSSTERM_MCP_PORT:-}" ]; then

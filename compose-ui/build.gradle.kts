@@ -128,7 +128,7 @@ kotlin {
                 // `api` for the SDK because BossTermMcpConfig's additionalTools
                 // hook exposes the SDK's Server type to embedders, which would
                 // otherwise be inaccessible from a downstream module.
-                api("io.modelcontextprotocol:kotlin-sdk-server:0.15.0")
+                api("io.modelcontextprotocol:kotlin-sdk-server:0.16.0")
                 // Use one Ktor release for client, server, and test artifacts.
                 implementation("io.ktor:ktor-server-cio:$ktorVersion")
                 // Streamable HTTP MCP endpoint (/mcp, for Codex): the SDK's

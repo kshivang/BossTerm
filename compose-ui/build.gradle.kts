@@ -122,7 +122,7 @@ kotlin {
                 // Supabase Realtime — push notifications for new app releases so the
                 // self-updater learns about them instantly instead of polling GitHub.
                 // Realtime only; the release catalog is fetched via plain Ktor REST.
-                implementation("io.github.jan-tennert.supabase:realtime-kt:3.8.0")
+                implementation("io.github.jan-tennert.supabase:realtime-kt:3.9.0")
 
                 // MCP (Model Context Protocol) server + Ktor CIO server backend.
                 // `api` for the SDK because BossTermMcpConfig's additionalTools

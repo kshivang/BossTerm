@@ -29,7 +29,7 @@ plugins {
 
 group = "ai.rever.bossterm"
 
-val ktorVersion = "3.6.0"
+val ktorVersion = "3.6.1"
 
 repositories {
     mavenCentral()
